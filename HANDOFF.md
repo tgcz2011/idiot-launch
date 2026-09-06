@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-06（v1.0.0.1，新增一键关闭倒计时）
+> 最后更新: 2026-09-06（v1.0.0.2，关闭按钮改用命名事件优雅退出 + 未运行时变灰禁用）
 
 ## 一、需求（用户原始要求）
 
@@ -18,6 +18,7 @@
 |------|------|------|
 | **v1.0.0.0** | Python + tkinter + PyInstaller | 初始版本，三按钮 + 内嵌安装包 + D 盘静默安装 |
 | **v1.0.0.1** | 同上 | 新增「关闭倒计时」按钮：taskkill /F /T 终止进程树 + 桌面刷新（d 升） |
+| **v1.0.0.2** | 同上 | 关闭按钮改用 Countdown Desktop 命名事件 `CountdownDesktop_Quit` 优雅退出（不再 taskkill 强杀）；未运行时按钮自动变灰禁用（每 1.5s 轮询互斥量 `CountdownDesktop_Single`）；HoverButton 新增 disabled 视觉态（d 升） |
 
 ## 三、架构
 
@@ -28,8 +29,8 @@ IdiotLaunch.exe（单文件，PyInstaller onefile）
   ├─ core.silent_install()       释放内嵌安装包 → Inno /VERYSILENT /DIR=D:\CountdownDesktop
   ├─ core.launch_countdown()     CountdownDesktop.exe --exam zhongkao|gaokao（DETACHED_PROCESS）
   ├─ core.open_morning_reading() webbrowser.open(https://zztool.free.nf/morning-reading)
-  ├─ core.is_running()           tasklist 检测 CountdownDesktop.exe 是否在运行
-  └─ core.kill_countdown()       taskkill /F /IM CountdownDesktop.exe /T + SystemParametersInfo 刷新桌面
+  ├─ core.is_running()           互斥量 CountdownDesktop_Single 检测是否在运行（比 tasklist 可靠）
+  └─ core.quit_countdown()       OpenEvent(CountdownDesktop_Quit) + SetEvent → 运行实例自行优雅退出；轮询互斥量释放（8s 超时）
 内嵌资源：_MEIPASS/installer/CountdownDesktop_Setup_3.2.0.0.exe
 ```
 
@@ -78,11 +79,14 @@ Countdown Desktop 安装包本身 `PrivilegesRequired=lowest`，无需管理员�
 7. **DETACHED_PROCESS**：如果用普通 `subprocess.Popen`，启动器退出时子进程可能收到 CTRL_CLOSE_EVENT。使用 `creationflags=DETACHED_PROCESS` 让子进程完全独立。
 8. **单实例接管**：Countdown Desktop 自己处理单实例，启动器无需检测是否已在运行，直接带参启动即可切换类型。
 
-### 一键关闭（v1.0.0.1）
+### 一键关闭（v1.0.0.1 → v1.0.0.2 演进）
 
-9. **taskkill /F /T**：Countdown Desktop 主进程会 spawn 壁纸/屏保播放器子进程，必须用 `/T` 终止进程树，否则播放器残留导致壁纸窗口挂在桌面。`/F` 强制终止，不等待优雅退出（学校场景追求可靠关闭）。
-10. **桌面刷新**：强杀后壁纸嵌入窗口可能残留，调用 `SystemParametersInfoW(SPI_SETDESKWALLPAPER)` 触发 explorer 重绘桌面，确保恢复原壁纸。
-11. **未运行时提示**：`is_running()` 先用 tasklist 检测，未运行时点击「关闭倒计时」弹出提示而非静默成功。
+9. **v1.0.0.1 用 taskkill /F /T**：简单粗暴，但强杀可能导致壁纸窗口残留、桌面白屏，且用户明确要求用 Countdown Desktop 自带的优雅退出机制。
+10. **v1.0.0.2 改用命名事件**：Countdown Desktop 运行时创建命名事件 `CountdownDesktop_Quit`（手动重置、初始无信号），主进程 QTimer 每 250ms 轮询 `WaitForSingleObject(h, 0)`，收到信号后调用 `quit()`——停壁纸/屏保、`refresh_desktop_wallpaper()` 恢复桌面、删 PID、退托盘。启动器只需 `OpenEventW(EVENT_MODIFY_STATE, False, "CountdownDesktop_Quit")` + `SetEvent` + `CloseHandle`，不启动额外进程、不依赖已安装 exe 版本。
+11. **退出确认**：SetEvent 后轮询互斥量 `CountdownDesktop_Single`（每 250ms，最多 8s），互斥量释放即说明实例已退出。超时返回 False（不做强杀兜底，遵循用户"不要粗暴"要求）。
+12. **运行状态检测用互斥量不用 tasklist**：`CreateMutexW("CountdownDesktop_Single")` 后 `GetLastError()==183(ERROR_ALREADY_EXISTS)` 即表示有实例在运行，比解析 tasklist 输出更快更可靠。
+13. **按钮变灰机制**：GUI 每 1.5s 后台线程调 `is_running()`，通过 `root.after` 回主线程更新 `btn_kill.set_enabled(running)`。HoverButton 新增 `_enabled` 状态：禁用时绘浅灰 `#bdc3c7`、文字 `#ecf0f1`、cursor=arrow、解绑点击；加载中（`_loading`）时所有按钮统一禁用。
+14. **旧版不支持退出事件**：若运行的是旧版 Countdown Desktop（无 `CountdownDesktop_Quit` 事件），`OpenEventW` 返回 NULL，抛 RuntimeError 提示版本过旧。学校环境统一装 v3.2.0.0 不存在此问题。
 
 ## 五、项目结构
 
@@ -132,7 +136,7 @@ git push origin main v1.0.0.0
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.0.0.1。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.0.0.2。
 
 ## 九、已知限制 / 待办
 

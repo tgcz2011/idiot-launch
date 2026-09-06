@@ -12,7 +12,7 @@ from src.core import (
     find_installed_path,
     resource_path,
     is_running,
-    kill_countdown,
+    quit_countdown,
     INSTALL_DIR,
     INSTALL_EXE,
     EXE_NAME,
@@ -58,13 +58,14 @@ def test_is_running_no_crash():
     print(f"✓ test_is_running_no_crash passed: {result}")
 
 
-def test_kill_countdown_no_crash():
-    # 不实际运行时调用应返回 0，不抛异常
+def test_quit_countdown_no_crash():
+    # 未运行时调用应立即返回 True（无需退出）
     if not is_running():
-        result = kill_countdown()
-        print(f"✓ test_kill_countdown_no_crash passed: killed={result}")
+        result = quit_countdown()
+        assert result is True
+        print(f"✓ test_quit_countdown_no_crash passed: quit returned {result}")
     else:
-        print("⚠ test_kill_countdown_no_crash: Countdown Desktop 正在运行，跳过实际终止")
+        print("⚠ test_quit_countdown_no_crash: Countdown Desktop 正在运行，跳过实际退出")
 
 
 if __name__ == "__main__":
@@ -73,5 +74,5 @@ if __name__ == "__main__":
     test_find_installed_no_crash()
     test_installer_file_exists()
     test_is_running_no_crash()
-    test_kill_countdown_no_crash()
+    test_quit_countdown_no_crash()
     print("\n全部测试通过！")

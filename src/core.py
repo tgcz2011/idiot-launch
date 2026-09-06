@@ -178,57 +178,70 @@ def open_morning_reading() -> None:
 
 
 def is_running() -> bool:
-    """检测 Countdown Desktop 是否正在运行。"""
-    try:
-        result = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq CountdownDesktop.exe", "/NH"],
-            capture_output=True, text=True, timeout=10,
-        )
-        return "CountdownDesktop.exe" in result.stdout
-    except Exception:
-        return False
-
-
-def kill_countdown() -> int:
-    """
-    一键关闭所有 Countdown Desktop 进程（主进程 + 壁纸/屏保播放器子进程）。
-    使用 taskkill /F /T 强制终止进程树。
-    返回被终止的进程数（0 表示没有在运行）。
-    """
-    killed = 0
-    try:
-        result = subprocess.run(
-            ["taskkill", "/F", "/IM", "CountdownDesktop.exe", "/T"],
-            capture_output=True, text=True, timeout=15,
-        )
-        # taskkill 退出码 0 = 至少终止了一个进程；128 = 未找到进程
-        if result.returncode == 0:
-            # 统计成功终止的行数（每行包含一个 PID）
-            output = result.stdout
-            killed = output.count("PID")
-            if killed == 0:
-                # 某些语言版本输出格式不同，有输出且退出码 0 即算成功
-                killed = 1 if output.strip() else 0
-    except Exception:
-        pass
-
-    # 开发模式下可能有 python.exe 运行 player 子进程，一并清理
-    try:
-        subprocess.run(
-            ["taskkill", "/F", "/FI", "WINDOWTITLE eq *player*"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except Exception:
-        pass
-
-    # 刷新桌面，确保壁纸窗口被清除
+    """检测 Countdown Desktop 是否正在运行（通过命名互斥量，比 tasklist 更可靠）。"""
     try:
         import ctypes
-        # 触发桌面重绘
-        ctypes.windll.user32.UpdateWindow(0)
-        spi_setdeskwallpaper = 0x0014
-        ctypes.windll.user32.SystemParametersInfoW(spi_setdeskwallpaper, 0, None, 0)
+        kernel32 = ctypes.windll.kernel32
+        # 尝试创建互斥量，若已存在说明有实例在运行
+        handle = kernel32.CreateMutexW(None, False, "CountdownDesktop_Single")
+        already_exists = kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+        if handle:
+            kernel32.CloseHandle(handle)
+        return already_exists
     except Exception:
-        pass
+        # 回退到 tasklist 检测
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq CountdownDesktop.exe", "/NH"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return "CountdownDesktop.exe" in result.stdout
+        except Exception:
+            return False
 
-    return killed
+
+def quit_countdown() -> bool:
+    """
+    优雅关闭 Countdown Desktop：通过命名事件通知运行中的实例自行退出。
+    Countdown Desktop 运行时会创建命名事件 CountdownDesktop_Quit 并每 250ms 轮询；
+    收到信号后调用 quit()：停壁纸/屏保、恢复桌面、退托盘，全程优雅不强制。
+    流程：检测是否在运行 → 打开并触发退出事件 → 轮询等待互斥量释放（最多8秒）。
+    返回 True 成功退出，False 超时未退出。
+    """
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+
+    MUTEX_NAME = "CountdownDesktop_Single"
+    QUIT_EVENT_NAME = "CountdownDesktop_Quit"
+    EVENT_MODIFY_STATE = 0x0002
+    ERROR_ALREADY_EXISTS = 183
+
+    # 1) 检测是否在运行
+    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    already_running = kernel32.GetLastError() == ERROR_ALREADY_EXISTS
+    if mutex:
+        kernel32.CloseHandle(mutex)
+    if not already_running:
+        return True  # 本就没在运行，算成功
+
+    # 2) 打开退出事件并触发（运行实例的 250ms 轮询定时器会捕获并 quit）
+    event_handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, QUIT_EVENT_NAME)
+    if not event_handle:
+        # 旧版本可能没有创建退出事件，无法优雅退出
+        raise RuntimeError("无法连接 Countdown Desktop 退出通道（可能版本过旧）")
+    kernel32.SetEvent(event_handle)
+    kernel32.CloseHandle(event_handle)
+
+    # 3) 轮询等待互斥量释放（实例退出后会释放互斥量）
+    import time
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        time.sleep(0.25)
+        m = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        released = kernel32.GetLastError() != ERROR_ALREADY_EXISTS
+        if m:
+            kernel32.CloseHandle(m)
+        if released:
+            return True
+
+    return False  # 超时，实例未退出

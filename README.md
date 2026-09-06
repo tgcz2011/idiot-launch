@@ -5,7 +5,7 @@
 - **中考倒计时** — 自动启动 Countdown Desktop（`--exam zhongkao`），未安装则静默安装到 D 盘
 - **高考倒计时** — 自动启动 Countdown Desktop（`--exam gaokao`），未安装则静默安装到 D 盘
 - **早晚读** — 在默认浏览器打开 `https://zztool.free.nf/morning-reading`
-- **关闭倒计时** — 一键强制退出所有 Countdown Desktop 进程（含壁纸/屏保播放器），恢复桌面
+- **关闭倒计时** — 通过命名事件通知 Countdown Desktop 优雅退出（停壁纸、恢复桌面、退托盘）；未运行时按钮自动变灰不可点击
 
 内嵌 Countdown Desktop v3.2.0.0 安装包，首次使用自动安装，无需手动下载。
 
@@ -46,7 +46,8 @@
     │
     ├─ 倒计时按钮 → CountdownDesktop.exe --exam zhongkao|gaokao
     ├─ 早晚读按钮 → webbrowser.open(https://zztool.free.nf/morning-reading)
-    └─ 关闭倒计时 → taskkill /F /IM CountdownDesktop.exe /T + 桌面刷新
+    └─ 关闭倒计时 → OpenEvent(CountdownDesktop_Quit) + SetEvent（运行实例自行优雅退出）
+       未运行时按钮自动变灰禁用（每 1.5s 轮询互斥量 CountdownDesktop_Single）
 ```
 
 - **安装检测**：优先检查 `D:\CountdownDesktop`，其次扫描注册表卸载信息与常见安装目录。
