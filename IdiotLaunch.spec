@@ -2,7 +2,7 @@
 """
 PyInstaller 规格文件 — Idiot Launch
 打包时将 Countdown Desktop 安装包作为数据文件内嵌。
-构建前请确保 installer/CountdownDesktop_Setup_3.2.0.0.exe 存在（build.ps1 会自动下载）。
+构建前请确保 installer/CountdownDesktop_Setup_3.2.1.1.exe 存在（build.ps1 会自动下载）。
 """
 import os
 import sys
@@ -10,7 +10,7 @@ import sys
 block_cipher = None
 
 # 内嵌安装包路径
-INSTALLER_PATH = os.path.join("installer", "CountdownDesktop_Setup_3.2.0.0.exe")
+INSTALLER_PATH = os.path.join("installer", "CountdownDesktop_Setup_3.2.1.1.exe")
 
 a = Analysis(
     ["run.py"],

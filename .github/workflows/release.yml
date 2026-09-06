@@ -34,8 +34,8 @@ jobs:
       - name: Download Countdown Desktop installer
         shell: pwsh
         run: |
-          $url = "https://github.com/tgcz2011/countdown-desktop/releases/download/v3.2.0.0/CountdownDesktop_Setup_3.2.0.0.exe"
-          $out = "installer\CountdownDesktop_Setup_3.2.0.0.exe"
+          $url = "https://github.com/tgcz2011/countdown-desktop/releases/download/v3.2.1.1/CountdownDesktop_Setup_3.2.1.1.exe"
+          $out = "installer\CountdownDesktop_Setup_3.2.1.1.exe"
           if (-not (Test-Path "installer")) { New-Item -ItemType Directory -Path installer -Force | Out-Null }
           Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
           $size = (Get-Item $out).Length

@@ -20,8 +20,8 @@ $ProjectRoot = $PSScriptRoot
 $VenvDir = Join-Path $ProjectRoot ".venv"
 $Python = Join-Path $VenvDir "Scripts\python.exe"
 $InstallerDir = Join-Path $ProjectRoot "installer"
-$InstallerFile = Join-Path $InstallerDir "CountdownDesktop_Setup_3.2.0.0.exe"
-$InstallerUrl = "https://github.com/tgcz2011/countdown-desktop/releases/download/v3.2.0.0/CountdownDesktop_Setup_3.2.0.0.exe"
+$InstallerFile = Join-Path $InstallerDir "CountdownDesktop_Setup_3.2.1.1.exe"
+$InstallerUrl = "https://github.com/tgcz2011/countdown-desktop/releases/download/v3.2.1.1/CountdownDesktop_Setup_3.2.1.1.exe"
 
 function Invoke-Step {
     param([string]$Name, [scriptblock]$Action)

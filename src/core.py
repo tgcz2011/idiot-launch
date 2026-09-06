@@ -17,7 +17,7 @@ EXE_NAME = "CountdownDesktop.exe"
 INSTALL_DIR = r"D:\CountdownDesktop"
 INSTALL_EXE = os.path.join(INSTALL_DIR, EXE_NAME)
 # 内嵌安装包在打包后的相对路径
-INSTALLER_REL = os.path.join("installer", "CountdownDesktop_Setup_3.2.0.0.exe")
+INSTALLER_REL = os.path.join("installer", "CountdownDesktop_Setup_3.2.1.1.exe")
 # 早晚读网页
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
 # 静默安装超时（秒），Inno 安装含 WebView2 可能较慢

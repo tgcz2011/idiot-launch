@@ -19,7 +19,7 @@ from src.core import (
     APP_NAME,
 )
 
-VERSION = "1.0.0.2"
+VERSION = "1.0.0.3"
 
 # ── 配色 ──
 BG_COLOR = "#f5f7fa"
@@ -170,7 +170,7 @@ class IdiotLaunchApp:
         status.pack(side="bottom", pady=15)
 
         version_label = tk.Label(
-            self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v3.2.0.0",
+            self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v3.2.1.1",
             font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
         )
         version_label.place(relx=0.5, rely=0.97, anchor="s")

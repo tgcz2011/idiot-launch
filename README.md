@@ -7,7 +7,7 @@
 - **早晚读** — 在默认浏览器打开 `https://zztool.free.nf/morning-reading`
 - **关闭倒计时** — 通过命名事件通知 Countdown Desktop 优雅退出（停壁纸、恢复桌面、退托盘）；未运行时按钮自动变灰不可点击
 
-内嵌 Countdown Desktop v3.2.0.0 安装包，首次使用自动安装，无需手动下载。
+内嵌 Countdown Desktop v3.2.1.1 安装包，首次使用自动安装，无需手动下载。
 
 ## 为什么需要这个启动器？
 
@@ -52,7 +52,7 @@
 
 - **安装检测**：优先检查 `D:\CountdownDesktop`，其次扫描注册表卸载信息与常见安装目录。
 - **静默安装**：使用 Inno Setup 标准参数 `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=D:\CountdownDesktop`。
-- **带参启动**：Countdown Desktop v3.2.0.0 支持 `--exam` 参数单次覆盖倒计时类型，内置单实例接管，重复点击自动切换。
+- **带参启动**：Countdown Desktop v3.2.1.1 支持 `--exam` 参数单次覆盖倒计时类型，内置单实例接管，重复点击自动切换。
 - **进程独立**：使用 `DETACHED_PROCESS` 启动 Countdown Desktop，关闭启动器不影响倒计时运行。
 
 ## 开发与构建
@@ -99,7 +99,7 @@ idiot-launch/
 
 | 组件 | 版本 | 来源 |
 |------|------|------|
-| Countdown Desktop 安装包 | v3.2.0.0 | [tgcz2011/countdown-desktop](https://github.com/tgcz2011/countdown-desktop) |
+| Countdown Desktop 安装包 | v3.2.1.1 | [tgcz2011/countdown-desktop](https://github.com/tgcz2011/countdown-desktop) |
 
 ## License
 
