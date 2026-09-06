@@ -1,6 +1,6 @@
 """
 main.py — Idiot Launch 主入口与 GUI
-三个大按钮：中考倒计时 / 高考倒计时 / 早晚读
+四个大按钮：中考倒计时 / 高考倒计时 / 早晚读 / 关闭倒计时
 傻瓜式操作，无需任何配置。
 """
 import tkinter as tk
@@ -12,20 +12,24 @@ import os
 from src.core import (
     launch_countdown,
     open_morning_reading,
+    kill_countdown,
     find_installed_path,
+    is_running,
     APP_NAME,
 )
 
-VERSION = "1.0.0.0"
+VERSION = "1.0.0.1"
 
 # ── 配色 ──
 BG_COLOR = "#f5f7fa"
 BTN_ZHONGKAO = "#e74c3c"       # 红色 — 中考
 BTN_GAOKAO = "#2980b9"         # 蓝色 — 高考
 BTN_READING = "#27ae60"        # 绿色 — 早晚读
+BTN_KILL = "#5d6d7e"           # 深灰 — 关闭倒计时
 BTN_HOVER_ZHONGKAO = "#c0392b"
 BTN_HOVER_GAOKAO = "#1f6fa0"
 BTN_HOVER_READING = "#1e8449"
+BTN_HOVER_KILL = "#4a5568"
 TEXT_COLOR = "#2c3e50"
 STATUS_COLOR = "#7f8c8d"
 
@@ -78,7 +82,7 @@ class IdiotLaunchApp:
         self.root.resizable(False, False)
 
         # 窗口居中
-        win_w, win_h = 420, 520
+        win_w, win_h = 420, 640
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = (screen_w - win_w) // 2
@@ -123,6 +127,12 @@ class IdiotLaunchApp:
             BTN_READING, BTN_HOVER_READING, self.on_reading,
         )
         self.btn_reading.pack(pady=8)
+
+        self.btn_kill = HoverButton(
+            btn_frame, "关闭倒计时", "一键退出 Countdown Desktop",
+            BTN_KILL, BTN_HOVER_KILL, self.on_kill,
+        )
+        self.btn_kill.pack(pady=8)
 
         # 状态栏
         self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
@@ -169,7 +179,7 @@ class IdiotLaunchApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _set_buttons_state(self, state):
-        for btn in (self.btn_zhongkao, self.btn_gaokao, self.btn_reading):
+        for btn in (self.btn_zhongkao, self.btn_gaokao, self.btn_reading, self.btn_kill):
             if state == "disabled":
                 btn.unbind("<Button-1>")
             else:
@@ -191,6 +201,17 @@ class IdiotLaunchApp:
         self._run_with_loading(
             open_morning_reading,
             "✓ 早晚读网页已在浏览器中打开",
+        )
+
+    def on_kill(self):
+        def do_kill():
+            n = kill_countdown()
+            if n == 0:
+                raise RuntimeError("Countdown Desktop 未在运行，无需关闭")
+            return n
+        self._run_with_loading(
+            do_kill,
+            "✓ 倒计时已关闭",
         )
 
     def run(self):

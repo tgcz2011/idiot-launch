@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-06（v1.0.0.0，初始版本）
+> 最后更新: 2026-09-06（v1.0.0.1，新增一键关闭倒计时）
 
 ## 一、需求（用户原始要求）
 
@@ -17,16 +17,19 @@
 | 版本 | 技术 | 结论 |
 |------|------|------|
 | **v1.0.0.0** | Python + tkinter + PyInstaller | 初始版本，三按钮 + 内嵌安装包 + D 盘静默安装 |
+| **v1.0.0.1** | 同上 | 新增「关闭倒计时」按钮：taskkill /F /T 终止进程树 + 桌面刷新（d 升） |
 
 ## 三、架构
 
 ```
 IdiotLaunch.exe（单文件，PyInstaller onefile）
-  ├─ tkinter GUI：三个大按钮 + 状态栏
+  ├─ tkinter GUI：四个大按钮 + 状态栏
   ├─ core.find_installed_path()  检测安装（D盘优先 → 注册表 → 常见目录）
   ├─ core.silent_install()       释放内嵌安装包 → Inno /VERYSILENT /DIR=D:\CountdownDesktop
   ├─ core.launch_countdown()     CountdownDesktop.exe --exam zhongkao|gaokao（DETACHED_PROCESS）
-  └─ core.open_morning_reading() webbrowser.open(https://zztool.free.nf/morning-reading)
+  ├─ core.open_morning_reading() webbrowser.open(https://zztool.free.nf/morning-reading)
+  ├─ core.is_running()           tasklist 检测 CountdownDesktop.exe 是否在运行
+  └─ core.kill_countdown()       taskkill /F /IM CountdownDesktop.exe /T + SystemParametersInfo 刷新桌面
 内嵌资源：_MEIPASS/installer/CountdownDesktop_Setup_3.2.0.0.exe
 ```
 
@@ -74,6 +77,12 @@ Countdown Desktop 安装包本身 `PrivilegesRequired=lowest`，无需管理员�
 
 7. **DETACHED_PROCESS**：如果用普通 `subprocess.Popen`，启动器退出时子进程可能收到 CTRL_CLOSE_EVENT。使用 `creationflags=DETACHED_PROCESS` 让子进程完全独立。
 8. **单实例接管**：Countdown Desktop 自己处理单实例，启动器无需检测是否已在运行，直接带参启动即可切换类型。
+
+### 一键关闭（v1.0.0.1）
+
+9. **taskkill /F /T**：Countdown Desktop 主进程会 spawn 壁纸/屏保播放器子进程，必须用 `/T` 终止进程树，否则播放器残留导致壁纸窗口挂在桌面。`/F` 强制终止，不等待优雅退出（学校场景追求可靠关闭）。
+10. **桌面刷新**：强杀后壁纸嵌入窗口可能残留，调用 `SystemParametersInfoW(SPI_SETDESKWALLPAPER)` 触发 explorer 重绘桌面，确保恢复原壁纸。
+11. **未运行时提示**：`is_running()` 先用 tasklist 检测，未运行时点击「关闭倒计时」弹出提示而非静默成功。
 
 ## 五、项目结构
 
@@ -123,7 +132,7 @@ git push origin main v1.0.0.0
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.0.0.0。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.0.0.1。
 
 ## 九、已知限制 / 待办
 

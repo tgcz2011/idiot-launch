@@ -11,6 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.core import (
     find_installed_path,
     resource_path,
+    is_running,
+    kill_countdown,
     INSTALL_DIR,
     INSTALL_EXE,
     EXE_NAME,
@@ -50,9 +52,26 @@ def test_installer_file_exists():
         print(f"⚠ test_installer_file_exists: 安装包不存在（构建前需先下载）: {p}")
 
 
+def test_is_running_no_crash():
+    result = is_running()
+    assert isinstance(result, bool)
+    print(f"✓ test_is_running_no_crash passed: {result}")
+
+
+def test_kill_countdown_no_crash():
+    # 不实际运行时调用应返回 0，不抛异常
+    if not is_running():
+        result = kill_countdown()
+        print(f"✓ test_kill_countdown_no_crash passed: killed={result}")
+    else:
+        print("⚠ test_kill_countdown_no_crash: Countdown Desktop 正在运行，跳过实际终止")
+
+
 if __name__ == "__main__":
     test_constants()
     test_resource_path()
     test_find_installed_no_crash()
     test_installer_file_exists()
+    test_is_running_no_crash()
+    test_kill_countdown_no_crash()
     print("\n全部测试通过！")

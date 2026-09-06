@@ -1,10 +1,11 @@
 # Idiot Launch（傻瓜启动器）
 
-专为学校电脑设计的一键启动器：三个大按钮，点击即用，零配置。
+专为学校电脑设计的一键启动器：四个大按钮，点击即用，零配置。
 
 - **中考倒计时** — 自动启动 Countdown Desktop（`--exam zhongkao`），未安装则静默安装到 D 盘
 - **高考倒计时** — 自动启动 Countdown Desktop（`--exam gaokao`），未安装则静默安装到 D 盘
 - **早晚读** — 在默认浏览器打开 `https://zztool.free.nf/morning-reading`
+- **关闭倒计时** — 一键强制退出所有 Countdown Desktop 进程（含壁纸/屏保播放器），恢复桌面
 
 内嵌 Countdown Desktop v3.2.0.0 安装包，首次使用自动安装，无需手动下载。
 
@@ -25,10 +26,11 @@
 ## 使用方法
 
 1. 从 [Releases](https://github.com/tgcz2011/idiot-launch/releases) 下载 `IdiotLaunch.exe`。
-2. 双击运行，出现三个大按钮：
+2. 双击运行，出现四个大按钮：
    - 点击「中考倒计时」→ 自动安装（首次）并启动中考倒计时壁纸
    - 点击「高考倒计时」→ 自动安装（首次）并启动高考倒计时壁纸
    - 点击「早晚读」→ 浏览器打开早晚读网页
+   - 点击「关闭倒计时」→ 强制退出所有 Countdown Desktop 进程，恢复桌面
 3. 状态栏实时显示 Countdown Desktop 安装状态。
 
 > 首次点击倒计时按钮时，会自动执行静默安装（约 10-30 秒），期间按钮暂时不可用，安装完成后自动启动。
@@ -43,7 +45,8 @@
     │   └─ 不存在 → 释放内嵌安装包 → /VERYSILENT /DIR=D:\CountdownDesktop 静默安装
     │
     ├─ 倒计时按钮 → CountdownDesktop.exe --exam zhongkao|gaokao
-    └─ 早晚读按钮 → webbrowser.open(https://zztool.free.nf/morning-reading)
+    ├─ 早晚读按钮 → webbrowser.open(https://zztool.free.nf/morning-reading)
+    └─ 关闭倒计时 → taskkill /F /IM CountdownDesktop.exe /T + 桌面刷新
 ```
 
 - **安装检测**：优先检查 `D:\CountdownDesktop`，其次扫描注册表卸载信息与常见安装目录。

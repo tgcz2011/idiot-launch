@@ -175,3 +175,60 @@ def launch_countdown(exam_type: str) -> None:
 def open_morning_reading() -> None:
     """在默认浏览器中打开早晚读网页。"""
     webbrowser.open(MORNING_READING_URL)
+
+
+def is_running() -> bool:
+    """检测 Countdown Desktop 是否正在运行。"""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq CountdownDesktop.exe", "/NH"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return "CountdownDesktop.exe" in result.stdout
+    except Exception:
+        return False
+
+
+def kill_countdown() -> int:
+    """
+    一键关闭所有 Countdown Desktop 进程（主进程 + 壁纸/屏保播放器子进程）。
+    使用 taskkill /F /T 强制终止进程树。
+    返回被终止的进程数（0 表示没有在运行）。
+    """
+    killed = 0
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/IM", "CountdownDesktop.exe", "/T"],
+            capture_output=True, text=True, timeout=15,
+        )
+        # taskkill 退出码 0 = 至少终止了一个进程；128 = 未找到进程
+        if result.returncode == 0:
+            # 统计成功终止的行数（每行包含一个 PID）
+            output = result.stdout
+            killed = output.count("PID")
+            if killed == 0:
+                # 某些语言版本输出格式不同，有输出且退出码 0 即算成功
+                killed = 1 if output.strip() else 0
+    except Exception:
+        pass
+
+    # 开发模式下可能有 python.exe 运行 player 子进程，一并清理
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/FI", "WINDOWTITLE eq *player*"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        pass
+
+    # 刷新桌面，确保壁纸窗口被清除
+    try:
+        import ctypes
+        # 触发桌面重绘
+        ctypes.windll.user32.UpdateWindow(0)
+        spi_setdeskwallpaper = 0x0014
+        ctypes.windll.user32.SystemParametersInfoW(spi_setdeskwallpaper, 0, None, 0)
+    except Exception:
+        pass
+
+    return killed
