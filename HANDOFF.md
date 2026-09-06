@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-06（v1.1.0.0，自动更新体系：内嵌保底+后台daemon下载+倒计时退出时静默安装）
+> 最后更新: 2026-09-06（v1.1.1.0，新增安装进度弹窗，防止教室电脑上误以为卡死）
 
 ## 一、需求（用户原始要求）
 
@@ -21,6 +21,7 @@
 | **v1.0.0.2** | 同上 | 关闭按钮改用 Countdown Desktop 命名事件 `CountdownDesktop_Quit` 优雅退出（不再 taskkill 强杀）；未运行时按钮自动变灰禁用（每 1.5s 轮询互斥量 `CountdownDesktop_Single`）；HoverButton 新增 disabled 视觉态（d 升） |
 | **v1.0.0.3** | 同上 | 内嵌 Countdown Desktop 安装包从 v3.2.0.0 升级至 v3.2.1.1；同步更新 core.py/spec/build.ps1/release.yml/README/HANDOFF 中所有版本引用（d 升） |
 | **v1.1.0.0** | 同上 | 完整自动更新体系（c 升）：①启动时版本检测，本地旧于内嵌则删目录重装；②关闭窗口启动 `--daemon` 无窗口守护进程，查 GitHub 最新版并后台下载（6h 间隔、10min 超时）；③下载完成后等 Countdown Desktop 退出，删旧目录静默装新版；④启动时补装待更新；⑤状态存 `D:\CountdownDesktop_Updates\state.json` 不被冰点还原清除；⑥`EMBEDDED_VERSION` 常量统一管理内嵌版本，INSTALLER_REL 自动拼接 |
+| **v1.1.1.0** | 同上 | 新增安装进度弹窗 ProgressDialog（c 升）：置顶、无关闭按钮、居中、indeterminate 进度条动画；所有耗时操作（安装/启动/关闭/更新）均弹窗提示，防止教室电脑性能差导致老师误以为卡死；弹窗文字按操作类型区分（首次安装提示 10-30 秒）；启动时待更新安装也弹窗 |
 
 ## 三、架构
 
@@ -157,7 +158,7 @@ git push origin main v1.0.0.0
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.1.0.0。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.1.1.0。
 
 ## 九、已知限制 / 待办
 

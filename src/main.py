@@ -24,7 +24,7 @@ from src.core import (
     APP_NAME,
 )
 
-VERSION = "1.1.0.0"
+VERSION = "1.1.1.0"
 
 # ── 配色 ──
 BG_COLOR = "#f5f7fa"
@@ -102,6 +102,83 @@ class HoverButton(tk.Canvas):
         else:
             self._draw(BTN_DISABLED, text_color=BTN_DISABLED_TEXT)
             self.configure(cursor="arrow")
+
+
+class ProgressDialog:
+    """
+    安装/启动进度弹窗：置顶、无关闭按钮、居中显示，带不确定进度条。
+    防止老师在教室电脑上因安装耗时较长而误以为软件卡死。
+    """
+
+    def __init__(self, parent, title: str, subtitle: str = "",
+                 hint: str = "教室电脑性能有限，请耐心等待，请勿关闭"):
+        self.parent = parent
+
+        self.win = tk.Toplevel(parent)
+        self.win.overrideredirect(True)  # 无标题栏，防止误关
+        self.win.attributes("-topmost", True)
+        self.win.configure(bg="#ffffff")
+
+        # 窗口尺寸与居中
+        w, h = 380, 170
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+        # 顶部色条
+        top_bar = tk.Frame(self.win, bg="#2980b9", height=6)
+        top_bar.pack(fill="x", side="top")
+
+        # 内容区
+        content = tk.Frame(self.win, bg="#ffffff", padx=30, pady=20)
+        content.pack(fill="both", expand=True)
+
+        # 标题
+        self.title_label = tk.Label(
+            content, text=title, font=("Microsoft YaHei UI", 16, "bold"),
+            bg="#ffffff", fg="#2c3e50",
+        )
+        self.title_label.pack(anchor="w")
+
+        # 副标题
+        self.subtitle_label = tk.Label(
+            content, text=subtitle, font=("Microsoft YaHei UI", 10),
+            bg="#ffffff", fg="#7f8c8d",
+        )
+        self.subtitle_label.pack(anchor="w", pady=(4, 0))
+
+        # 进度条（不确定模式，来回滚动）
+        self.progress = ttk.Progressbar(
+            content, mode="indeterminate", length=320, maximum=100,
+        )
+        self.progress.pack(pady=(18, 0), fill="x")
+        self.progress.start(12)  # 动画速度（ms/帧）
+
+        # 底部提示
+        if hint:
+            tk.Label(
+                content, text=hint, font=("Microsoft YaHei UI", 8),
+                bg="#ffffff", fg="#bdc3c7",
+            ).pack(anchor="w", pady=(10, 0))
+
+        self.win.lift()
+        self.win.focus_force()
+
+    def update_text(self, title: str, subtitle: str = ""):
+        """动态更新弹窗标题和副标题。"""
+        self.title_label.config(text=title)
+        if subtitle:
+            self.subtitle_label.config(text=subtitle)
+
+    def close(self):
+        """关闭弹窗。"""
+        try:
+            self.progress.stop()
+            self.win.destroy()
+        except Exception:
+            pass
 
 
 class IdiotLaunchApp:
@@ -205,8 +282,23 @@ class IdiotLaunchApp:
         """启动时检查：如果有已下载的待安装更新且 Countdown Desktop 未运行，立即静默安装。"""
         def check():
             if has_pending_update() and not is_running():
+                dialog = [None]
+
+                def show():
+                    dialog[0] = ProgressDialog(
+                        self.root,
+                        "正在更新 Countdown Desktop",
+                        "检测到新版本，正在静默安装...",
+                    )
+
+                def close():
+                    if dialog[0]:
+                        dialog[0].close()
+
+                self.root.after(0, show)
                 self.root.after(0, lambda: self.status_var.set("⏳ 正在应用待安装的更新..."))
                 ok = install_pending_if_idle()
+                self.root.after(0, close)
                 if ok:
                     self.root.after(0, lambda: self.status_var.set("✓ Countdown Desktop 已更新到最新版"))
                 else:
@@ -244,13 +336,26 @@ class IdiotLaunchApp:
         else:
             self.btn_kill._draw(BTN_DISABLED, text_color=BTN_DISABLED_TEXT)
 
-    def _run_with_loading(self, action_func, success_msg):
+    def _run_with_loading(self, action_func, success_msg,
+                          title="正在处理", subtitle="请稍候..."):
         """
-        在后台线程执行操作，期间禁用所有按钮并显示加载状态，完成后恢复。
+        在后台线程执行操作，期间禁用所有按钮并显示进度弹窗，完成后恢复。
+        进度弹窗置顶且无关闭按钮，防止老师误以为软件卡死。
         """
+        dialog = [None]  # 用列表包裹以便在闭包中修改
+
+        def show_dialog():
+            dialog[0] = ProgressDialog(self.root, title, subtitle)
+
+        def close_dialog():
+            if dialog[0]:
+                dialog[0].close()
+                dialog[0] = None
+
         def worker():
             self.root.after(0, lambda: self._set_all_buttons(False))
-            self.root.after(0, lambda: self.status_var.set("⏳ 正在处理，请稍候..."))
+            self.root.after(0, show_dialog)
+            self.root.after(0, lambda: self.status_var.set("⏳ " + title))
             try:
                 action_func()
                 self.root.after(0, lambda: self.status_var.set(success_msg))
@@ -259,6 +364,7 @@ class IdiotLaunchApp:
                 self.root.after(0, lambda: messagebox.showerror("操作失败", err))
                 self.root.after(0, lambda: self.status_var.set("✗ 操作失败"))
             finally:
+                self.root.after(0, close_dialog)
                 self.root.after(0, lambda: self._set_all_buttons(True))
                 self.root.after(0, self._refresh_install_status)
 
@@ -279,24 +385,32 @@ class IdiotLaunchApp:
         self._run_with_loading(
             lambda: launch_countdown("zhongkao"),
             "✓ 中考倒计时已启动",
+            title="正在启动中考倒计时",
+            subtitle="首次使用需自动安装，教室电脑约需 10-30 秒",
         )
 
     def on_gaokao(self):
         self._run_with_loading(
             lambda: launch_countdown("gaokao"),
             "✓ 高考倒计时已启动",
+            title="正在启动高考倒计时",
+            subtitle="首次使用需自动安装，教室电脑约需 10-30 秒",
         )
 
     def on_reading(self):
         self._run_with_loading(
             open_morning_reading,
             "✓ 早晚读网页已在浏览器中打开",
+            title="正在打开早晚读",
+            subtitle="正在调用默认浏览器...",
         )
 
     def on_kill(self):
         self._run_with_loading(
             lambda: self._do_quit(),
             "✓ 倒计时已关闭",
+            title="正在关闭倒计时",
+            subtitle="正在通知 Countdown Desktop 退出...",
         )
 
     def _do_quit(self):
