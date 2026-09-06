@@ -9,6 +9,18 @@
 
 内嵌 Countdown Desktop v3.2.1.1 安装包，首次使用自动安装，无需手动下载。
 
+## 自动更新机制
+
+Countdown Desktop 会频繁更新，本启动器内置完整的自动更新体系，兼顾开箱即用与后台静默更新：
+
+1. **内嵌保底版本**：每个 Idiot Launch 发行版内嵌一个 Countdown Desktop 安装包，首次使用开箱即用，无需等待下载。
+2. **关闭后后台检查**：关闭启动器窗口时，自动启动无窗口守护进程（`IdiotLaunch.exe --daemon`），查询 GitHub 最新版并慢慢下载更新包（GitHub 不稳定时给足超时，失败下次重试）。
+3. **倒计时退出时静默更新**：更新包下载完成后，守护进程等待 Countdown Desktop 退出；一旦检测到退出，立即删除旧安装目录并静默安装新版，全程无感知。
+4. **启动时补装**：如果守护进程来不及安装（如倒计时一直开着），下次启动启动器时若检测到已下载的更新包且倒计时未运行，会立即补装。
+5. **状态持久化在 D 盘**：`D:\CountdownDesktop_Updates\state.json` 记录检查时间、待安装版本和下载状态，冰点还原不影响。
+
+> 检查更新间隔为 6 小时，避免频繁请求 GitHub；下载超时 10 分钟，适配不稳定网络。
+
 ## 为什么需要这个启动器？
 
 学校电脑普遍安装**冰点还原（Deep Freeze）**，C 盘每次重启后恢复原状：
@@ -30,7 +42,7 @@
    - 点击「中考倒计时」→ 自动安装（首次）并启动中考倒计时壁纸
    - 点击「高考倒计时」→ 自动安装（首次）并启动高考倒计时壁纸
    - 点击「早晚读」→ 浏览器打开早晚读网页
-   - 点击「关闭倒计时」→ 强制退出所有 Countdown Desktop 进程，恢复桌面
+   - 点击「关闭倒计时」→ 通知 Countdown Desktop 优雅退出，恢复桌面
 3. 状态栏实时显示 Countdown Desktop 安装状态。
 
 > 首次点击倒计时按钮时，会自动执行静默安装（约 10-30 秒），期间按钮暂时不可用，安装完成后自动启动。
@@ -51,9 +63,11 @@
 ```
 
 - **安装检测**：优先检查 `D:\CountdownDesktop`，其次扫描注册表卸载信息与常见安装目录。
-- **静默安装**：使用 Inno Setup 标准参数 `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=D:\CountdownDesktop`。
-- **带参启动**：Countdown Desktop v3.2.1.1 支持 `--exam` 参数单次覆盖倒计时类型，内置单实例接管，重复点击自动切换。
+- **版本检测升级**：启动时读取本地版本，若低于内嵌版本则删除旧目录后用内嵌包重装。
+- **静默安装**：使用 Inno Setup 标准参数 `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=D:\CountdownDesktop`；安装前自动 `shutil.rmtree` 删除旧目录。
+- **带参启动**：Countdown Desktop 支持 `--exam` 参数单次覆盖倒计时类型，内置单实例接管，重复点击自动切换。
 - **进程独立**：使用 `DETACHED_PROCESS` 启动 Countdown Desktop，关闭启动器不影响倒计时运行。
+- **自动更新**：关闭窗口时启动 `--daemon` 守护进程，后台查 GitHub 最新版、下载、等倒计时退出后静默安装。
 
 ## 开发与构建
 
@@ -76,13 +90,13 @@ python -m venv .venv
 
 ```
 idiot-launch/
-├── run.py                  入口
+├── run.py                  入口（无参=GUI，--daemon=后台更新守护进程）
 ├── src/
 │   ├── __init__.py         资源路径解析
-│   ├── core.py             核心逻辑：安装检测/静默安装/带参启动/打开网页
-│   └── main.py             GUI（tkinter，三大按钮 + 状态栏）
+│   ├── core.py             核心逻辑：安装检测/版本比较/静默安装/带参启动/优雅退出/自动更新
+│   └── main.py             GUI（tkinter，四大按钮 + 状态栏 + 关闭时启动daemon）
 ├── installer/              Countdown Desktop 安装包（构建时下载，不入库）
-├── tools/                  辅助脚本
+├── tools/                  辅助脚本（测试等）
 ├── build.ps1               本地一键构建
 ├── IdiotLaunch.spec        PyInstaller 规格（内嵌安装包）
 ├── requirements.txt        依赖（仅 pyinstaller）

@@ -3,6 +3,7 @@ main.py — Idiot Launch 主入口与 GUI
 四个大按钮：中考倒计时 / 高考倒计时 / 早晚读 / 关闭倒计时
 傻瓜式操作，无需任何配置。
 关闭倒计时按钮：Countdown Desktop 未运行时自动变灰不可点击。
+关闭窗口后启动后台守护进程，自动检查并下载 Countdown Desktop 更新。
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -16,10 +17,14 @@ from src.core import (
     quit_countdown,
     find_installed_path,
     is_running,
+    start_daemon,
+    install_pending_if_idle,
+    has_pending_update,
+    EMBEDDED_VERSION,
     APP_NAME,
 )
 
-VERSION = "1.0.0.3"
+VERSION = "1.1.0.0"
 
 # ── 配色 ──
 BG_COLOR = "#f5f7fa"
@@ -116,8 +121,11 @@ class IdiotLaunchApp:
 
         self._loading = False  # 是否处于加载中（所有按钮禁用）
         self._build_ui()
+        # 关闭窗口时启动后台守护进程（检查更新），然后退出 GUI
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._refresh_install_status()
         self._start_running_monitor()
+        self._check_pending_update_on_start()
 
     def _build_ui(self):
         # 标题
@@ -170,7 +178,7 @@ class IdiotLaunchApp:
         status.pack(side="bottom", pady=15)
 
         version_label = tk.Label(
-            self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v3.2.1.1",
+            self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v{EMBEDDED_VERSION}",
             font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
         )
         version_label.place(relx=0.5, rely=0.97, anchor="s")
@@ -183,6 +191,26 @@ class IdiotLaunchApp:
                 self.status_var.set(f"✓ {APP_NAME} 已安装：{path}")
             else:
                 self.status_var.set(f"⚠ {APP_NAME} 未安装，点击按钮将自动安装到 D 盘")
+        threading.Thread(target=check, daemon=True).start()
+
+    def _on_close(self):
+        """窗口关闭时：启动后台守护进程检查更新，然后退出 GUI。"""
+        try:
+            start_daemon()
+        except Exception:
+            pass
+        self.root.destroy()
+
+    def _check_pending_update_on_start(self):
+        """启动时检查：如果有已下载的待安装更新且 Countdown Desktop 未运行，立即静默安装。"""
+        def check():
+            if has_pending_update() and not is_running():
+                self.root.after(0, lambda: self.status_var.set("⏳ 正在应用待安装的更新..."))
+                ok = install_pending_if_idle()
+                if ok:
+                    self.root.after(0, lambda: self.status_var.set("✓ Countdown Desktop 已更新到最新版"))
+                else:
+                    self.root.after(0, self._refresh_install_status)
         threading.Thread(target=check, daemon=True).start()
 
     def _start_running_monitor(self):

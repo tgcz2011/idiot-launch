@@ -1,5 +1,5 @@
 """
-core.py — 核心逻辑：检测安装、静默安装、带参启动 Countdown Desktop、打开网页。
+core.py — 核心逻辑：检测安装、静默安装、带参启动、优雅退出、自动更新。
 所有路径与常量集中在此，便于维护。
 """
 import os
@@ -7,46 +7,83 @@ import sys
 import subprocess
 import winreg
 import time
+import json
+import shutil
 import webbrowser
+import urllib.request
+import ssl
 from pathlib import Path
 
 # ── 常量 ──────────────────────────────────────────────
 APP_NAME = "Countdown Desktop"
 EXE_NAME = "CountdownDesktop.exe"
+# 内嵌的 Countdown Desktop 版本（随 idiot-launch 发布一起更新）
+EMBEDDED_VERSION = "3.2.1.1"
 # 学校电脑 C 盘有冰点还原，统一装到 D 盘
 INSTALL_DIR = r"D:\CountdownDesktop"
 INSTALL_EXE = os.path.join(INSTALL_DIR, EXE_NAME)
 # 内嵌安装包在打包后的相对路径
-INSTALLER_REL = os.path.join("installer", "CountdownDesktop_Setup_3.2.1.1.exe")
+INSTALLER_REL = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
 # 早晚读网页
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
 # 静默安装超时（秒），Inno 安装含 WebView2 可能较慢
 INSTALL_TIMEOUT = 300
+# 自动更新相关
+UPDATE_DIR = r"D:\CountdownDesktop_Updates"
+STATE_FILE = os.path.join(UPDATE_DIR, "state.json")
+GITHUB_API_URL = "https://api.github.com/repos/tgcz2011/countdown-desktop/releases/latest"
+# 两次检查更新的最小间隔（秒），避免频繁请求 GitHub
+CHECK_INTERVAL = 6 * 3600  # 6 小时
+# 下载超时（秒），GitHub 不稳定时给足时间
+DOWNLOAD_TIMEOUT = 600
 
 
+# ── 资源路径 ──────────────────────────────────────────
 def resource_path(relative: str) -> str:
     """打包后资源路径解析。"""
     if getattr(sys, "frozen", False):
         base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     else:
-        # 开发模式：项目根目录
         base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, relative)
 
 
+# ── 版本号工具 ────────────────────────────────────────
+def parse_version(v: str) -> tuple:
+    """将 'a.b.c.d' 转为整数元组用于比较。容错处理前缀 'v' 和多余段。"""
+    v = v.strip().lstrip("vV")
+    parts = []
+    for p in v.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    while len(parts) < 4:
+        parts.append(0)
+    return tuple(parts[:4])
+
+
+def compare_versions(v1: str, v2: str) -> int:
+    """比较版本号：返回 -1(v1<v2), 0(相等), 1(v1>v2)。"""
+    a, b = parse_version(v1), parse_version(v2)
+    if a < b:
+        return -1
+    if a > b:
+        return 1
+    return 0
+
+
+# ── 安装检测 ──────────────────────────────────────────
 def find_installed_path() -> str | None:
     """
     检测 Countdown Desktop 是否已安装。
     优先级：1) D:\\CountdownDesktop（我们指定的路径）
             2) 注册表卸载信息中的 InstallLocation
             3) 常见用户目录
-    返回可执行文件完整路径，未找到返回 None。
     """
-    # 1) 我们指定的 D 盘路径
     if os.path.isfile(INSTALL_EXE):
         return INSTALL_EXE
 
-    # 2) 查注册表（HKCU + HKLM，32/64 位视图）
     reg_paths = [
         (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
         (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
@@ -82,7 +119,6 @@ def find_installed_path() -> str | None:
         except OSError:
             continue
 
-    # 3) 常见用户安装目录（Inno lowest 权限默认 {autopf}）
     candidates = [
         os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "CountdownDesktop", EXE_NAME),
         os.path.join(os.environ.get("PROGRAMFILES", ""), "CountdownDesktop", EXE_NAME),
@@ -91,63 +127,135 @@ def find_installed_path() -> str | None:
     for c in candidates:
         if c and os.path.isfile(c):
             return c
-
     return None
 
 
-def silent_install() -> bool:
+def get_installed_version() -> str | None:
     """
-    使用内嵌安装包静默安装 Countdown Desktop 到 D 盘。
-    Inno Setup 标准参数：
-      /VERYSILENT  — 完全无界面
-      /NORESTART   — 不重启
-      /DIR=...     — 指定安装目录
-      /SUPPRESSMSGBOXES — 抑制所有消息框
-    返回 True 安装成功（或已存在），False 失败。
+    读取已安装 Countdown Desktop 的版本号。
+    优先从注册表卸载信息的 DisplayVersion 读取，回退到 exe 文件版本。
     """
-    installer = resource_path(INSTALLER_REL)
-    if not os.path.isfile(installer):
-        raise FileNotFoundError(f"内嵌安装包不存在: {installer}")
+    # 1) 注册表
+    reg_paths = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    for root, subkey in reg_paths:
+        try:
+            with winreg.OpenKey(root, subkey) as key:
+                idx = 0
+                while True:
+                    try:
+                        app_name = winreg.EnumKey(key, idx)
+                        idx += 1
+                        if "countdown" not in app_name.lower():
+                            continue
+                        with winreg.OpenKey(key, app_name) as app_key:
+                            try:
+                                ver, _ = winreg.QueryValueEx(app_key, "DisplayVersion")
+                                if ver:
+                                    return ver
+                            except OSError:
+                                pass
+                    except OSError:
+                        break
+        except OSError:
+            continue
 
-    # 确保 D 盘存在
+    # 2) 从 exe 文件版本信息读取
+    exe = find_installed_path()
+    if exe and os.path.isfile(exe):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            size = ctypes.windll.version.GetFileVersionInfoSizeW(exe, None)
+            if size:
+                buf = ctypes.create_string_buffer(size)
+                if ctypes.windll.version.GetFileVersionInfoW(exe, 0, size, buf):
+                    trans = ctypes.c_uint()
+                    tlen = ctypes.c_uint()
+                    ctypes.windll.version.VerQueryValueW(
+                        buf, r"\VarFileInfo\Translation",
+                        ctypes.byref(trans), ctypes.byref(tlen))
+                    lang = trans.value & 0xFFFF
+                    cp = (trans.value >> 16) & 0xFFFF
+                    sub = f"\\StringFileInfo\\{lang:04x}{cp:04x}\\FileVersion"
+                    res = ctypes.c_wchar_p()
+                    rlen = ctypes.c_uint()
+                    if ctypes.windll.version.VerQueryValueW(buf, sub, ctypes.byref(res), ctypes.byref(rlen)):
+                        return res.value
+        except Exception:
+            pass
+    return None
+
+
+# ── 安装 / 卸载 ───────────────────────────────────────
+def remove_install_dir() -> bool:
+    """删除整个安装目录 D:\\CountdownDesktop（更新前清理旧版）。"""
+    if not os.path.isdir(INSTALL_DIR):
+        return True
+    try:
+        shutil.rmtree(INSTALL_DIR, ignore_errors=True)
+        # 验证删除
+        if os.path.isdir(INSTALL_DIR):
+            # 二次尝试（可能有文件句柄延迟释放）
+            time.sleep(1)
+            shutil.rmtree(INSTALL_DIR, ignore_errors=True)
+        return not os.path.isdir(INSTALL_DIR)
+    except Exception:
+        return False
+
+
+def install_from_path(installer_path: str) -> bool:
+    """
+    使用指定安装包静默安装到 D 盘。
+    安装前自动删除旧安装目录（确保干净升级）。
+    """
+    if not os.path.isfile(installer_path):
+        raise FileNotFoundError(f"安装包不存在: {installer_path}")
     if not os.path.isdir("D:\\"):
-        raise RuntimeError("D 盘不存在，无法安装到 D 盘。请检查磁盘。")
+        raise RuntimeError("D 盘不存在，无法安装。")
+
+    # 安装前删除旧目录（用户要求：发现旧版时删除原文件夹）
+    remove_install_dir()
 
     args = [
-        installer,
+        installer_path,
         "/VERYSILENT",
         "/NORESTART",
         "/SUPPRESSMSGBOXES",
         f"/DIR={INSTALL_DIR}",
     ]
-
-    proc = subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        timeout=INSTALL_TIMEOUT,
-    )
-    # Inno Setup 退出码：0=成功，其他=失败
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=INSTALL_TIMEOUT)
     if proc.returncode != 0:
         raise RuntimeError(
             f"安装失败（退出码 {proc.returncode}）\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
         )
-
-    # 安装后验证
-    for _ in range(10):
+    for _ in range(15):
         if os.path.isfile(INSTALL_EXE):
             return True
         time.sleep(1)
     return os.path.isfile(INSTALL_EXE)
 
 
+def silent_install() -> bool:
+    """使用内嵌安装包静默安装。"""
+    installer = resource_path(INSTALLER_REL)
+    if not os.path.isfile(installer):
+        raise FileNotFoundError(f"内嵌安装包不存在: {installer}")
+    return install_from_path(installer)
+
+
 def ensure_installed() -> str:
-    """
-    确保 Countdown Desktop 已安装，返回可执行文件路径。
-    未安装则自动静默安装。
-    """
+    """确保 Countdown Desktop 已安装且版本不低于内嵌版本，返回可执行文件路径。"""
     path = find_installed_path()
     if path:
+        local_ver = get_installed_version()
+        # 本地版本低于内嵌版本 → 删除旧版，用内嵌包重装
+        if local_ver and compare_versions(local_ver, EMBEDDED_VERSION) < 0:
+            silent_install()
+            path = find_installed_path()
         return path
     silent_install()
     path = find_installed_path()
@@ -156,20 +264,12 @@ def ensure_installed() -> str:
     return path
 
 
+# ── 启动 / 退出 ───────────────────────────────────────
 def launch_countdown(exam_type: str) -> None:
-    """
-    带参数启动 Countdown Desktop。
-    exam_type: 'gaokao'（高考）或 'zhongkao'（中考）
-    Countdown Desktop 内置单实例接管，重复启动会自动切换倒计时类型。
-    """
+    """带参数启动 Countdown Desktop。"""
     exe = ensure_installed()
-    # 使用 DETACHED_PROCESS 让子进程独立于启动器，启动器可关闭而不影响倒计时
     creationflags = 0x00000008  # DETACHED_PROCESS
-    subprocess.Popen(
-        [exe, "--exam", exam_type],
-        creationflags=creationflags,
-        close_fds=True,
-    )
+    subprocess.Popen([exe, "--exam", exam_type], creationflags=creationflags, close_fds=True)
 
 
 def open_morning_reading() -> None:
@@ -178,18 +278,16 @@ def open_morning_reading() -> None:
 
 
 def is_running() -> bool:
-    """检测 Countdown Desktop 是否正在运行（通过命名互斥量，比 tasklist 更可靠）。"""
+    """检测 Countdown Desktop 是否正在运行（命名互斥量）。"""
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        # 尝试创建互斥量，若已存在说明有实例在运行
         handle = kernel32.CreateMutexW(None, False, "CountdownDesktop_Single")
-        already_exists = kernel32.GetLastError() == 183  # ERROR_ALREADY_EXISTS
+        already_exists = kernel32.GetLastError() == 183
         if handle:
             kernel32.CloseHandle(handle)
         return already_exists
     except Exception:
-        # 回退到 tasklist 检测
         try:
             result = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq CountdownDesktop.exe", "/NH"],
@@ -201,39 +299,27 @@ def is_running() -> bool:
 
 
 def quit_countdown() -> bool:
-    """
-    优雅关闭 Countdown Desktop：通过命名事件通知运行中的实例自行退出。
-    Countdown Desktop 运行时会创建命名事件 CountdownDesktop_Quit 并每 250ms 轮询；
-    收到信号后调用 quit()：停壁纸/屏保、恢复桌面、退托盘，全程优雅不强制。
-    流程：检测是否在运行 → 打开并触发退出事件 → 轮询等待互斥量释放（最多8秒）。
-    返回 True 成功退出，False 超时未退出。
-    """
+    """通过命名事件优雅关闭 Countdown Desktop。"""
     import ctypes
     kernel32 = ctypes.windll.kernel32
-
     MUTEX_NAME = "CountdownDesktop_Single"
     QUIT_EVENT_NAME = "CountdownDesktop_Quit"
     EVENT_MODIFY_STATE = 0x0002
     ERROR_ALREADY_EXISTS = 183
 
-    # 1) 检测是否在运行
     mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
     already_running = kernel32.GetLastError() == ERROR_ALREADY_EXISTS
     if mutex:
         kernel32.CloseHandle(mutex)
     if not already_running:
-        return True  # 本就没在运行，算成功
+        return True
 
-    # 2) 打开退出事件并触发（运行实例的 250ms 轮询定时器会捕获并 quit）
     event_handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, QUIT_EVENT_NAME)
     if not event_handle:
-        # 旧版本可能没有创建退出事件，无法优雅退出
         raise RuntimeError("无法连接 Countdown Desktop 退出通道（可能版本过旧）")
     kernel32.SetEvent(event_handle)
     kernel32.CloseHandle(event_handle)
 
-    # 3) 轮询等待互斥量释放（实例退出后会释放互斥量）
-    import time
     deadline = time.time() + 8.0
     while time.time() < deadline:
         time.sleep(0.25)
@@ -243,5 +329,249 @@ def quit_countdown() -> bool:
             kernel32.CloseHandle(m)
         if released:
             return True
+    return False
 
-    return False  # 超时，实例未退出
+
+# ── 自动更新：状态管理 ────────────────────────────────
+def _ensure_update_dir() -> None:
+    if not os.path.isdir(UPDATE_DIR):
+        os.makedirs(UPDATE_DIR, exist_ok=True)
+
+
+def load_state() -> dict:
+    """读取更新状态文件。"""
+    _ensure_update_dir()
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_state(state: dict) -> None:
+    """写入更新状态文件。"""
+    _ensure_update_dir()
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
+
+
+# ── 自动更新：GitHub 查询 ─────────────────────────────
+def get_latest_version_info() -> dict | None:
+    """
+    查询 GitHub 最新 Release 信息。
+    返回 {"version": "3.2.1.1", "url": "https://...", "size": 12345} 或 None。
+    """
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            GITHUB_API_URL,
+            headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        tag = data.get("tag_name", "")
+        version = tag.lstrip("vV")
+        for asset in data.get("assets", []):
+            name = asset.get("name", "")
+            if name.startswith("CountdownDesktop_Setup_") and name.endswith(".exe"):
+                return {
+                    "version": version,
+                    "url": asset["browser_download_url"],
+                    "size": asset.get("size", 0),
+                    "name": name,
+                }
+        return None
+    except Exception:
+        return None
+
+
+def download_installer(url: str, dest_path: str) -> bool:
+    """
+    下载安装包到指定路径。下载到 .part 临时文件，完成后重命名。
+    GitHub 不稳定时给足超时，失败返回 False（daemon 下次重试）。
+    """
+    _ensure_update_dir()
+    tmp_path = dest_path + ".part"
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(url, headers={"User-Agent": "idiot-launch-updater"})
+        with urllib.request.urlopen(req, timeout=DOWNLOAD_TIMEOUT, context=ctx) as resp:
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+            with open(tmp_path, "wb") as f:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+        # 验证下载完整性（如果有 Content-Length）
+        if total > 0 and downloaded < total:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return False
+        # 下载完成，重命名
+        if os.path.isfile(dest_path):
+            os.remove(dest_path)
+        os.rename(tmp_path, dest_path)
+        return os.path.isfile(dest_path)
+    except Exception:
+        try:
+            if os.path.isfile(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+        return False
+
+
+# ── 自动更新：守护进程逻辑 ────────────────────────────
+def daemon_run() -> int:
+    """
+    后台守护进程主逻辑（无窗口，由 GUI 关闭时启动）。
+    流程：
+      1. 如有已下载的待安装更新 → 等 Countdown Desktop 退出 → 安装 → 退出
+      2. 如距上次检查超过 6 小时 → 查询 GitHub 最新版
+      3. 如有新版 → 下载 → 标记待安装 → 等退出 → 安装 → 退出
+      4. 已是最新 → 直接退出
+    返回 0=正常结束，1=出错。
+    """
+    state = load_state()
+    now = time.time()
+
+    # 1) 检查是否有待安装的更新
+    pending = state.get("pending_installer")
+    pending_ver = state.get("pending_version")
+    if pending and pending_ver and os.path.isfile(pending):
+        local_ver = get_installed_version()
+        # 本地版本已经 >= 待安装版本，说明已更新过，清理状态
+        if local_ver and compare_versions(local_ver, pending_ver) >= 0:
+            state.pop("pending_installer", None)
+            state.pop("pending_version", None)
+            state["download_complete"] = False
+            save_state(state)
+        else:
+            # 等待 Countdown Desktop 退出后安装
+            _wait_and_install(pending, pending_ver, state)
+            return 0
+
+    # 2) 检查是否需要查询更新
+    last_check = state.get("last_check", 0)
+    if now - last_check < CHECK_INTERVAL:
+        # 距上次检查不足 6 小时，直接退出
+        return 0
+
+    # 3) 查询最新版本
+    latest = get_latest_version_info()
+    state["last_check"] = now
+    save_state(state)
+    if not latest:
+        return 0  # 查询失败，下次再试
+
+    local_ver = get_installed_version()
+    # 本地已安装且版本 >= 最新版，无需更新
+    if local_ver and compare_versions(local_ver, latest["version"]) >= 0:
+        return 0
+
+    # 4) 下载新版安装包
+    installer_name = latest.get("name", f"CountdownDesktop_Setup_{latest['version']}.exe")
+    dest = os.path.join(UPDATE_DIR, installer_name)
+    # 如果已下载过同名文件且大小匹配，跳过下载
+    if not (os.path.isfile(dest) and latest.get("size", 0) > 0
+            and os.path.getsize(dest) == latest["size"]):
+        ok = download_installer(latest["url"], dest)
+        if not ok:
+            return 0  # 下载失败，下次重试
+    # 5) 标记待安装，等待退出后安装
+    state["pending_installer"] = dest
+    state["pending_version"] = latest["version"]
+    state["download_complete"] = True
+    save_state(state)
+    _wait_and_install(dest, latest["version"], state)
+    return 0
+
+
+def _wait_and_install(installer_path: str, version: str, state: dict) -> None:
+    """
+    等待 Countdown Desktop 退出（最多等 2 小时），然后静默安装。
+    如果一直不退出（比如用户一直开着），状态保留，下次 daemon 启动时继续。
+    """
+    deadline = time.time() + 2 * 3600  # 最多等 2 小时
+    while time.time() < deadline:
+        if not is_running():
+            break
+        time.sleep(10)
+
+    if is_running():
+        # 还在运行，不装了，状态保留下次处理
+        return
+
+    # 已退出，执行安装
+    try:
+        install_from_path(installer_path)
+        # 安装成功，清理待安装标记
+        state.pop("pending_installer", None)
+        state.pop("pending_version", None)
+        state["download_complete"] = False
+        state["last_check"] = time.time()
+        save_state(state)
+        # 清理已安装的安装包文件（节省空间）
+        try:
+            os.remove(installer_path)
+        except OSError:
+            pass
+    except Exception:
+        pass  # 安装失败，状态保留，下次重试
+
+
+def start_daemon() -> None:
+    """启动后台守护进程（当前 exe 加 --daemon 参数，无窗口）。"""
+    if getattr(sys, "frozen", False):
+        exe = sys.executable
+    else:
+        exe = sys.executable
+        args = [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "run.py"), "--daemon"]
+        creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
+        subprocess.Popen(args, creationflags=creationflags, close_fds=True)
+        return
+    creationflags = 0x00000008 | 0x08000000
+    subprocess.Popen([exe, "--daemon"], creationflags=creationflags, close_fds=True)
+
+
+def has_pending_update() -> bool:
+    """是否有已下载待安装的更新（GUI 启动时可提示）。"""
+    state = load_state()
+    return bool(state.get("pending_installer") and state.get("download_complete")
+                and os.path.isfile(state["pending_installer"]))
+
+
+def install_pending_if_idle() -> bool:
+    """GUI 启动时调用：如果有待安装更新且 Countdown Desktop 未运行，立即安装。"""
+    if not has_pending_update():
+        return False
+    if is_running():
+        return False
+    state = load_state()
+    installer = state.get("pending_installer")
+    version = state.get("pending_version")
+    if not installer or not version:
+        return False
+    try:
+        install_from_path(installer)
+        state.pop("pending_installer", None)
+        state.pop("pending_version", None)
+        state["download_complete"] = False
+        state["last_check"] = time.time()
+        save_state(state)
+        try:
+            os.remove(installer)
+        except OSError:
+            pass
+        return True
+    except Exception:
+        return False

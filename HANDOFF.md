@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-06（v1.0.0.3，内嵌 Countdown Desktop 升级至 v3.2.1.1）
+> 最后更新: 2026-09-06（v1.1.0.0，自动更新体系：内嵌保底+后台daemon下载+倒计时退出时静默安装）
 
 ## 一、需求（用户原始要求）
 
@@ -20,19 +20,28 @@
 | **v1.0.0.1** | 同上 | 新增「关闭倒计时」按钮：taskkill /F /T 终止进程树 + 桌面刷新（d 升） |
 | **v1.0.0.2** | 同上 | 关闭按钮改用 Countdown Desktop 命名事件 `CountdownDesktop_Quit` 优雅退出（不再 taskkill 强杀）；未运行时按钮自动变灰禁用（每 1.5s 轮询互斥量 `CountdownDesktop_Single`）；HoverButton 新增 disabled 视觉态（d 升） |
 | **v1.0.0.3** | 同上 | 内嵌 Countdown Desktop 安装包从 v3.2.0.0 升级至 v3.2.1.1；同步更新 core.py/spec/build.ps1/release.yml/README/HANDOFF 中所有版本引用（d 升） |
+| **v1.1.0.0** | 同上 | 完整自动更新体系（c 升）：①启动时版本检测，本地旧于内嵌则删目录重装；②关闭窗口启动 `--daemon` 无窗口守护进程，查 GitHub 最新版并后台下载（6h 间隔、10min 超时）；③下载完成后等 Countdown Desktop 退出，删旧目录静默装新版；④启动时补装待更新；⑤状态存 `D:\CountdownDesktop_Updates\state.json` 不被冰点还原清除；⑥`EMBEDDED_VERSION` 常量统一管理内嵌版本，INSTALLER_REL 自动拼接 |
 
 ## 三、架构
 
 ```
 IdiotLaunch.exe（单文件，PyInstaller onefile）
-  ├─ tkinter GUI：四个大按钮 + 状态栏
-  ├─ core.find_installed_path()  检测安装（D盘优先 → 注册表 → 常见目录）
-  ├─ core.silent_install()       释放内嵌安装包 → Inno /VERYSILENT /DIR=D:\CountdownDesktop
-  ├─ core.launch_countdown()     CountdownDesktop.exe --exam zhongkao|gaokao（DETACHED_PROCESS）
-  ├─ core.open_morning_reading() webbrowser.open(https://zztool.free.nf/morning-reading)
-  ├─ core.is_running()           互斥量 CountdownDesktop_Single 检测是否在运行（比 tasklist 可靠）
-  └─ core.quit_countdown()       OpenEvent(CountdownDesktop_Quit) + SetEvent → 运行实例自行优雅退出；轮询互斥量释放（8s 超时）
-内嵌资源：_MEIPASS/installer/CountdownDesktop_Setup_3.2.1.1.exe
+  ├─ tkinter GUI：四个大按钮 + 状态栏（关闭窗口→启动 daemon）
+  ├─ core.find_installed_path()    检测安装（D盘优先 → 注册表 → 常见目录）
+  ├─ core.get_installed_version()  读注册表 DisplayVersion / exe 文件版本
+  ├─ core.install_from_path()      删除旧目录 → Inno /VERYSILENT /DIR=D:\CountdownDesktop
+  ├─ core.launch_countdown()       CountdownDesktop.exe --exam zhongkao|gaokao（DETACHED_PROCESS）
+  ├─ core.open_morning_reading()   webbrowser.open(https://zztool.free.nf/morning-reading)
+  ├─ core.is_running()             互斥量 CountdownDesktop_Single 检测是否在运行
+  ├─ core.quit_countdown()         OpenEvent(CountdownDesktop_Quit) + SetEvent → 优雅退出
+  └─ 自动更新（v1.1.0.0）：
+       core.daemon_run()            --daemon 守护进程：查GitHub→下载→等退出→静默安装
+       core.start_daemon()          GUI关闭时启动 IdiotLaunch.exe --daemon（CREATE_NO_WINDOW）
+       core.get_latest_version_info()  GitHub API 查询最新 release
+       core.download_installer()    下载到 D:\CountdownDesktop_Updates\（.part→rename）
+       core.load_state/save_state() state.json 持久化（D盘，不被冰点还原）
+       core.install_pending_if_idle()  GUI启动时补装待更新
+内嵌资源：_MEIPASS/installer/CountdownDesktop_Setup_<EMBEDDED_VERSION>.exe
 ```
 
 ### 安装检测优先级
@@ -87,7 +96,18 @@ Countdown Desktop 安装包本身 `PrivilegesRequired=lowest`，无需管理员�
 11. **退出确认**：SetEvent 后轮询互斥量 `CountdownDesktop_Single`（每 250ms，最多 8s），互斥量释放即说明实例已退出。超时返回 False（不做强杀兜底，遵循用户"不要粗暴"要求）。
 12. **运行状态检测用互斥量不用 tasklist**：`CreateMutexW("CountdownDesktop_Single")` 后 `GetLastError()==183(ERROR_ALREADY_EXISTS)` 即表示有实例在运行，比解析 tasklist 输出更快更可靠。
 13. **按钮变灰机制**：GUI 每 1.5s 后台线程调 `is_running()`，通过 `root.after` 回主线程更新 `btn_kill.set_enabled(running)`。HoverButton 新增 `_enabled` 状态：禁用时绘浅灰 `#bdc3c7`、文字 `#ecf0f1`、cursor=arrow、解绑点击；加载中（`_loading`）时所有按钮统一禁用。
-14. **旧版不支持退出事件**：若运行的是旧版 Countdown Desktop（无 `CountdownDesktop_Quit` 事件），`OpenEventW` 返回 NULL，抛 RuntimeError 提示版本过旧。学校环境统一装 v3.2.1.1 不存在此问题。
+14. **旧版不支持退出事件**：若运行的是旧版 Countdown Desktop（无 `CountdownDesktop_Quit` 事件），`OpenEventW` 返回 NULL，抛 RuntimeError 提示版本过旧。学校环境统一装最新版不存在此问题。
+
+### 自动更新（v1.1.0.0）
+
+15. **三层更新策略**：①内嵌保底版本（开箱即用，不等下载）；②关闭 GUI 后启动 `--daemon` 无窗口进程后台查 GitHub+下载；③下载完等 Countdown Desktop 退出后静默安装。三者结合保证既开箱即用又能自动跟进最新版。
+16. **状态文件放 D 盘**：`D:\CountdownDesktop_Updates\state.json` 记录 last_check / pending_version / pending_installer / download_complete。C 盘冰点还原不影响 D 盘，重启后待安装更新依然有效。
+17. **daemon 生命周期**：GUI 关闭时 `start_daemon()` 用 `DETACHED_PROCESS|CREATE_NO_WINDOW` 启动 `IdiotLaunch.exe --daemon`。daemon 流程：有待安装→等退出→安装→退出；无待安装且距上次检查<6h→直接退出；需检查→查GitHub→有新版→下载→等退出→安装；无新版→退出。最多等 2 小时，超时保留状态下次处理。
+18. **下载容错**：`.part` 临时文件下载，完成后 rename；校验 Content-Length；失败不崩溃，状态保留下次重试。超时 10 分钟适配 GitHub 不稳定。
+19. **安装前删旧目录**：`install_from_path()` 先 `shutil.rmtree(D:\CountdownDesktop)` 再运行 Inno Setup，确保干净升级（用户明确要求"删除原文件夹"）。需确保 Countdown Desktop 未运行（daemon 等退出后才装）。
+20. **版本号比较**：`parse_version()` 容错处理 `v` 前缀和不足 4 段的版本号，`compare_versions()` 返回 -1/0/1。本地版本从注册表 DisplayVersion 读取，回退到 exe 文件版本信息（VerQueryValueW）。
+21. **EMBEDDED_VERSION 单一来源**：core.py 中 `EMBEDDED_VERSION` 常量是内嵌版本的唯一真相，`INSTALLER_REL` 用 f-string 自动拼接文件名。升级内嵌版本只需改这一个常量 + 放新安装包 + 更新 build.ps1/release.yml 的下载 URL。
+22. **启动时补装**：`_check_pending_update_on_start()` 在 GUI 启动时后台检查，若有待安装更新且 Countdown Desktop 未运行，立即安装（daemon 可能因倒计时一直开着没来得及装）。
 
 ## 五、项目结构
 
@@ -137,7 +157,7 @@ git push origin main v1.0.0.0
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.0.0.3。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.1.0.0。
 
 ## 九、已知限制 / 待办
 
