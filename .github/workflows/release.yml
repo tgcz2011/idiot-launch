@@ -1,0 +1,80 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（a.b.c.d）'
+        required: true
+        default: '1.0.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download Countdown Desktop installer
+        shell: pwsh
+        run: |
+          $url = "https://github.com/tgcz2011/countdown-desktop/releases/download/v3.2.0.0/CountdownDesktop_Setup_3.2.0.0.exe"
+          $out = "installer\CountdownDesktop_Setup_3.2.0.0.exe"
+          if (-not (Test-Path "installer")) { New-Item -ItemType Directory -Path installer -Force | Out-Null }
+          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+          $size = (Get-Item $out).Length
+          Write-Host "Installer size: $([math]::Round($size / 1MB, 1)) MB"
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --noconfirm --clean IdiotLaunch.spec
+
+      - name: Verify build artifact
+        shell: pwsh
+        run: |
+          $exe = "dist\IdiotLaunch.exe"
+          if (-not (Test-Path $exe)) { throw "Build artifact not found: $exe" }
+          $size = (Get-Item $exe).Length
+          Write-Host "Artifact size: $([math]::Round($size / 1MB, 1)) MB"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Idiot Launch ${{ github.ref_name }}
+          body: |
+            ## Idiot Launch ${{ github.ref_name }}
+
+            傻瓜式启动器，一键启动中考/高考倒计时或早晚读网页。
+
+            ### 功能
+            - **中考倒计时**：自动检测并启动 Countdown Desktop（`--exam zhongkao`）
+            - **高考倒计时**：自动检测并启动 Countdown Desktop（`--exam gaokao`）
+            - **早晚读**：打开 `https://zztool.free.nf/morning-reading`
+            - 未安装 Countdown Desktop 时自动静默安装到 `D:\CountdownDesktop`
+            - 内嵌 Countdown Desktop v3.2.0.0 安装包
+
+            ### 适用场景
+            学校机房（C 盘冰点还原，安装到 D 盘持久化）
+
+            ### 文件
+            - `IdiotLaunch.exe` — 单文件可执行程序，双击即用
+          files: dist\IdiotLaunch.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
