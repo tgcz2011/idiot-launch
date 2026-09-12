@@ -38,7 +38,7 @@ CHECK_INTERVAL = 6 * 3600  # 6 小时
 DOWNLOAD_TIMEOUT = 600
 
 # ── Idiot Launch 自我更新 ─────────────────────────────
-LAUNCHER_VERSION = "1.2.0.0"
+LAUNCHER_VERSION = "1.2.0.1"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
 # 合法 IdiotLaunch.exe 的最小体积（内嵌约 37MB 安装包 + Python 运行时）
@@ -263,6 +263,8 @@ def ensure_installed() -> str:
         if local_ver and compare_versions(local_ver, EMBEDDED_VERSION) < 0:
             silent_install()
             path = find_installed_path()
+            if not path:
+                raise RuntimeError("重装完成后仍未找到 CountdownDesktop.exe（可能安装较慢，请重试）")
         return path
     silent_install()
     path = find_installed_path()
@@ -452,6 +454,9 @@ def daemon_run() -> int:
 
     # 0) 检查 Idiot Launch 自身更新（仅下载，替换在下次启动时完成）
     _check_and_download_launcher_update()
+    # 刷新 state：_check_and_download_launcher_update 内部修改并保存了 state，
+    # 必须重新加载，否则后续 save_state(state) 会用旧变量覆盖丢失 launcher 更新状态
+    state = load_state()
 
     # 1) 检查是否有待安装的更新
     pending = state.get("pending_installer")
@@ -522,7 +527,10 @@ def _wait_and_install(installer_path: str, version: str, state: dict) -> None:
 
     # 已退出，执行安装
     try:
-        install_from_path(installer_path)
+        ok = install_from_path(installer_path)
+        if not ok:
+            # 安装器返回成功但 exe 未找到（慢硬盘可能延迟写入），保留状态下次重试
+            return
         # 安装成功，清理待安装标记
         state.pop("pending_installer", None)
         state.pop("pending_version", None)
@@ -542,15 +550,14 @@ def start_daemon() -> None:
     """启动后台守护进程（当前 exe 加 --daemon 参数，无窗口）。"""
     if getattr(sys, "frozen", False):
         exe = sys.executable
-    else:
-        exe = sys.executable
-        args = [sys.executable, os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "run.py"), "--daemon"]
         creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
+        subprocess.Popen([exe, "--daemon"], creationflags=creationflags, close_fds=True)
+    else:
+        # 开发模式：python run.py --daemon
+        run_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run.py")
+        args = [sys.executable, run_py, "--daemon"]
+        creationflags = 0x00000008 | 0x08000000
         subprocess.Popen(args, creationflags=creationflags, close_fds=True)
-        return
-    creationflags = 0x00000008 | 0x08000000
-    subprocess.Popen([exe, "--daemon"], creationflags=creationflags, close_fds=True)
 
 
 def has_pending_update() -> bool:

@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-12（v1.2.0.0，Idiot Launch 自身后台静默更新，保持单文件，VBScript 替换器）
+> 最后更新: 2026-09-12（v1.2.0.1，修复自我更新状态被覆盖的严重 bug + 安装返回值检查 + 重装 None 保护）
 
 ## 一、需求（用户原始要求）
 
@@ -24,6 +24,7 @@
 | **v1.1.1.0** | 同上 | 新增安装进度弹窗 ProgressDialog（c 升）：置顶、无关闭按钮、居中、indeterminate 进度条动画；所有耗时操作（安装/启动/关闭/更新）均弹窗提示，防止教室电脑性能差导致老师误以为卡死；弹窗文字按操作类型区分（首次安装提示 10-30 秒）；启动时待更新安装也弹窗 |
 | **v1.1.2.0** | 同上 | 版本元数据 + 强制 noUPX（c 升）：①新增 version_info.txt，注入完整 PE 元数据（CompanyName=tgcz2011、FileDescription、ProductName、LegalCopyright、FileVersion 等），SmartScreen 对有完整元数据的程序更宽容；②spec 中 upx=True→upx=False，build.ps1 和 CI 均加 --noupx 参数，不使用 UPX 压缩壳（UPX 加壳是病毒常用手段，易触发杀软/SmartScreen 误报）；③修正 CI release body 中过时的 v3.2.0.0 版本号 |
 | **v1.2.0.0** | 同上 | Idiot Launch 自身后台静默更新（b 升，大改）：①daemon 同时检查自身 GitHub 最新 Release，有新版下载到 D:\CountdownDesktop_Updates\IdiotLaunch_v<ver>.exe 并标记 pending_launcher_update；②下次启动时 run.py 在 GUI 创建前调用 apply_launcher_update_if_pending()，生成隐藏 VBScript（wscript //B 完全无窗口）→ 启动 VBS → sys.exit；③VBS 每 500ms 重试 CopyFile 覆盖旧 exe（最多 15 秒），成功后删下载文件、启动新版、自删除；④用户体验：程序闪一下关闭，1-2 秒后自动重开为新版，原位置替换，保持单文件；⑤失败安全：替换失败旧 exe 不受影响，下次启动再试；新版运行时 _cleanup_stale_launcher_pending 自动清理过期状态；⑥仅 frozen 模式生效，开发模式跳过；⑦LAUNCHER_VERSION 常量移到 core.py 作为单一来源，main.py 导入使用；⑧state.json 新增 launcher_last_check / pending_launcher_path / pending_launcher_version |
+| **v1.2.0.1** | 同上 | 代码审查修复（d 升）：①**严重 bug 修复**：daemon_run() 调用 _check_and_download_launcher_update() 后未刷新 state 变量，后续 save_state(state) 用旧变量覆盖文件，导致 launcher 自我更新的 pending_launcher_path 状态丢失、自我更新形同虚设；修复为调用后重新 load_state()；②_wait_and_install() 不检查 install_from_path() 返回值，安装器成功但 exe 未写入（慢硬盘）时误判成功并清理状态；修复为返回 False 时保留状态下次重试；③ensure_installed() 重装分支缺少 None 检查，重装失败时返回 None 导致 launch_countdown() 中 Popen([None,...]) 崩溃；修复为加 None 检查抛 RuntimeError；④start_daemon() 开发模式下死代码清理（exe 变量设而不用），重构为 if/else 清晰分支 |
 
 ## 三、架构
 
@@ -173,7 +174,7 @@ git push origin main v1.0.0.0
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.2.0.0。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.2.0.1。
 
 ## 九、已知限制 / 待办
 
