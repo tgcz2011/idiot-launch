@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-06（v1.1.1.0，新增安装进度弹窗，防止教室电脑上误以为卡死）
+> 最后更新: 2026-09-12（v1.1.2.0，版本元数据 + 强制 noUPX，降低 SmartScreen 误报）
 
 ## 一、需求（用户原始要求）
 
@@ -22,6 +22,7 @@
 | **v1.0.0.3** | 同上 | 内嵌 Countdown Desktop 安装包从 v3.2.0.0 升级至 v3.2.1.1；同步更新 core.py/spec/build.ps1/release.yml/README/HANDOFF 中所有版本引用（d 升） |
 | **v1.1.0.0** | 同上 | 完整自动更新体系（c 升）：①启动时版本检测，本地旧于内嵌则删目录重装；②关闭窗口启动 `--daemon` 无窗口守护进程，查 GitHub 最新版并后台下载（6h 间隔、10min 超时）；③下载完成后等 Countdown Desktop 退出，删旧目录静默装新版；④启动时补装待更新；⑤状态存 `D:\CountdownDesktop_Updates\state.json` 不被冰点还原清除；⑥`EMBEDDED_VERSION` 常量统一管理内嵌版本，INSTALLER_REL 自动拼接 |
 | **v1.1.1.0** | 同上 | 新增安装进度弹窗 ProgressDialog（c 升）：置顶、无关闭按钮、居中、indeterminate 进度条动画；所有耗时操作（安装/启动/关闭/更新）均弹窗提示，防止教室电脑性能差导致老师误以为卡死；弹窗文字按操作类型区分（首次安装提示 10-30 秒）；启动时待更新安装也弹窗 |
+| **v1.1.2.0** | 同上 | 版本元数据 + 强制 noUPX（c 升）：①新增 version_info.txt，注入完整 PE 元数据（CompanyName=tgcz2011、FileDescription、ProductName、LegalCopyright、FileVersion 等），SmartScreen 对有完整元数据的程序更宽容；②spec 中 upx=True→upx=False，build.ps1 和 CI 均加 --noupx 参数，不使用 UPX 压缩壳（UPX 加壳是病毒常用手段，易触发杀软/SmartScreen 误报）；③修正 CI release body 中过时的 v3.2.0.0 版本号 |
 
 ## 三、架构
 
@@ -109,6 +110,7 @@ Countdown Desktop 安装包本身 `PrivilegesRequired=lowest`，无需管理员�
 20. **版本号比较**：`parse_version()` 容错处理 `v` 前缀和不足 4 段的版本号，`compare_versions()` 返回 -1/0/1。本地版本从注册表 DisplayVersion 读取，回退到 exe 文件版本信息（VerQueryValueW）。
 21. **EMBEDDED_VERSION 单一来源**：core.py 中 `EMBEDDED_VERSION` 常量是内嵌版本的唯一真相，`INSTALLER_REL` 用 f-string 自动拼接文件名。升级内嵌版本只需改这一个常量 + 放新安装包 + 更新 build.ps1/release.yml 的下载 URL。
 22. **启动时补装**：`_check_pending_update_on_start()` 在 GUI 启动时后台检查，若有待安装更新且 Countdown Desktop 未运行，立即安装（daemon 可能因倒计时一直开着没来得及装）。
+23. **version_info.txt 发版必更**：每次发版必须同步更新 `version_info.txt` 中的 `filevers`、`prodvers`、`FileVersion`、`ProductVersion` 四处版本号，与 `main.py` 的 VERSION 保持一致。该文件注入 PE 元数据（公司名/产品名/版权），降低 SmartScreen 误报。spec 中 `version='version_info.txt'` 引用，`upx=False` 强制不压缩。
 
 ## 五、项目结构
 
@@ -122,8 +124,9 @@ idiot-launch/
 ├── installer/
 │   └── CountdownDesktop_Setup_3.2.1.1.exe  （构建时下载，gitignore）
 ├── tools/                      辅助脚本（预留）
-├── build.ps1                   本地一键构建（venv + 下载安装包 + PyInstaller）
-├── IdiotLaunch.spec            PyInstaller 规格（onefile + datas 内嵌安装包）
+├── build.ps1                   本地一键构建（venv + 下载安装包 + PyInstaller --noupx）
+├── IdiotLaunch.spec            PyInstaller 规格（onefile + datas 内嵌 + upx=False + version 元数据）
+├── version_info.txt            PE 版本元数据（公司名/产品名/版权/版本号，发版必更）
 ├── requirements.txt            pyinstaller
 ├── .gitignore                  排除 venv/build/dist/installer/*.exe
 ├── .github/workflows/release.yml   tag→构建→Release
@@ -158,7 +161,7 @@ git push origin main v1.0.0.0
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.1.1.0。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.1.2.0。
 
 ## 九、已知限制 / 待办
 

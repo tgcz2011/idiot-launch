@@ -24,7 +24,7 @@ from src.core import (
     APP_NAME,
 )
 
-VERSION = "1.1.1.0"
+VERSION = "1.1.2.0"
 
 # ── 配色 ──
 BG_COLOR = "#f5f7fa"

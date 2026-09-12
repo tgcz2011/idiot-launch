@@ -68,7 +68,7 @@ jobs:
             - **高考倒计时**：自动检测并启动 Countdown Desktop（`--exam gaokao`）
             - **早晚读**：打开 `https://zztool.free.nf/morning-reading`
             - 未安装 Countdown Desktop 时自动静默安装到 `D:\CountdownDesktop`
-            - 内嵌 Countdown Desktop v3.2.0.0 安装包
+            - 内嵌 Countdown Desktop v3.2.1.1 安装包
 
             ### 适用场景
             学校机房（C 盘冰点还原，安装到 D 盘持久化）

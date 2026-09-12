@@ -43,7 +43,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,  # 强制不使用 UPX 压缩壳，降低 SmartScreen/杀软误报概率
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,  # 无控制台窗口（GUI 程序）
@@ -53,4 +53,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=None,  # 如有图标可设置 assets/icon.ico
+    version='version_info.txt',  # 注入完整版本元数据（公司名/产品名/版权/版本号）
 )

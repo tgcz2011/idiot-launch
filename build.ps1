@@ -71,6 +71,8 @@ Write-Host "  Installer size: $([math]::Round($installerSize / 1MB, 1)) MB" -For
 
 # 4. PyInstaller build
 Invoke-Step "PyInstaller build" {
+    # noUPX 和版本元数据均在 IdiotLaunch.spec 中配置（upx=False, version='version_info.txt'）
+    # 使用 spec 文件时命令行不允许 --noupx/--version-file 等 makespec 参数
     & $Python -m PyInstaller --noconfirm --clean (Join-Path $ProjectRoot "IdiotLaunch.spec")
 }
 
