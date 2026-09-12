@@ -8,6 +8,7 @@ main.py — Idiot Launch 主入口与 GUI
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
+import time
 import sys
 import os
 
@@ -318,7 +319,6 @@ class IdiotLaunchApp:
                     pass
                 time.sleep(1.5)
 
-        import time
         threading.Thread(target=monitor, daemon=True).start()
 
     def _update_kill_button(self, running: bool):

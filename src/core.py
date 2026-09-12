@@ -38,7 +38,7 @@ CHECK_INTERVAL = 6 * 3600  # 6 小时
 DOWNLOAD_TIMEOUT = 600
 
 # ── Idiot Launch 自我更新 ─────────────────────────────
-LAUNCHER_VERSION = "1.2.0.1"
+LAUNCHER_VERSION = "1.2.0.2"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
 # 合法 IdiotLaunch.exe 的最小体积（内嵌约 37MB 安装包 + Python 运行时）
@@ -291,11 +291,15 @@ def is_running() -> bool:
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
-        handle = kernel32.CreateMutexW(None, False, "CountdownDesktop_Single")
-        already_exists = kernel32.GetLastError() == 183
+        SYNCHRONIZE = 0x00100000
+        kernel32.OpenMutexW.restype = ctypes.c_void_p
+        # 用 OpenMutexW 而非 CreateMutexW：不存在则返回 NULL，不会创建互斥量，
+        # 避免"我们创建后立即关闭"的微秒级竞态（Countdown Desktop 启动时误判已有实例）。
+        handle = kernel32.OpenMutexW(SYNCHRONIZE, False, "CountdownDesktop_Single")
         if handle:
             kernel32.CloseHandle(handle)
-        return already_exists
+            return True
+        return False
     except Exception:
         try:
             result = subprocess.run(
@@ -314,10 +318,11 @@ def quit_countdown() -> bool:
     MUTEX_NAME = "CountdownDesktop_Single"
     QUIT_EVENT_NAME = "CountdownDesktop_Quit"
     EVENT_MODIFY_STATE = 0x0002
-    ERROR_ALREADY_EXISTS = 183
+    SYNCHRONIZE = 0x00100000
 
-    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    already_running = kernel32.GetLastError() == ERROR_ALREADY_EXISTS
+    kernel32.OpenMutexW.restype = ctypes.c_void_p
+    mutex = kernel32.OpenMutexW(SYNCHRONIZE, False, MUTEX_NAME)
+    already_running = bool(mutex)
     if mutex:
         kernel32.CloseHandle(mutex)
     if not already_running:
@@ -332,8 +337,9 @@ def quit_countdown() -> bool:
     deadline = time.time() + 8.0
     while time.time() < deadline:
         time.sleep(0.25)
-        m = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-        released = kernel32.GetLastError() != ERROR_ALREADY_EXISTS
+        kernel32.OpenMutexW.restype = ctypes.c_void_p
+        m = kernel32.OpenMutexW(SYNCHRONIZE, False, MUTEX_NAME)
+        released = not bool(m)
         if m:
             kernel32.CloseHandle(m)
         if released:
@@ -447,7 +453,7 @@ def daemon_run() -> int:
       2. 如距上次检查超过 6 小时 → 查询 GitHub 最新版
       3. 如有新版 → 下载 → 标记待安装 → 等退出 → 安装 → 退出
       4. 已是最新 → 直接退出
-    返回 0=正常结束，1=出错。
+    返回 0（所有错误均被内部捕获，不会以非零码退出）。
     """
     state = load_state()
     now = time.time()
@@ -696,12 +702,26 @@ For i = 1 To 30
     On Error GoTo 0
 Next
 
+' 如果替换失败且旧版已被 CopyFile 删除，从新文件恢复旧版
+If Not success Then
+    On Error Resume Next
+    If Not fso.FileExists(oldExe) Then
+        fso.CopyFile newExe, oldExe, False
+    End If
+    On Error GoTo 0
+End If
+
+' 仅替换成功时清理下载文件
 If success Then
     On Error Resume Next
     fso.DeleteFile newExe, True
     On Error GoTo 0
-    shell.Run Chr(34) & oldExe & Chr(34), 1, False
 End If
+
+' 无论成功失败都启动 oldExe（成功=新版，失败=旧版），保证用户总能看到程序
+On Error Resume Next
+shell.Run Chr(34) & oldExe & Chr(34), 1, False
+On Error GoTo 0
 
 ' VBS 自删除
 On Error Resume Next
