@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-12（v1.1.2.0，版本元数据 + 强制 noUPX，降低 SmartScreen 误报）
+> 最后更新: 2026-09-12（v1.2.0.0，Idiot Launch 自身后台静默更新，保持单文件，VBScript 替换器）
 
 ## 一、需求（用户原始要求）
 
@@ -23,6 +23,7 @@
 | **v1.1.0.0** | 同上 | 完整自动更新体系（c 升）：①启动时版本检测，本地旧于内嵌则删目录重装；②关闭窗口启动 `--daemon` 无窗口守护进程，查 GitHub 最新版并后台下载（6h 间隔、10min 超时）；③下载完成后等 Countdown Desktop 退出，删旧目录静默装新版；④启动时补装待更新；⑤状态存 `D:\CountdownDesktop_Updates\state.json` 不被冰点还原清除；⑥`EMBEDDED_VERSION` 常量统一管理内嵌版本，INSTALLER_REL 自动拼接 |
 | **v1.1.1.0** | 同上 | 新增安装进度弹窗 ProgressDialog（c 升）：置顶、无关闭按钮、居中、indeterminate 进度条动画；所有耗时操作（安装/启动/关闭/更新）均弹窗提示，防止教室电脑性能差导致老师误以为卡死；弹窗文字按操作类型区分（首次安装提示 10-30 秒）；启动时待更新安装也弹窗 |
 | **v1.1.2.0** | 同上 | 版本元数据 + 强制 noUPX（c 升）：①新增 version_info.txt，注入完整 PE 元数据（CompanyName=tgcz2011、FileDescription、ProductName、LegalCopyright、FileVersion 等），SmartScreen 对有完整元数据的程序更宽容；②spec 中 upx=True→upx=False，build.ps1 和 CI 均加 --noupx 参数，不使用 UPX 压缩壳（UPX 加壳是病毒常用手段，易触发杀软/SmartScreen 误报）；③修正 CI release body 中过时的 v3.2.0.0 版本号 |
+| **v1.2.0.0** | 同上 | Idiot Launch 自身后台静默更新（b 升，大改）：①daemon 同时检查自身 GitHub 最新 Release，有新版下载到 D:\CountdownDesktop_Updates\IdiotLaunch_v<ver>.exe 并标记 pending_launcher_update；②下次启动时 run.py 在 GUI 创建前调用 apply_launcher_update_if_pending()，生成隐藏 VBScript（wscript //B 完全无窗口）→ 启动 VBS → sys.exit；③VBS 每 500ms 重试 CopyFile 覆盖旧 exe（最多 15 秒），成功后删下载文件、启动新版、自删除；④用户体验：程序闪一下关闭，1-2 秒后自动重开为新版，原位置替换，保持单文件；⑤失败安全：替换失败旧 exe 不受影响，下次启动再试；新版运行时 _cleanup_stale_launcher_pending 自动清理过期状态；⑥仅 frozen 模式生效，开发模式跳过；⑦LAUNCHER_VERSION 常量移到 core.py 作为单一来源，main.py 导入使用；⑧state.json 新增 launcher_last_check / pending_launcher_path / pending_launcher_version |
 
 ## 三、架构
 
@@ -43,6 +44,13 @@ IdiotLaunch.exe（单文件，PyInstaller onefile）
        core.download_installer()    下载到 D:\CountdownDesktop_Updates\（.part→rename）
        core.load_state/save_state() state.json 持久化（D盘，不被冰点还原）
        core.install_pending_if_idle()  GUI启动时补装待更新
+  └─ 启动器自我更新（v1.2.0.0）：
+       core.get_latest_launcher_info()   GitHub API 查询 idiot-launch 最新 release
+       core._check_and_download_launcher_update()  daemon中下载新版exe到UPDATE_DIR
+       core.has_pending_launcher_update()   检查是否有待替换的更新
+       core.apply_launcher_update_if_pending()  启动时生成VBS→退出→VBS覆盖旧exe→启动新版→自删除
+       core._cleanup_stale_launcher_pending()  清理已过期的待更新记录
+       LAUNCHER_VERSION 常量（core.py单一来源，main.py导入）
 内嵌资源：_MEIPASS/installer/CountdownDesktop_Setup_<EMBEDDED_VERSION>.exe
 ```
 
@@ -111,6 +119,10 @@ Countdown Desktop 安装包本身 `PrivilegesRequired=lowest`，无需管理员�
 21. **EMBEDDED_VERSION 单一来源**：core.py 中 `EMBEDDED_VERSION` 常量是内嵌版本的唯一真相，`INSTALLER_REL` 用 f-string 自动拼接文件名。升级内嵌版本只需改这一个常量 + 放新安装包 + 更新 build.ps1/release.yml 的下载 URL。
 22. **启动时补装**：`_check_pending_update_on_start()` 在 GUI 启动时后台检查，若有待安装更新且 Countdown Desktop 未运行，立即安装（daemon 可能因倒计时一直开着没来得及装）。
 23. **version_info.txt 发版必更**：每次发版必须同步更新 `version_info.txt` 中的 `filevers`、`prodvers`、`FileVersion`、`ProductVersion` 四处版本号，与 `main.py` 的 VERSION 保持一致。该文件注入 PE 元数据（公司名/产品名/版权），降低 SmartScreen 误报。spec 中 `version='version_info.txt'` 引用，`upx=False` 强制不压缩。
+24. **单文件自我更新的两阶段方案**：Windows 不允许覆盖正在运行的 exe，因此采用"后台下载 + 启动时替换"两阶段。daemon 只负责下载和标记待更新，不尝试替换自己；替换在下次启动时由 VBScript 完成。VBScript 用 `wscript //B` 完全无窗口运行（bat 会闪黑框），每 500ms 重试 CopyFile（最多 15 秒）等待旧进程释放文件锁，成功后启动新版并自删除。
+25. **自我更新不清除 pending 状态**：apply_launcher_update_if_pending() 退出前不清除 pending_launcher_path/version。如果 VBS 替换失败，下次启动再试；如果替换成功，新版运行时 LAUNCHER_VERSION 已更新，_cleanup_stale_launcher_pending() 检测到 pending 版本 <= 当前版本，自动清理文件和状态。这避免了"清除状态后替换失败导致永远丢失更新"的问题。
+26. **自我更新仅 frozen 模式**：所有自我更新函数（has_pending_launcher_update、apply_launcher_update_if_pending、_check_and_download_launcher_update）开头都检查 `getattr(sys, "frozen", False)`，开发模式下直接返回。开发模式下 sys.executable 是 python.exe 而非 IdiotLaunch.exe，不能做自我替换。
+27. **LAUNCHER_VERSION 单一来源**：版本号从 main.py 移到 core.py 的 LAUNCHER_VERSION 常量，main.py 用 `from src.core import LAUNCHER_VERSION` 导入。core.py 中的自我更新函数需要比较版本号，放在 core.py 避免循环导入（core.py 不 import main.py）。
 
 ## 五、项目结构
 
@@ -161,7 +173,7 @@ git push origin main v1.0.0.0
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.1.2.0。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.2.0.0。
 
 ## 九、已知限制 / 待办
 

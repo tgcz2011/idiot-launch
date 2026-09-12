@@ -37,6 +37,13 @@ CHECK_INTERVAL = 6 * 3600  # 6 小时
 # 下载超时（秒），GitHub 不稳定时给足时间
 DOWNLOAD_TIMEOUT = 600
 
+# ── Idiot Launch 自我更新 ─────────────────────────────
+LAUNCHER_VERSION = "1.2.0.0"
+LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
+LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
+# 合法 IdiotLaunch.exe 的最小体积（内嵌约 37MB 安装包 + Python 运行时）
+LAUNCHER_MIN_SIZE = 5 * 1024 * 1024  # 5MB
+
 
 # ── 资源路径 ──────────────────────────────────────────
 def resource_path(relative: str) -> str:
@@ -443,6 +450,9 @@ def daemon_run() -> int:
     state = load_state()
     now = time.time()
 
+    # 0) 检查 Idiot Launch 自身更新（仅下载，替换在下次启动时完成）
+    _check_and_download_launcher_update()
+
     # 1) 检查是否有待安装的更新
     pending = state.get("pending_installer")
     pending_ver = state.get("pending_version")
@@ -575,3 +585,205 @@ def install_pending_if_idle() -> bool:
         return True
     except Exception:
         return False
+
+
+# ── Idiot Launch 自我更新 ──────────────────────────────
+def get_latest_launcher_info() -> dict | None:
+    """
+    查询 GitHub 最新 Idiot Launch Release。
+    返回 {"version": "1.2.0.0", "url": "https://...", "size": 12345} 或 None。
+    """
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            LAUNCHER_GITHUB_API,
+            headers={"User-Agent": "idiot-launch-selfupdater", "Accept": "application/vnd.github+json"},
+        )
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        tag = data.get("tag_name", "")
+        version = tag.lstrip("vV")
+        for asset in data.get("assets", []):
+            if asset.get("name") == LAUNCHER_ASSET_NAME:
+                return {
+                    "version": version,
+                    "url": asset["browser_download_url"],
+                    "size": asset.get("size", 0),
+                }
+        return None
+    except Exception:
+        return None
+
+
+def _cleanup_stale_launcher_pending(state: dict) -> dict:
+    """清理已过期的待更新记录（版本 <= 当前版本，说明已更新过）。"""
+    path = state.get("pending_launcher_path")
+    version = state.get("pending_launcher_version")
+    if path and version:
+        if compare_versions(version, LAUNCHER_VERSION) <= 0:
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except OSError:
+                pass
+            state.pop("pending_launcher_path", None)
+            state.pop("pending_launcher_version", None)
+            save_state(state)
+    return state
+
+
+def has_pending_launcher_update() -> bool:
+    """是否有已下载待替换的 Idiot Launch 更新。"""
+    if not getattr(sys, "frozen", False):
+        return False
+    state = load_state()
+    state = _cleanup_stale_launcher_pending(state)
+    path = state.get("pending_launcher_path")
+    version = state.get("pending_launcher_version")
+    if not path or not version or not os.path.isfile(path):
+        return False
+    if os.path.getsize(path) < LAUNCHER_MIN_SIZE:
+        return False
+    return compare_versions(version, LAUNCHER_VERSION) > 0
+
+
+def apply_launcher_update_if_pending() -> None:
+    """
+    启动时调用（仅 frozen 模式）：如果有待更新，生成 VBScript 替换器，
+    启动它后立即退出当前进程。VBS 会等待进程退出、覆盖旧 exe、启动新版、自删除。
+    此函数在有待更新时不会返回（直接 sys.exit）。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if not has_pending_launcher_update():
+        return
+
+    state = load_state()
+    new_exe = state.get("pending_launcher_path")
+    old_exe = sys.executable
+
+    if not new_exe or not os.path.isfile(new_exe):
+        return
+
+    # 生成 VBScript 到临时目录。VBS 优势：wscript //B 完全无窗口，Windows 自带。
+    import tempfile
+    vbs_content = f'''Option Explicit
+Dim fso, shell, oldExe, newExe, i, success
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+
+oldExe = "{old_exe}"
+newExe = "{new_exe}"
+
+' 等待旧进程释放文件锁（每 500ms 重试，最多 15 秒）
+success = False
+For i = 1 To 30
+    WScript.Sleep 500
+    On Error Resume Next
+    fso.CopyFile newExe, oldExe, True
+    If Err.Number = 0 Then
+        success = True
+        On Error GoTo 0
+        Exit For
+    End If
+    On Error GoTo 0
+Next
+
+If success Then
+    On Error Resume Next
+    fso.DeleteFile newExe, True
+    On Error GoTo 0
+    shell.Run Chr(34) & oldExe & Chr(34), 1, False
+End If
+
+' VBS 自删除
+On Error Resume Next
+fso.DeleteFile WScript.ScriptFullName, True
+On Error GoTo 0
+'''
+    vbs_path = os.path.join(tempfile.gettempdir(), "idiot_launch_selfupdate.vbs")
+    try:
+        with open(vbs_path, "w", encoding="utf-8") as f:
+            f.write(vbs_content)
+    except OSError:
+        return
+
+    # 以隐藏窗口启动 VBS，然后立即退出
+    try:
+        subprocess.Popen(
+            ["wscript.exe", "//B", "//Nologo", vbs_path],
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            close_fds=True,
+        )
+    except Exception:
+        return
+
+    # 注意：不清除 pending 状态。如果 VBS 替换失败，下次启动再试。
+    # 如果替换成功，新版运行时 LAUNCHER_VERSION 已更新，
+    # _cleanup_stale_launcher_pending 会自动清理旧记录。
+    sys.exit(0)
+
+
+def _check_and_download_launcher_update() -> None:
+    """
+    daemon 中调用：检查 Idiot Launch 最新版，有新版则下载到 UPDATE_DIR 并标记待更新。
+    不执行替换（替换在下次启动时由 apply_launcher_update_if_pending 完成）。
+    仅 frozen 模式生效。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    state = load_state()
+    state = _cleanup_stale_launcher_pending(state)
+    now = time.time()
+
+    # 已有有效的待更新？跳过检查。
+    pending_path = state.get("pending_launcher_path")
+    pending_ver = state.get("pending_launcher_version")
+    if pending_path and pending_ver and os.path.isfile(pending_path):
+        if compare_versions(pending_ver, LAUNCHER_VERSION) > 0:
+            return
+
+    # 距上次检查不足 6 小时？跳过。
+    last_check = state.get("launcher_last_check", 0)
+    if now - last_check < CHECK_INTERVAL:
+        return
+
+    latest = get_latest_launcher_info()
+    state["launcher_last_check"] = now
+    save_state(state)
+
+    if not latest:
+        return  # 查询失败，下次再试
+
+    if compare_versions(latest["version"], LAUNCHER_VERSION) <= 0:
+        return  # 已是最新或更新
+
+    # 下载新版 exe
+    dest_name = f"IdiotLaunch_v{latest['version']}.exe"
+    dest = os.path.join(UPDATE_DIR, dest_name)
+
+    # 已下载过且大小匹配？直接标记。
+    if (os.path.isfile(dest) and latest.get("size", 0) > 0
+            and os.path.getsize(dest) == latest["size"]
+            and os.path.getsize(dest) >= LAUNCHER_MIN_SIZE):
+        state["pending_launcher_path"] = dest
+        state["pending_launcher_version"] = latest["version"]
+        save_state(state)
+        return
+
+    ok = download_installer(latest["url"], dest)
+    if not ok:
+        return  # 下载失败，下次重试
+
+    # 校验下载文件大小
+    if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        return
+
+    state["pending_launcher_path"] = dest
+    state["pending_launcher_version"] = latest["version"]
+    save_state(state)

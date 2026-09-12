@@ -22,9 +22,10 @@ from src.core import (
     has_pending_update,
     EMBEDDED_VERSION,
     APP_NAME,
+    LAUNCHER_VERSION,
 )
 
-VERSION = "1.1.2.0"
+VERSION = LAUNCHER_VERSION
 
 # ── 配色 ──
 BG_COLOR = "#f5f7fa"

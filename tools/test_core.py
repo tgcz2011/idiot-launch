@@ -23,6 +23,10 @@ from src.core import (
     INSTALLER_REL,
     has_pending_update,
     load_state,
+    LAUNCHER_VERSION,
+    LAUNCHER_MIN_SIZE,
+    has_pending_launcher_update,
+    _cleanup_stale_launcher_pending,
 )
 
 
@@ -99,6 +103,31 @@ def test_state_functions():
     print(f"✓ test_state_functions passed: pending_update={pending}")
 
 
+def test_launcher_version_constant():
+    assert isinstance(LAUNCHER_VERSION, str)
+    parts = LAUNCHER_VERSION.split(".")
+    assert len(parts) == 4
+    assert all(p.isdigit() for p in parts)
+    assert LAUNCHER_MIN_SIZE > 0
+    print(f"✓ test_launcher_version_constant passed: LAUNCHER_VERSION={LAUNCHER_VERSION}")
+
+
+def test_launcher_self_update_dev_mode():
+    """开发模式下（非 frozen），自我更新函数应安全返回不崩溃。"""
+    # has_pending_launcher_update 在非 frozen 模式下应返回 False
+    result = has_pending_launcher_update()
+    assert result is False
+    # _cleanup_stale_launcher_pending 不应崩溃
+    state = _cleanup_stale_launcher_pending({})
+    assert isinstance(state, dict)
+    # 模拟一个过期的待更新记录（版本 <= 当前），应被清理
+    stale = {"pending_launcher_path": r"D:\nonexistent\fake.exe",
+             "pending_launcher_version": "0.0.0.1"}
+    cleaned = _cleanup_stale_launcher_pending(stale)
+    assert "pending_launcher_path" not in cleaned
+    print("✓ test_launcher_self_update_dev_mode passed")
+
+
 if __name__ == "__main__":
     test_constants()
     test_version_parsing()
@@ -110,4 +139,6 @@ if __name__ == "__main__":
     test_is_running_no_crash()
     test_quit_countdown_no_crash()
     test_state_functions()
+    test_launcher_version_constant()
+    test_launcher_self_update_dev_mode()
     print("\n全部测试通过！")
