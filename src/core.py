@@ -38,7 +38,7 @@ CHECK_INTERVAL = 6 * 3600  # 6 小时
 DOWNLOAD_TIMEOUT = 600
 
 # ── Idiot Launch 自我更新 ─────────────────────────────
-LAUNCHER_VERSION = "1.2.0.2"
+LAUNCHER_VERSION = "1.2.0.3"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
 # 合法 IdiotLaunch.exe 的最小体积（内嵌约 37MB 安装包 + Python 运行时）
@@ -730,8 +730,12 @@ On Error GoTo 0
 '''
     vbs_path = os.path.join(tempfile.gettempdir(), "idiot_launch_selfupdate.vbs")
     try:
-        with open(vbs_path, "w", encoding="utf-8") as f:
-            f.write(vbs_content)
+        # 用 UTF-16 LE BOM 编码写入 VBS。Windows 脚本宿主（wscript）原生支持此编码，
+        # 能正确处理中文/日文/特殊符号路径（用户可能把 exe 改名为"点我.exe"等）。
+        # 若用 UTF-8，非 ASCII 字符在中文系统上会乱码导致 VBS 解析失败。
+        with open(vbs_path, "wb") as f:
+            f.write(b"\xff\xfe")  # UTF-16 LE BOM
+            f.write(vbs_content.encode("utf-16-le"))
     except OSError:
         return
 

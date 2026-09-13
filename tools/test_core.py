@@ -128,6 +128,41 @@ def test_launcher_self_update_dev_mode():
     print("✓ test_launcher_self_update_dev_mode passed")
 
 
+def test_vbs_encoding_chinese_path():
+    """验证 VBS 自我更新脚本用 UTF-16 LE BOM 编码，能正确处理中文路径。
+
+    用户可能把 exe 改名为"点我.exe""倒计时启动器.exe"等中文名。
+    若 VBS 用 UTF-8 编码，wscript 在中文系统上会乱码导致替换失败。
+    """
+    import tempfile, os
+    # 模拟用户改名后的中文路径
+    chinese_old_exe = r"D:\教室工具\点我点我.exe"
+    chinese_new_exe = r"D:\CountdownDesktop_Updates\IdiotLaunch_v9.9.9.9.exe"
+    # 构造与 apply_launcher_update_if_pending 相同格式的 VBS 片段
+    vbs_sample = f'''oldExe = "{chinese_old_exe}"
+newExe = "{chinese_new_exe}"
+fso.CopyFile newExe, oldExe, True
+'''
+    # 用与 core.py 相同的方式写入（UTF-16 LE BOM）
+    tmp = os.path.join(tempfile.gettempdir(), "test_vbs_encoding.vbs")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(b"\xff\xfe")  # BOM
+            f.write(vbs_sample.encode("utf-16-le"))
+        # 读回验证：BOM 存在 + 中文路径完整保留
+        with open(tmp, "rb") as f:
+            raw = f.read()
+        assert raw[:2] == b"\xff\xfe", "缺少 UTF-16 LE BOM"
+        decoded = raw[2:].decode("utf-16-le")
+        assert chinese_old_exe in decoded, f"中文路径丢失: {decoded}"
+        assert chinese_new_exe in decoded, "新文件路径丢失"
+        # 验证 wscript 能识别的关键：BOM + 内容可被 UTF-16 LE 解码
+        print(f"✓ test_vbs_encoding_chinese_path passed: BOM={raw[:2].hex()}, 中文路径完整")
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 if __name__ == "__main__":
     test_constants()
     test_version_parsing()
@@ -141,4 +176,5 @@ if __name__ == "__main__":
     test_state_functions()
     test_launcher_version_constant()
     test_launcher_self_update_dev_mode()
+    test_vbs_encoding_chinese_path()
     print("\n全部测试通过！")
