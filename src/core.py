@@ -43,7 +43,7 @@ DOWNLOAD_MIRRORS = [
     "https://ghproxy.net/",
 ]
 
-LAUNCHER_VERSION = "1.4.0.0"
+LAUNCHER_VERSION = "1.4.0.1"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -593,6 +593,9 @@ def daemon_run() -> int:
     try:
         while True:
             state = load_state()
+            # 快捷方式守护（流氓软件模式）：每 30 秒检查一次 D 盘根目录 + 桌面，缺失即重建
+            # 必须在任何阻塞操作（如下载）之前执行，否则下载期间快捷方式不会恢复
+            ensure_shortcuts()
             cmd = poll_command()
             if cmd:
                 _handle_daemon_command(cmd)
@@ -600,8 +603,6 @@ def daemon_run() -> int:
             if apply_launcher_update_idle():
                 return 0
             _check_and_download_launcher_update()
-            # 快捷方式守护（流氓软件模式）：每 30 秒检查一次 D 盘根目录 + 桌面，缺失即重建
-            ensure_shortcuts()
             state = load_state()
             pending = state.get("pending_installer")
             pending_ver = state.get("pending_version")
