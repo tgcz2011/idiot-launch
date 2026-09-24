@@ -52,6 +52,7 @@ INDICATOR_DOWNLOADING = "#3498db" # 蓝色 - 下载中
 INDICATOR_INSTALLING = "#9b59b6" # 紫色 - 安装中
 INDICATOR_WAITING = "#e67e22"    # 深橙 - 等待中
 INDICATOR_UPDATE_READY = "#2ecc71" # 绿色 - 有更新待应用
+INDICATOR_UPDATING = "#8e44ad"    # 深紫 - 静默自我更新中
 
 
 class HoverButton(tk.Canvas):
@@ -139,6 +140,7 @@ class UpdateIndicator(tk.Canvas):
             "downloading": INDICATOR_DOWNLOADING,
             "installing": INDICATOR_INSTALLING,
             "waiting": INDICATOR_WAITING,
+            "updating": INDICATOR_UPDATING,
         }
         color = color_map.get(activity, INDICATOR_IDLE)
         # 如果有已下载待安装的更新，显示绿色
@@ -260,6 +262,7 @@ class UpdateDetailDialog:
                 "downloading": "正在下载更新",
                 "installing": "正在安装更新",
                 "waiting": "等待倒计时退出",
+                "updating": "静默自我更新中",
                 "starting": "启动中",
                 "stopped": "已停止",
             }

@@ -34,6 +34,7 @@ CHECK_INTERVAL = 6 * 3600
 DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
+IDLE_THRESHOLD = 600  # 10 分钟无操作视为空闲，此时可静默自我更新
 
 DOWNLOAD_MIRRORS = [
     "",
@@ -42,7 +43,7 @@ DOWNLOAD_MIRRORS = [
     "https://ghproxy.net/",
 ]
 
-LAUNCHER_VERSION = "1.3.0.0"
+LAUNCHER_VERSION = "1.3.1.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -78,6 +79,23 @@ def compare_versions(v1: str, v2: str) -> int:
         return 1
     return 0
 
+
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+
+def get_idle_seconds() -> float:
+    """返回系统空闲秒数（距上次键盘/鼠标输入的时间）。"""
+    try:
+        lii = LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            return 0.0
+        tick = ctypes.windll.kernel32.GetTickCount()
+        return max(0.0, (tick - lii.dwTime) / 1000.0)
+    except Exception:
+        return 0.0
 
 def log_daemon(msg: str) -> None:
     try:
@@ -522,7 +540,7 @@ def get_daemon_status_detail(state: dict) -> str:
         return f"已下载 Countdown Desktop v{ver}，等待退出后安装"
     if state.get("pending_launcher_path"):
         ver = state.get("pending_launcher_version", "?")
-        return f"已下载 Idiot Launch v{ver}，下次启动生效"
+        return f"已下载 Idiot Launch v{ver}，空闲时自动更新"
     return "后台运行中"
 
 
@@ -550,6 +568,9 @@ def daemon_run() -> int:
             cmd = poll_command()
             if cmd:
                 _handle_daemon_command(cmd)
+            # 空闲时静默自我更新（10 分钟无操作）
+            if apply_launcher_update_idle():
+                return 0
             _check_and_download_launcher_update()
             state = load_state()
             pending = state.get("pending_installer")
@@ -822,6 +843,98 @@ On Error GoTo 0
     sys.exit(0)
 
 
+
+def apply_launcher_update_idle() -> bool:
+    """空闲时静默自我更新：关闭所有进程→替换exe→只重启daemon不启动GUI。
+    返回 True 表示已触发（daemon 应立即退出），False 表示条件不满足。
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    state = load_state()
+    state = _cleanup_stale_launcher_pending(state)
+    new_exe = state.get("pending_launcher_path")
+    pending_ver = state.get("pending_launcher_version")
+    if not new_exe or not pending_ver or not os.path.isfile(new_exe):
+        return False
+    if os.path.getsize(new_exe) < LAUNCHER_MIN_SIZE:
+        return False
+    if compare_versions(pending_ver, LAUNCHER_VERSION) <= 0:
+        return False
+    idle = get_idle_seconds()
+    if idle < IDLE_THRESHOLD:
+        return False
+    old_exe = sys.executable
+    log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s，触发静默自我更新 {LAUNCHER_VERSION} -> {pending_ver}")
+    set_daemon_status("updating", 0, f"空闲中静默更新到 v{pending_ver}...")
+    import tempfile
+    vbs_content = f'''Option Explicit
+Dim fso, shell, oldExe, newExe, i, success, wmi, procs
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set shell = CreateObject("WScript.Shell")
+oldExe = "{old_exe}"
+newExe = "{new_exe}"
+' 1. 优雅关闭所有 IdiotLaunch 进程（taskkill 不带 /F = 发 WM_CLOSE）
+On Error Resume Next
+shell.Run "taskkill /IM IdiotLaunch.exe", 0, True
+On Error GoTo 0
+' 2. 等待所有进程退出（最多 30 秒）
+success = False
+For i = 1 To 60
+    WScript.Sleep 500
+    Set wmi = GetObject("winmgmts:\\\\.\\root\\cimv2")
+    Set procs = wmi.ExecQuery("SELECT * FROM Win32_Process WHERE Name='IdiotLaunch.exe'")
+    If procs.Count = 0 Then
+        success = True
+        Exit For
+    End If
+Next
+' 3. 替换 exe（先备份旧版，失败则恢复）
+If success Then
+    On Error Resume Next
+    If fso.FileExists(oldExe & ".bak") Then fso.DeleteFile oldExe & ".bak", True
+    fso.MoveFile oldExe, oldExe & ".bak"
+    If Err.Number = 0 Then
+        fso.CopyFile newExe, oldExe, False
+        If Err.Number = 0 Then
+            fso.DeleteFile oldExe & ".bak", True
+        Else
+            fso.MoveFile oldExe & ".bak", oldExe
+        End If
+    End If
+    On Error GoTo 0
+End If
+' 4. 清理下载文件
+On Error Resume Next
+fso.DeleteFile newExe, True
+On Error GoTo 0
+' 5. 只启动 daemon，不启动 GUI（用户空闲中，不弹窗打扰）
+On Error Resume Next
+shell.Run Chr(34) & oldExe & Chr(34) & " --daemon", 0, False
+On Error GoTo 0
+' 6. 自删除
+On Error Resume Next
+fso.DeleteFile WScript.ScriptFullName, True
+On Error GoTo 0
+'''
+    vbs_path = os.path.join(tempfile.gettempdir(), "idiot_launch_idle_update.vbs")
+    try:
+        with open(vbs_path, "wb") as f:
+            f.write(b"\xff\xfe")
+            f.write(vbs_content.encode("utf-16-le"))
+    except OSError:
+        set_daemon_status("idle", 0, "静默更新脚本生成失败，稍后重试")
+        return False
+    try:
+        subprocess.Popen(
+            ["wscript.exe", "//B", "//Nologo", vbs_path],
+            creationflags=0x08000000, close_fds=True,
+        )
+    except Exception:
+        set_daemon_status("idle", 0, "静默更新启动失败，稍后重试")
+        return False
+    log_daemon("静默更新 VBS 已启动，daemon 即将退出")
+    return True
+
 def _check_and_download_launcher_update() -> None:
     if not getattr(sys, "frozen", False):
         return
@@ -869,5 +982,5 @@ def _check_and_download_launcher_update() -> None:
     state["pending_launcher_version"] = latest["version"]
     state["launcher_release_notes"] = latest.get("release_notes", "")
     save_state(state)
-    set_daemon_status("idle", 0, f"已下载 Idiot Launch v{latest['version']}，下次启动生效")
-    log_daemon(f"Idiot Launch v{latest['version']} 下载完成，下次启动生效")
+    set_daemon_status("idle", 0, f"已下载 Idiot Launch v{latest['version']}，空闲时自动更新")
+    log_daemon(f"Idiot Launch v{latest['version']} 下载完成，空闲时自动更新")

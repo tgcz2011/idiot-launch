@@ -259,6 +259,20 @@ def test_ensure_shortcuts_dev_mode():
                 delattr(core.sys, "frozen")
 
 
+
+def test_idle_threshold_constant():
+    from src.core import IDLE_THRESHOLD
+    assert IDLE_THRESHOLD == 600, f"IDLE_THRESHOLD should be 600, got {IDLE_THRESHOLD}"
+    print(f"✓ test_idle_threshold_constant passed: {IDLE_THRESHOLD}s = 10min")
+
+
+def test_get_idle_seconds_returns_float():
+    from src.core import get_idle_seconds
+    idle = get_idle_seconds()
+    assert isinstance(idle, float), f"get_idle_seconds should return float, got {type(idle)}"
+    assert idle >= 0, f"idle should be >= 0, got {idle}"
+    print(f"✓ test_get_idle_seconds_returns_float passed: current idle={idle:.1f}s")
+
 if __name__ == "__main__":
     test_constants()
     test_version_parsing()
