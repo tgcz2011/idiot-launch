@@ -76,7 +76,27 @@ Invoke-Step "PyInstaller build" {
     & $Python -m PyInstaller --noconfirm --clean (Join-Path $ProjectRoot "IdiotLaunch.spec")
 }
 
-# 5. Verify output
+# 5. Inno Setup build (if ISCC is available)
+$ISCC = $null
+$ISCCPaths = @(
+    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+    "C:\Program Files\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+)
+foreach ($p in $ISCCPaths) {
+    if (Test-Path $p) { $ISCC = $p; break }
+}
+if ($ISCC) {
+    Invoke-Step "Inno Setup build" {
+        & $ISCC (Join-Path $ProjectRoot "IdiotLaunch.iss")
+    }
+} else {
+    Write-Host ""
+    Write-Host "=== Inno Setup not found, skipping installer build ===" -ForegroundColor Yellow
+    Write-Host "  Install from: https://jrsoftware.org/isdl.php" -ForegroundColor Gray
+}
+
+# 6. Verify output
 $OutputExe = Join-Path $ProjectRoot "dist\IdiotLaunch.exe"
 if (Test-Path $OutputExe) {
     $size = (Get-Item $OutputExe).Length

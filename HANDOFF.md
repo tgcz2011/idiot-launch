@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-13（v1.2.0.3，自适应文件名：VBS 编码修复支持中文/任意名称 exe，自动更新保留用户自定义文件名）
+> 最后更新: 2026-09-24（v1.3.0.0，前后端分离 daemon 常驻 + 多镜像源下载 fallback + Inno Setup 安装包 + 快捷方式自动重建 + 更新状态指示器 + 自定义图标）
 
 ## 一、需求（用户原始要求）
 
@@ -11,6 +11,17 @@
 5. 点击「高考倒计时」→ 同理（`--exam gaokao`）。
 6. 点击「早晚读」→ 打开网页 `zztool.free.nf/morning-reading`。
 7. 学校电脑装了冰点还原，C 盘会重置，**Countdown Desktop 必须安装到 D 盘**。
+8. 一键关闭 Countdown Desktop（用命名事件优雅退出，不 taskkill；未运行时按钮变灰）。
+9. Countdown Desktop 自动更新（内嵌保底 + 后台下载 + 退出时静默安装）。
+10. 启动器自身自动更新（单文件、后台静默、原位置替换、支持任意文件名）。
+11. 安装过程有进度弹窗，防止老师误以为卡死。
+12. 版本元数据 + noUPX 降低 SmartScreen 误报。
+13. 多镜像源下载 fallback（GitHub 直连 → gh-proxy → ghfast → ghproxy），超时 15 分钟。
+14. 前后端分离：daemon 常驻后台，GUI 频繁开关不中断更新。
+15. 快捷方式自动重建（D 盘根目录 + 桌面，"流氓软件"模式）。
+16. Inno Setup 安装包（自动安装到 D 盘，原生进度条，基本不弹 SmartScreen）。
+17. GUI 右上角更新状态小圆圈，点击显示详情。
+18. 自定义图标（用户提供手指点击图案）。
 
 ## 二、版本历史
 
@@ -18,44 +29,73 @@
 |------|------|------|
 | **v1.0.0.0** | Python + tkinter + PyInstaller | 初始版本，三按钮 + 内嵌安装包 + D 盘静默安装 |
 | **v1.0.0.1** | 同上 | 新增「关闭倒计时」按钮：taskkill /F /T 终止进程树 + 桌面刷新（d 升） |
-| **v1.0.0.2** | 同上 | 关闭按钮改用 Countdown Desktop 命名事件 `CountdownDesktop_Quit` 优雅退出（不再 taskkill 强杀）；未运行时按钮自动变灰禁用（每 1.5s 轮询互斥量 `CountdownDesktop_Single`）；HoverButton 新增 disabled 视觉态（d 升） |
-| **v1.0.0.3** | 同上 | 内嵌 Countdown Desktop 安装包从 v3.2.0.0 升级至 v3.2.1.1；同步更新 core.py/spec/build.ps1/release.yml/README/HANDOFF 中所有版本引用（d 升） |
-| **v1.1.0.0** | 同上 | 完整自动更新体系（c 升）：①启动时版本检测，本地旧于内嵌则删目录重装；②关闭窗口启动 `--daemon` 无窗口守护进程，查 GitHub 最新版并后台下载（6h 间隔、10min 超时）；③下载完成后等 Countdown Desktop 退出，删旧目录静默装新版；④启动时补装待更新；⑤状态存 `D:\CountdownDesktop_Updates\state.json` 不被冰点还原清除；⑥`EMBEDDED_VERSION` 常量统一管理内嵌版本，INSTALLER_REL 自动拼接 |
-| **v1.1.1.0** | 同上 | 新增安装进度弹窗 ProgressDialog（c 升）：置顶、无关闭按钮、居中、indeterminate 进度条动画；所有耗时操作（安装/启动/关闭/更新）均弹窗提示，防止教室电脑性能差导致老师误以为卡死；弹窗文字按操作类型区分（首次安装提示 10-30 秒）；启动时待更新安装也弹窗 |
-| **v1.1.2.0** | 同上 | 版本元数据 + 强制 noUPX（c 升）：①新增 version_info.txt，注入完整 PE 元数据（CompanyName=tgcz2011、FileDescription、ProductName、LegalCopyright、FileVersion 等），SmartScreen 对有完整元数据的程序更宽容；②spec 中 upx=True→upx=False，build.ps1 和 CI 均加 --noupx 参数，不使用 UPX 压缩壳（UPX 加壳是病毒常用手段，易触发杀软/SmartScreen 误报）；③修正 CI release body 中过时的 v3.2.0.0 版本号 |
-| **v1.2.0.0** | 同上 | Idiot Launch 自身后台静默更新（b 升，大改）：①daemon 同时检查自身 GitHub 最新 Release，有新版下载到 D:\CountdownDesktop_Updates\IdiotLaunch_v<ver>.exe 并标记 pending_launcher_update；②下次启动时 run.py 在 GUI 创建前调用 apply_launcher_update_if_pending()，生成隐藏 VBScript（wscript //B 完全无窗口）→ 启动 VBS → sys.exit；③VBS 每 500ms 重试 CopyFile 覆盖旧 exe（最多 15 秒），成功后删下载文件、启动新版、自删除；④用户体验：程序闪一下关闭，1-2 秒后自动重开为新版，原位置替换，保持单文件；⑤失败安全：替换失败旧 exe 不受影响，下次启动再试；新版运行时 _cleanup_stale_launcher_pending 自动清理过期状态；⑥仅 frozen 模式生效，开发模式跳过；⑦LAUNCHER_VERSION 常量移到 core.py 作为单一来源，main.py 导入使用；⑧state.json 新增 launcher_last_check / pending_launcher_path / pending_launcher_version |
-| **v1.2.0.1** | 同上 | 代码审查修复（d 升）：①**严重 bug 修复**：daemon_run() 调用 _check_and_download_launcher_update() 后未刷新 state 变量，后续 save_state(state) 用旧变量覆盖文件，导致 launcher 自我更新的 pending_launcher_path 状态丢失、自我更新形同虚设；修复为调用后重新 load_state()；②_wait_and_install() 不检查 install_from_path() 返回值，安装器成功但 exe 未写入（慢硬盘）时误判成功并清理状态；修复为返回 False 时保留状态下次重试；③ensure_installed() 重装分支缺少 None 检查，重装失败时返回 None 导致 launch_countdown() 中 Popen([None,...]) 崩溃；修复为加 None 检查抛 RuntimeError；④start_daemon() 开发模式下死代码清理（exe 变量设而不用），重构为 if/else 清晰分支 |
-| **v1.2.0.2** | 同上 | 全面代码审查修复（d 升）：①**严重用户体验 bug**：VBS 替换器在 CopyFile 失败（重试15秒后仍失败，如杀软锁定）时不启动任何程序，用户看到程序闪一下就消失；且 CopyFile overwrite=True 会先删旧文件再复制，中途失败可能导致旧版 exe 丢失；修复为替换失败时从新文件恢复旧版、无论成功失败都启动 oldExe（成功=新版，失败=旧版），保证用户总能看到程序；②**竞态条件**：is_running() 和 quit_countdown() 用 CreateMutexW 检测运行状态，若 Countdown Desktop 未运行则会创建互斥量再立即关闭，微秒级窗口内 Countdown Desktop 启动会误判已有实例；全部改用 OpenMutexW（不存在返回 NULL，不创建），并设置 restype=c_void_p 避免 64 位句柄截断；③代码清理：main.py 中 import time 从函数内部移到文件顶部；daemon_run() 文档字符串修正（实际总是返回 0） |
-| **v1.2.0.3** | 同上 | 自适应文件名（d 升）：①**VBS 编码 bug 修复**：自我更新的 VBS 替换器原用 UTF-8 编码写入，但 Windows 脚本宿主（wscript）默认期望系统 ANSI 或 UTF-16 LE BOM 编码；用户若把 exe 改名为中文名（如"点我.exe""倒计时启动器.exe"），oldExe 路径含中文，UTF-8 VBS 在中文系统上会乱码导致解析失败、自我更新静默失效；修复为用 UTF-16 LE BOM 编码写入 VBS（`b"\xff\xfe"` BOM + `utf-16-le` 编码），wscript 原生支持，能正确处理所有 Unicode 字符；②**确认自适应逻辑**：自我更新全程使用 `sys.executable` 动态获取当前 exe 路径（含用户改的文件名），VBS 中 `CopyFile newExe → oldExe` 保留用户文件名，启动也用 oldExe；GitHub Release 资产名固定为 `IdiotLaunch.exe`（下载源），与本地文件名无关，用户可任意改名而不影响自动更新；③新增 test_vbs_encoding_chinese_path 单元测试验证中文路径编码正确性 |
+| **v1.0.0.2** | 同上 | 关闭按钮改用 Countdown Desktop 命名事件 `CountdownDesktop_Quit` 优雅退出；未运行时按钮自动变灰禁用（每 1.5s 轮询互斥量 `CountdownDesktop_Single`）；HoverButton 新增 disabled 视觉态（d 升） |
+| **v1.0.0.3** | 同上 | 内嵌 Countdown Desktop 安装包从 v3.2.0.0 升级至 v3.2.1.1（d 升） |
+| **v1.1.0.0** | 同上 | 完整自动更新体系（c 升）：内嵌保底 + 关闭后 daemon 后台下载 + 退出时静默安装 + 启动时补装 + D 盘状态持久化 |
+| **v1.1.1.0** | 同上 | 新增安装进度弹窗 ProgressDialog（c 升）：置顶、无关闭按钮、indeterminate 进度条 |
+| **v1.1.2.0** | 同上 | 版本元数据 + 强制 noUPX（c 升）：version_info.txt 注入 PE 元数据，spec 中 upx=False |
+| **v1.2.0.0** | 同上 | Idiot Launch 自身后台静默更新（b 升）：daemon 下载新版 + 启动时 VBS 替换 + 原位置原文件名 + 失败安全 |
+| **v1.2.0.1** | 同上 | 代码审查修复（d 升）：daemon 状态丢失 bug、安装返回值检查、None 检查 |
+| **v1.2.0.2** | 同上 | 全面代码审查（d 升）：VBS 替换失败恢复旧版、OpenMutexW 替代 CreateMutexW 消除竞态 |
+| **v1.2.0.3** | 同上 | 自适应文件名（d 升）：VBS 改用 UTF-16 LE BOM 编码支持中文路径，用户可任意改名不影响更新 |
+| **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**：①daemon 从"一次性执行后退出"改为 while True 常驻循环，通过命名互斥量 `IdiotLaunch_Daemon_Single` 保证单实例；GUI 启动时即启动 daemon（不再等关闭），关闭后 daemon 继续后台运行；②文件 IPC：`state.json` 的 daemon 字段传递状态（activity/progress/detail/timestamp/pid），`command.json` 传递 GUI→daemon 命令（如 check_updates）；③多镜像源下载：DOWNLOAD_MIRRORS 列表（直连→gh-proxy.com→ghfast.top→ghproxy.net），每源 3 次重试，重试间隔 30 秒，超时从 600s 改为 900s（15 分钟）；④快捷方式自动重建：ensure_shortcuts() 在 frozen 模式下确保 D:\傻瓜启动器.lnk、用户桌面、公共桌面三个位置存在，用 PowerShell WScript.Shell COM 创建；⑤Inno Setup 安装包 IdiotLaunch.iss：DefaultDirName=D:\IdiotLaunch，DisableDirPage/DisableReadyPage/DisableFinishedPage=yes，CurPageChanged 自动跳过欢迎页直接安装（保留原生进度条），PrivilegesRequired=lowest，Uninstallable=no，安装后创建 D 盘根目录+桌面快捷方式并自动启动；⑥更新状态指示器 UpdateIndicator：GUI 右上角 Canvas 小圆圈，颜色随 daemon 活动变化（灰=空闲/橙=检查/蓝=下载/紫=安装/绿=有更新），点击弹出 UpdateDetailDialog 显示版本/更新日志/daemon 状态/下载源/手动检查按钮；⑦自定义图标 assets/icon.ico（多尺寸 16/32/48/64/128/256，用户提供手指点击图案去白底生成），spec 加 icon 参数，安装包 SetupIconFile 引用；⑧daemon 日志 log_daemon() 写 D:\CountdownDesktop_Updates\daemon.log，自动轮转 100KB；⑨CI 增加 choco install innosetup + ISCC 编译 + 同时上传 exe 和安装包；⑩build.ps1 自动检测 ISCC.exe 并编译安装包 |
 
 ## 三、架构
 
 ```
-IdiotLaunch.exe（单文件，PyInstaller onefile）
-  ├─ tkinter GUI：四个大按钮 + 状态栏（关闭窗口→启动 daemon）
-  ├─ core.find_installed_path()    检测安装（D盘优先 → 注册表 → 常见目录）
-  ├─ core.get_installed_version()  读注册表 DisplayVersion / exe 文件版本
-  ├─ core.install_from_path()      删除旧目录 → Inno /VERYSILENT /DIR=D:\CountdownDesktop
-  ├─ core.launch_countdown()       CountdownDesktop.exe --exam zhongkao|gaokao（DETACHED_PROCESS）
-  ├─ core.open_morning_reading()   webbrowser.open(https://zztool.free.nf/morning-reading)
-  ├─ core.is_running()             互斥量 CountdownDesktop_Single 检测是否在运行
-  ├─ core.quit_countdown()         OpenEvent(CountdownDesktop_Quit) + SetEvent → 优雅退出
-  └─ 自动更新（v1.1.0.0）：
-       core.daemon_run()            --daemon 守护进程：查GitHub→下载→等退出→静默安装
-       core.start_daemon()          GUI关闭时启动 IdiotLaunch.exe --daemon（CREATE_NO_WINDOW）
-       core.get_latest_version_info()  GitHub API 查询最新 release
-       core.download_installer()    下载到 D:\CountdownDesktop_Updates\（.part→rename）
-       core.load_state/save_state() state.json 持久化（D盘，不被冰点还原）
-       core.install_pending_if_idle()  GUI启动时补装待更新
-  └─ 启动器自我更新（v1.2.0.0）：
-       core.get_latest_launcher_info()   GitHub API 查询 idiot-launch 最新 release
-       core._check_and_download_launcher_update()  daemon中下载新版exe到UPDATE_DIR
-       core.has_pending_launcher_update()   检查是否有待替换的更新
-       core.apply_launcher_update_if_pending()  启动时生成VBS→退出→VBS覆盖旧exe→启动新版→自删除
-       core._cleanup_stale_launcher_pending()  清理已过期的待更新记录
-       LAUNCHER_VERSION 常量（core.py单一来源，main.py导入）
-内嵌资源：_MEIPASS/installer/CountdownDesktop_Setup_<EMBEDDED_VERSION>.exe
+IdiotLaunch.exe（单文件，PyInstaller onefile）或 IdiotLaunch_Setup.exe（Inno Setup 安装包）
+  │
+  ├─ 前端 GUI（tkinter）：
+  │   ├─ 四个大按钮（中考/高考/早晚读/关闭倒计时）
+  │   ├─ 右上角 UpdateIndicator（更新状态小圆圈，点击→UpdateDetailDialog）
+  │   ├─ 状态栏（安装状态 + daemon 活动）
+  │   ├─ 启动时：start_daemon() 确保 daemon 运行 + ensure_shortcuts() 确保快捷方式
+  │   └─ 关闭时：daemon 已常驻，仅作安全网确认
+  │
+  ├─ 后端 Daemon（--daemon，无窗口，while True 常驻）：
+  │   ├─ _acquire_daemon_mutex() 单实例（命名互斥量 IdiotLaunch_Daemon_Single）
+  │   ├─ 主循环：处理 command.json 命令 → 检查 launcher 更新 → 检查 pending 安装
+  │   │   → 每 6 小时检查 Countdown Desktop 更新 → 多源下载 → 等退出 → 静默安装
+  │   ├─ set_daemon_status() 写 state.json 的 daemon 字段（GUI 读取显示）
+  │   ├─ log_daemon() 写 daemon.log（自动轮转 100KB）
+  │   └─ 睡眠 30 秒/轮，期间每 5 秒检查一次 command.json
+  │
+  ├─ 文件 IPC（D:\CountdownDesktop_Updates\）：
+  │   ├─ state.json    — 持久化状态（last_check, pending_installer, pending_launcher_path, daemon{}）
+  │   ├─ command.json  — GUI→daemon 命令（如 {"cmd":"check_updates"}），daemon 读取后删除
+  │   └─ daemon.log    — daemon 运行日志
+  │
+  ├─ 核心功能（core.py）：
+  │   ├─ find_installed_path()    检测安装（D盘优先 → 注册表 → 常见目录）
+  │   ├─ get_installed_version()  读注册表 DisplayVersion / exe 文件版本
+  │   ├─ install_from_path()      删除旧目录 → Inno /VERYSILENT /DIR=D:\CountdownDesktop
+  │   ├─ launch_countdown()       CountdownDesktop.exe --exam zhongkao|gaokao（DETACHED_PROCESS）
+  │   ├─ open_morning_reading()   webbrowser.open(https://zztool.free.nf/morning-reading)
+  │   ├─ is_running()             OpenMutexW(CountdownDesktop_Single) 检测运行
+  │   ├─ quit_countdown()         OpenEvent(CountdownDesktop_Quit) + SetEvent → 优雅退出
+  │   ├─ download_installer()     多源循环下载（直连→3镜像，每源3次重试，900s超时）
+  │   ├─ ensure_shortcuts()       D盘根目录+桌面快捷方式自动重建（PowerShell COM）
+  │   └─ 自动更新体系（见下方）
+  │
+  └─ 内嵌资源：_MEIPASS/installer/CountdownDesktop_Setup_<EMBEDDED_VERSION>.exe
+              _MEIPASS/assets/icon.ico
 ```
+
+### 自动更新体系
+
+**Countdown Desktop 更新**：
+1. daemon 每 6 小时调 `get_latest_version_info()` 查 GitHub API
+2. 有新版 → `download_installer()` 多源下载到 `D:\CountdownDesktop_Updates\`
+3. 下载完成 → 标记 `pending_installer` + `download_complete=True`
+4. `_wait_and_install()` 等 Countdown Desktop 退出（最多 2 小时）→ 删旧目录 → 静默安装
+5. GUI 启动时 `install_pending_if_idle()` 补装（daemon 可能因倒计时一直开着没装）
+
+**Idiot Launch 自身更新**：
+1. daemon 每 6 小时调 `get_latest_launcher_info()` 查自身 GitHub API
+2. 有新版 → `download_installer()` 多源下载到 `D:\CountdownDesktop_Updates\IdiotLaunch_v<ver>.exe`
+3. 标记 `pending_launcher_path` + `pending_launcher_version`
+4. 下次启动时 `apply_launcher_update_if_pending()` 生成 UTF-16 LE BOM 编码的 VBS → 退出 → VBS 覆盖旧 exe → 启动新版 → 自删除
+5. `_cleanup_stale_launcher_pending()` 自动清理已过期（版本<=当前）的待更新记录
 
 ### 安装检测优先级
 
@@ -71,80 +111,111 @@ Inno Setup 标准参数：
 - `/SUPPRESSMSGBOXES` — 抑制所有消息框
 - `/DIR=D:\CountdownDesktop` — 强制安装到 D 盘
 
-Countdown Desktop 安装包本身 `PrivilegesRequired=lowest`，无需管理员权限；内置 WebView2 Bootstrapper，缺失时自动静默安装。
-
 ### 带参启动
 
-- `CountdownDesktop.exe --exam zhongkao` — 中考倒计时（壁纸+屏保统一使用 `countdown-junior` 页面）
-- `CountdownDesktop.exe --exam gaokao` — 高考倒计时（壁纸+屏保统一使用 `countdown` 页面）
-- Countdown Desktop v3.2.1.1 内置单实例接管：已有实例运行时，新启动自动通知旧实例退出并接管，后启动者覆盖先启动者效果。
+- `CountdownDesktop.exe --exam zhongkao` — 中考倒计时
+- `CountdownDesktop.exe --exam gaokao` — 高考倒计时
+- Countdown Desktop v3.2.1.1 内置单实例接管，重复点击自动切换。
 - 使用 `DETACHED_PROCESS`（0x00000008）创建子进程，启动器关闭不影响倒计时运行。
+
+### 多镜像源下载
+
+```python
+DOWNLOAD_MIRRORS = [
+    "",                          # GitHub 直连
+    "https://gh-proxy.com/",     # 镜像 1
+    "https://ghfast.top/",       # 镜像 2（实测最快）
+    "https://ghproxy.net/",      # 镜像 3
+]
+```
+- 每个源超时 900 秒（15 分钟）
+- 全部源失败后重试，最多 3 轮，轮间间隔 30 秒
+- `.part` 临时文件下载，完成后 rename，校验 Content-Length
+
+### Inno Setup 安装包（v1.3.0.0 新增）
+
+- `DefaultDirName=D:\IdiotLaunch`，`DisableDirPage=yes`（不允许改路径）
+- `DisableReadyPage=yes` + `DisableFinishedPage=yes` + `CurPageChanged` 自动跳过欢迎页
+- 用户双击安装包后直接开始安装，仅显示原生进度条（无需点"下一步"）
+- `PrivilegesRequired=lowest` 免管理员
+- `Uninstallable=no`（学校环境不需要卸载）
+- 安装后自动创建 D 盘根目录快捷方式（Pascal Code 中 WScript.Shell）+ 桌面快捷方式（[Icons] 段）
+- 安装完成后自动启动 IdiotLaunch.exe
+- `SetupIconFile=assets\icon.ico` 安装包图标
 
 ## 四、踩过的错误 / 经验
 
 ### 内嵌大文件与 Git
 
-1. **安装包不入库**：Countdown Desktop 安装包约 39 MB，不提交到 Git（`.gitignore` 排除 `installer/*.exe`）。构建时由 `build.ps1` 或 GitHub Actions 自动从 countdown-desktop Releases 下载。PyInstaller 在打包时将其作为 `datas` 内嵌进 exe。
+1. **安装包不入库**：Countdown Desktop 安装包约 39 MB，不提交到 Git（`.gitignore` 排除 `installer/*.exe`）。构建时由 `build.ps1` 或 GitHub Actions 自动下载。
 
 ### tkinter 打包
 
 2. **tkinter 是标准库**：无需额外 pip 安装，PyInstaller 自动识别。`requirements.txt` 仅含 `pyinstaller`。
-3. **`console=False`**：GUI 程序必须关闭控制台，否则会弹出黑色命令行窗口。
+3. **`console=False`**：GUI 程序必须关闭控制台。
 
 ### 学校环境适配
 
-4. **D 盘强制安装**：Inno Setup 的 `/DIR=` 参数可覆盖 `DefaultDirName`，即使安装包默认装到 `{autopf}`（用户目录，通常在 C 盘），也能强制装到 D 盘。
-5. **冰点还原**：C 盘重启后重置，D 盘通常不受保护。安装路径、配置文件（Countdown Desktop 的 `%APPDATA%` 配置在 C 盘，会被重置——但倒计时类型通过 `--exam` 参数每次启动时指定，不依赖持久化配置）。
-6. **无需管理员**：Countdown Desktop 安装包 `PrivilegesRequired=lowest`，学生账号也能安装。
+4. **D 盘强制安装**：Inno Setup 的 `/DIR=` 参数可覆盖默认路径。
+5. **冰点还原**：C 盘重启后重置，D 盘通常不受保护。安装路径、更新状态、daemon 日志均在 D 盘。
+6. **无需管理员**：Countdown Desktop 和 Idiot Launch 安装包均 `PrivilegesRequired=lowest`。
 
 ### 进程管理
 
-7. **DETACHED_PROCESS**：如果用普通 `subprocess.Popen`，启动器退出时子进程可能收到 CTRL_CLOSE_EVENT。使用 `creationflags=DETACHED_PROCESS` 让子进程完全独立。
-8. **单实例接管**：Countdown Desktop 自己处理单实例，启动器无需检测是否已在运行，直接带参启动即可切换类型。
+7. **DETACHED_PROCESS**：让子进程完全独立于启动器。
+8. **单实例接管**：Countdown Desktop 自己处理单实例。
 
-### 一键关闭（v1.0.0.1 → v1.0.0.2 演进）
+### 一键关闭
 
-9. **v1.0.0.1 用 taskkill /F /T**：简单粗暴，但强杀可能导致壁纸窗口残留、桌面白屏，且用户明确要求用 Countdown Desktop 自带的优雅退出机制。
-10. **v1.0.0.2 改用命名事件**：Countdown Desktop 运行时创建命名事件 `CountdownDesktop_Quit`（手动重置、初始无信号），主进程 QTimer 每 250ms 轮询 `WaitForSingleObject(h, 0)`，收到信号后调用 `quit()`——停壁纸/屏保、`refresh_desktop_wallpaper()` 恢复桌面、删 PID、退托盘。启动器只需 `OpenEventW(EVENT_MODIFY_STATE, False, "CountdownDesktop_Quit")` + `SetEvent` + `CloseHandle`，不启动额外进程、不依赖已安装 exe 版本。
-11. **退出确认**：SetEvent 后轮询互斥量 `CountdownDesktop_Single`（每 250ms，最多 8s），互斥量释放即说明实例已退出。超时返回 False（不做强杀兜底，遵循用户"不要粗暴"要求）。
-12. **运行状态检测用互斥量不用 tasklist**：`CreateMutexW("CountdownDesktop_Single")` 后 `GetLastError()==183(ERROR_ALREADY_EXISTS)` 即表示有实例在运行，比解析 tasklist 输出更快更可靠。
-13. **按钮变灰机制**：GUI 每 1.5s 后台线程调 `is_running()`，通过 `root.after` 回主线程更新 `btn_kill.set_enabled(running)`。HoverButton 新增 `_enabled` 状态：禁用时绘浅灰 `#bdc3c7`、文字 `#ecf0f1`、cursor=arrow、解绑点击；加载中（`_loading`）时所有按钮统一禁用。
-14. **旧版不支持退出事件**：若运行的是旧版 Countdown Desktop（无 `CountdownDesktop_Quit` 事件），`OpenEventW` 返回 NULL，抛 RuntimeError 提示版本过旧。学校环境统一装最新版不存在此问题。
+9. **命名事件优雅退出**：`OpenEventW(CountdownDesktop_Quit)` + `SetEvent`，不 taskkill。
+10. **OpenMutexW 而非 CreateMutexW**：后者会创建互斥量，微秒级窗口内 Countdown Desktop 启动会误判已有实例。
+11. **按钮变灰**：GUI 每 1.5s 后台线程调 `is_running()`，回主线程更新按钮状态。
 
-### 自动更新（v1.1.0.0）
+### 自动更新
 
-15. **三层更新策略**：①内嵌保底版本（开箱即用，不等下载）；②关闭 GUI 后启动 `--daemon` 无窗口进程后台查 GitHub+下载；③下载完等 Countdown Desktop 退出后静默安装。三者结合保证既开箱即用又能自动跟进最新版。
-16. **状态文件放 D 盘**：`D:\CountdownDesktop_Updates\state.json` 记录 last_check / pending_version / pending_installer / download_complete。C 盘冰点还原不影响 D 盘，重启后待安装更新依然有效。
-17. **daemon 生命周期**：GUI 关闭时 `start_daemon()` 用 `DETACHED_PROCESS|CREATE_NO_WINDOW` 启动 `IdiotLaunch.exe --daemon`。daemon 流程：有待安装→等退出→安装→退出；无待安装且距上次检查<6h→直接退出；需检查→查GitHub→有新版→下载→等退出→安装；无新版→退出。最多等 2 小时，超时保留状态下次处理。
-18. **下载容错**：`.part` 临时文件下载，完成后 rename；校验 Content-Length；失败不崩溃，状态保留下次重试。超时 10 分钟适配 GitHub 不稳定。
-19. **安装前删旧目录**：`install_from_path()` 先 `shutil.rmtree(D:\CountdownDesktop)` 再运行 Inno Setup，确保干净升级（用户明确要求"删除原文件夹"）。需确保 Countdown Desktop 未运行（daemon 等退出后才装）。
-20. **版本号比较**：`parse_version()` 容错处理 `v` 前缀和不足 4 段的版本号，`compare_versions()` 返回 -1/0/1。本地版本从注册表 DisplayVersion 读取，回退到 exe 文件版本信息（VerQueryValueW）。
-21. **EMBEDDED_VERSION 单一来源**：core.py 中 `EMBEDDED_VERSION` 常量是内嵌版本的唯一真相，`INSTALLER_REL` 用 f-string 自动拼接文件名。升级内嵌版本只需改这一个常量 + 放新安装包 + 更新 build.ps1/release.yml 的下载 URL。
-22. **启动时补装**：`_check_pending_update_on_start()` 在 GUI 启动时后台检查，若有待安装更新且 Countdown Desktop 未运行，立即安装（daemon 可能因倒计时一直开着没来得及装）。
-23. **version_info.txt 发版必更**：每次发版必须同步更新 `version_info.txt` 中的 `filevers`、`prodvers`、`FileVersion`、`ProductVersion` 四处版本号，与 `main.py` 的 VERSION 保持一致。该文件注入 PE 元数据（公司名/产品名/版权），降低 SmartScreen 误报。spec 中 `version='version_info.txt'` 引用，`upx=False` 强制不压缩。
-24. **单文件自我更新的两阶段方案**：Windows 不允许覆盖正在运行的 exe，因此采用"后台下载 + 启动时替换"两阶段。daemon 只负责下载和标记待更新，不尝试替换自己；替换在下次启动时由 VBScript 完成。VBScript 用 `wscript //B` 完全无窗口运行（bat 会闪黑框），每 500ms 重试 CopyFile（最多 15 秒）等待旧进程释放文件锁，成功后启动新版并自删除。
-25. **自我更新不清除 pending 状态**：apply_launcher_update_if_pending() 退出前不清除 pending_launcher_path/version。如果 VBS 替换失败，下次启动再试；如果替换成功，新版运行时 LAUNCHER_VERSION 已更新，_cleanup_stale_launcher_pending() 检测到 pending 版本 <= 当前版本，自动清理文件和状态。这避免了"清除状态后替换失败导致永远丢失更新"的问题。
-26. **自我更新仅 frozen 模式**：所有自我更新函数（has_pending_launcher_update、apply_launcher_update_if_pending、_check_and_download_launcher_update）开头都检查 `getattr(sys, "frozen", False)`，开发模式下直接返回。开发模式下 sys.executable 是 python.exe 而非 IdiotLaunch.exe，不能做自我替换。
-27. **LAUNCHER_VERSION 单一来源**：版本号从 main.py 移到 core.py 的 LAUNCHER_VERSION 常量，main.py 用 `from src.core import LAUNCHER_VERSION` 导入。core.py 中的自我更新函数需要比较版本号，放在 core.py 避免循环导入（core.py 不 import main.py）。
+12. **三层更新策略**：内嵌保底 + daemon 后台下载 + 退出时静默安装。
+13. **daemon 常驻（v1.3.0.0）**：从"一次性执行后退出"改为 while True 循环。GUI 启动时即启动 daemon，关闭后继续运行。单实例通过命名互斥量保证。频繁开关 GUI 不影响更新。
+14. **文件 IPC（v1.3.0.0）**：daemon 状态写 state.json 的 daemon 字段（带 timestamp，GUI 端 5 分钟过期判定），命令通过 command.json 传递（daemon 读取后删除）。比命名管道/套接字简单可靠，且 D 盘持久化。
+15. **多源下载（v1.3.0.0）**：GitHub 直连在校园网极慢（实测 ~55KB/s，48MB 需 15 分钟），镜像源 ghfast.top 实测最快。4 个源循环 + 3 轮重试 + 900s 超时 = 最坏情况 4×3×15min = 3 小时，但实际通常第一个镜像就成功。
+16. **快捷方式自动重建（v1.3.0.0）**：ensure_shortcuts() 每次启动检查 D 盘根目录+用户桌面+公共桌面。用 PowerShell `WScript.Shell` COM 创建 .lnk。frozen 模式才执行（开发模式跳过）。即使冰点还原清除快捷方式，下次启动自动加回。
+17. **Inno Setup 自动安装（v1.3.0.0）**：`CurPageChanged` 中检测 `wpWelcome` 时自动调用 `NextButton.OnClick`，配合所有页面 Disable，实现"打开即装"但保留进度条。用户实测安装包形式基本不弹 SmartScreen。
+18. **Inno Setup 7 兼容性**：`ArchitecturesInstallIn64BitMode=x64` 在 IS7 中已弃用，改用 `x64compatible`。`GetDriveType` 不是内置函数，用 `DirExists('D:\')` 替代。
+19. **状态文件放 D 盘**：冰点还原不影响。
+20. **下载容错**：`.part` 临时文件 + Content-Length 校验 + 失败保留状态。
+21. **安装前删旧目录**：`shutil.rmtree` 确保干净升级。
+22. **版本号比较**：`parse_version()` 容错处理 `v` 前缀和不足 4 段。
+23. **EMBEDDED_VERSION 单一来源**：升级内嵌版本只需改常量 + 放新安装包 + 更新下载 URL。
+24. **version_info.txt 发版必更**：四处版本号（filevers/prodvers/FileVersion/ProductVersion）必须同步。
+25. **单文件自我更新两阶段**：后台下载 + 启动时 VBS 替换。VBS 用 `wscript //B` 无窗口，UTF-16 LE BOM 编码支持中文路径。
+26. **自我更新不清除 pending**：替换成功后新版运行时 `_cleanup_stale_launcher_pending` 自动清理。
+27. **自我更新仅 frozen 模式**：开发模式下 `sys.executable` 是 python.exe，不能做自我替换。
+28. **LAUNCHER_VERSION 单一来源**：放在 core.py 避免循环导入。
+29. **更新状态指示器（v1.3.0.0）**：Canvas 绘制圆圈，颜色映射 daemon activity。有 pending 更新时强制绿色。点击弹出详情窗口，包含手动检查更新按钮（通过 send_command("check_updates") 通知 daemon）。
+30. **自定义图标（v1.3.0.0）**：用户提供手指点击图片，Pillow 去白底 + 裁剪 + 生成多尺寸 ICO。spec 加 `icon='assets/icon.ico'`，datas 加 `("assets", "assets")` 确保运行时 iconbitmap 能找到。
 
 ## 五、项目结构
 
 ```
 idiot-launch/
-├── run.py                      入口（调用 src.main.main）
+├── run.py                      入口（无参=GUI，--daemon=守护进程；GUI前先检查自我更新）
 ├── src/
 │   ├── __init__.py             resource_path（打包资源路径解析）
-│   ├── core.py                 核心逻辑（安装检测/静默安装/带参启动/打开网页）
-│   └── main.py                 GUI（tkinter，HoverButton 三按钮 + 状态栏 + 后台线程）
+│   ├── core.py                 核心逻辑（安装/启动/退出/自动更新/daemon/快捷方式/多源下载/日志）
+│   └── main.py                 GUI（tkinter，四按钮 + UpdateIndicator + UpdateDetailDialog + 状态栏）
+├── assets/
+│   ├── icon.ico                应用图标（多尺寸 16/32/48/64/128/256）
+│   └── icon_source.png         图标源图（用户提供）
 ├── installer/
 │   └── CountdownDesktop_Setup_3.2.1.1.exe  （构建时下载，gitignore）
-├── tools/                      辅助脚本（预留）
-├── build.ps1                   本地一键构建（venv + 下载安装包 + PyInstaller --noupx）
-├── IdiotLaunch.spec            PyInstaller 规格（onefile + datas 内嵌 + upx=False + version 元数据）
-├── version_info.txt            PE 版本元数据（公司名/产品名/版权/版本号，发版必更）
+├── tools/
+│   └── test_core.py            单元测试（20 项）
+├── build.ps1                   本地一键构建（venv + 下载 + PyInstaller + Inno Setup）
+├── IdiotLaunch.spec            PyInstaller 规格（onefile + 内嵌安装包+图标 + upx=False + version 元数据）
+├── IdiotLaunch.iss             Inno Setup 安装脚本（自动安装到 D 盘，原生进度条）
+├── version_info.txt            PE 版本元数据（发版必更四处版本号）
 ├── requirements.txt            pyinstaller
 ├── .gitignore                  排除 venv/build/dist/installer/*.exe
-├── .github/workflows/release.yml   tag→构建→Release
+├── .github/workflows/release.yml   tag→构建（PyInstaller + Inno Setup）→Release（双文件上传）
 ├── README.md                   用户文档
 ├── HANDOFF.md                  本文档（每次更新强制同步）
 └── LICENSE                     GPL-3.0
@@ -155,51 +226,68 @@ idiot-launch/
 | 工具 | 版本 | 说明 |
 |------|------|------|
 | Python | 开发机 3.14；CI 3.12 | tkinter 标准库 |
-| PyInstaller | 6.x | onefile 打包，内嵌安装包 |
+| PyInstaller | 6.x | onefile 打包，内嵌安装包+图标 |
+| Inno Setup | 7.x | 安装包编译（ISCC.exe） |
+| Pillow | 开发用 | 图标处理（去白底、生成 ICO） |
 | git / gh | 已登录 tgcz2011 | 推送与 release |
-| GitHub Actions | windows-latest | 自动构建发布 |
+| GitHub Actions | windows-latest | 自动构建发布（choco 装 innosetup） |
 
 ## 七、构建与发布
 
 ```powershell
-# 本地构建
-.\build.ps1 -Version 1.0.0.0
-# 产物：dist\IdiotLaunch.exe
+# 本地构建（自动 venv + 下载安装包 + PyInstaller + Inno Setup）
+.\build.ps1 -Version 1.3.0.0
+# 产物：dist\IdiotLaunch.exe（48MB）+ dist\IdiotLaunch_Setup_1.3.0.0.exe（50MB）
 
 # 发布
 git add -A
-git commit -m "v1.0.0.0: initial release"
-git tag v1.0.0.0
-git push origin main v1.0.0.0
-# GitHub Actions 自动构建并创建 Release
+git commit -m "v1.3.0.0: daemon常驻 + 多源下载 + Inno Setup安装包 + 快捷方式重建 + 更新指示器"
+git tag v1.3.0.0
+git push origin main v1.3.0.0
+# GitHub Actions 自动构建并创建 Release（同时上传 exe 和安装包）
 ```
 
 ## 八、版本规则
 
-a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.2.0.3。
+a=大添加 b=大改 c=小添加 d=小改动；去掉 `.` 后数值必须严格大于上一版本。当前最高已发布 tag：v1.2.0.3（v1.3.0.0 开发中）。
 
 ## 九、已知限制 / 待办
 
-1. **D 盘不存在时报错**：若电脑无 D 盘，静默安装会失败。未来可增加自动回退到 C 盘或让用户选择路径。
-2. **安装包版本固定**：当前内嵌 v3.2.1.1，升级 Countdown Desktop 版本需更新 `INSTALLER_REL`、`build.ps1`、`release.yml` 和 README 中的版本号。
-3. **无自动更新**：启动器本身不检查更新，需手动下载新版。
-4. **早晚读用系统默认浏览器**：学校电脑默认浏览器可能被组策略锁定，若无法打开需手动复制链接。
-5. **tkinter 界面较朴素**：功能优先，未使用 PySide6 等高级 UI 框架（保持零运行时依赖、打包体积小）。
+1. **D 盘不存在时报错**：安装包会弹窗提示并中止；单文件版静默安装失败。
+2. **安装包版本固定**：当前内嵌 v3.2.1.1，升级需更新常量 + 安装包 + 下载 URL。
+3. **早晚读用系统默认浏览器**：学校电脑可能被组策略锁定。
+4. **tkinter 界面较朴素**：功能优先，保持零运行时依赖。
+5. **daemon 无 GUI 退出入口**：daemon 设计为常驻后台，用户无法从 GUI 停止 daemon（如需停止需任务管理器结束 IdiotLaunch.exe 进程）。这是有意设计——保证更新不中断。
+6. **快捷方式重建仅在启动时**：如果运行期间快捷方式被删除，需重启启动器才会重建。未来可在 daemon 循环中加入定期检查。
+7. **GitHub API 速率限制**：未认证请求 60 次/小时/IP。daemon 每 6 小时检查一次（两个项目各一次），远低于限制。学校多台电脑共用公网 IP 时可能触发，但 6 小时间隔足够宽松。
 
 ## 十、验证方法备忘
 
 ```powershell
-# 1. 源码运行（需先下载安装包到 installer\）
+# 1. 单元测试
+python tools/test_core.py
+
+# 2. 源码运行（需先下载安装包到 installer\）
 python run.py
 
-# 2. 构建后运行
+# 3. 构建后运行
 .\dist\IdiotLaunch.exe
 
-# 3. 验证静默安装（手动测试）
-.\installer\CountdownDesktop_Setup_3.2.1.1.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=D:\CountdownDesktop
-# 检查 D:\CountdownDesktop\CountdownDesktop.exe 是否存在
+# 4. 安装包测试（自动安装到 D:\IdiotLaunch）
+.\dist\IdiotLaunch_Setup_1.3.0.0.exe
+# 检查 D:\IdiotLaunch\IdiotLaunch.exe、D:\傻瓜启动器.lnk、桌面快捷方式
 
-# 4. 验证带参启动
+# 5. 验证静默安装 Countdown Desktop
+.\installer\CountdownDesktop_Setup_3.2.1.1.exe /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=D:\CountdownDesktop
+
+# 6. 验证带参启动
 D:\CountdownDesktop\CountdownDesktop.exe --exam zhongkao
 D:\CountdownDesktop\CountdownDesktop.exe --exam gaokao
+
+# 7. 验证 daemon 常驻
+# 启动 IdiotLaunch 后关闭 GUI，任务管理器中应仍有 IdiotLaunch.exe 进程
+# 查看 D:\CountdownDesktop_Updates\daemon.log
+
+# 8. 验证多源下载
+# 断开 GitHub 直连（修改 hosts），daemon 应自动 fallback 到镜像源
 ```

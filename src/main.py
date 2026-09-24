@@ -1,9 +1,6 @@
 """
 main.py — Idiot Launch 主入口与 GUI
-四个大按钮：中考倒计时 / 高考倒计时 / 早晚读 / 关闭倒计时
-傻瓜式操作，无需任何配置。
-关闭倒计时按钮：Countdown Desktop 未运行时自动变灰不可点击。
-关闭窗口后启动后台守护进程，自动检查并下载 Countdown Desktop 更新。
+v1.3.0.0: 图标、右上角更新状态指示器、daemon 常驻启动、快捷方式自动重建。
 """
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -19,8 +16,14 @@ from src.core import (
     find_installed_path,
     is_running,
     start_daemon,
+    is_daemon_running,
     install_pending_if_idle,
     has_pending_update,
+    ensure_shortcuts,
+    get_daemon_status,
+    load_state,
+    send_command,
+    resource_path,
     EMBEDDED_VERSION,
     APP_NAME,
     LAUNCHER_VERSION,
@@ -28,14 +31,13 @@ from src.core import (
 
 VERSION = LAUNCHER_VERSION
 
-# ── 配色 ──
 BG_COLOR = "#f5f7fa"
-BTN_ZHONGKAO = "#e74c3c"       # 红色 — 中考
-BTN_GAOKAO = "#2980b9"         # 蓝色 — 高考
-BTN_READING = "#27ae60"        # 绿色 — 早晚读
-BTN_KILL = "#5d6d7e"           # 深灰 — 关闭倒计时
-BTN_DISABLED = "#bdc3c7"       # 浅灰 — 禁用态
-BTN_DISABLED_TEXT = "#ecf0f1"  # 禁用态文字
+BTN_ZHONGKAO = "#e74c3c"
+BTN_GAOKAO = "#2980b9"
+BTN_READING = "#27ae60"
+BTN_KILL = "#5d6d7e"
+BTN_DISABLED = "#bdc3c7"
+BTN_DISABLED_TEXT = "#ecf0f1"
 BTN_HOVER_ZHONGKAO = "#c0392b"
 BTN_HOVER_GAOKAO = "#1f6fa0"
 BTN_HOVER_READING = "#1e8449"
@@ -43,10 +45,16 @@ BTN_HOVER_KILL = "#4a5568"
 TEXT_COLOR = "#2c3e50"
 STATUS_COLOR = "#7f8c8d"
 
+# 更新状态指示器颜色
+INDICATOR_IDLE = "#95a5a6"       # 灰色 - 空闲
+INDICATOR_CHECKING = "#f39c12"   # 橙色 - 检查中
+INDICATOR_DOWNLOADING = "#3498db" # 蓝色 - 下载中
+INDICATOR_INSTALLING = "#9b59b6" # 紫色 - 安装中
+INDICATOR_WAITING = "#e67e22"    # 深橙 - 等待中
+INDICATOR_UPDATE_READY = "#2ecc71" # 绿色 - 有更新待应用
+
 
 class HoverButton(tk.Canvas):
-    """带悬停效果和禁用态的大按钮（Canvas 绘制圆角矩形）。"""
-
     def __init__(self, parent, text, subtext, color, hover_color, command,
                  width=320, height=110):
         super().__init__(parent, width=width, height=height, bg=BG_COLOR,
@@ -68,17 +76,14 @@ class HoverButton(tk.Canvas):
         self.delete("all")
         r = 16
         w, h = self.width, self.height
-        # 圆角矩形（四个矩形+四个椭圆拼出）
         self.create_rectangle(r, 0, w - r, h, fill=color, outline="")
         self.create_rectangle(0, r, w, h - r, fill=color, outline="")
         self.create_oval(0, 0, 2 * r, 2 * r, fill=color, outline="")
         self.create_oval(w - 2 * r, 0, w, 2 * r, fill=color, outline="")
         self.create_oval(0, h - 2 * r, 2 * r, h, fill=color, outline="")
         self.create_oval(w - 2 * r, h - 2 * r, w, h, fill=color, outline="")
-        # 主文字
         self.create_text(w // 2, h // 2 - 10, text=self.text, fill=text_color,
                          font=("Microsoft YaHei UI", 22, "bold"))
-        # 副文字
         self.create_text(w // 2, h // 2 + 24, text=self.subtext,
                          fill=BTN_DISABLED_TEXT if not self._enabled else "white",
                          font=("Microsoft YaHei UI", 11))
@@ -96,7 +101,6 @@ class HoverButton(tk.Canvas):
             self.command()
 
     def set_enabled(self, enabled: bool):
-        """设置按钮启用/禁用状态，禁用时变灰且不响应点击。"""
         self._enabled = enabled
         if enabled:
             self._draw(self.color)
@@ -106,81 +110,214 @@ class HoverButton(tk.Canvas):
             self.configure(cursor="arrow")
 
 
-class ProgressDialog:
-    """
-    安装/启动进度弹窗：置顶、无关闭按钮、居中显示，带不确定进度条。
-    防止老师在教室电脑上因安装耗时较长而误以为软件卡死。
-    """
+class UpdateIndicator(tk.Canvas):
+    """右上角更新状态小圆圈，点击显示详情。"""
 
+    def __init__(self, parent, on_click):
+        super().__init__(parent, width=36, height=36, bg=BG_COLOR,
+                         highlightthickness=0, cursor="hand2")
+        self.on_click = on_click
+        self.current_color = INDICATOR_IDLE
+        self._draw(INDICATOR_IDLE, "")
+        self.bind("<Button-1>", lambda e: on_click())
+
+    def _draw(self, color, tooltip=""):
+        self.delete("all")
+        # 外圈
+        self.create_oval(4, 4, 32, 32, fill=color, outline="", tags="circle")
+        # 内圈（高光）
+        self.create_oval(10, 8, 26, 22, fill="", outline="white", width=1)
+        self.current_color = color
+
+    def set_status(self, activity: str, detail: str = ""):
+        """根据 daemon 活动状态更新颜色。"""
+        color_map = {
+            "idle": INDICATOR_IDLE,
+            "starting": INDICATOR_IDLE,
+            "stopped": INDICATOR_IDLE,
+            "checking": INDICATOR_CHECKING,
+            "downloading": INDICATOR_DOWNLOADING,
+            "installing": INDICATOR_INSTALLING,
+            "waiting": INDICATOR_WAITING,
+        }
+        color = color_map.get(activity, INDICATOR_IDLE)
+        # 如果有已下载待安装的更新，显示绿色
+        state = load_state()
+        if (state.get("pending_installer") and state.get("download_complete")) or \
+           state.get("pending_launcher_path"):
+            color = INDICATOR_UPDATE_READY
+        if color != self.current_color:
+            self._draw(color)
+
+
+class ProgressDialog:
     def __init__(self, parent, title: str, subtitle: str = "",
                  hint: str = "教室电脑性能有限，请耐心等待，请勿关闭"):
         self.parent = parent
-
         self.win = tk.Toplevel(parent)
-        self.win.overrideredirect(True)  # 无标题栏，防止误关
+        self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="#ffffff")
-
-        # 窗口尺寸与居中
         w, h = 380, 170
         sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
         x = (sw - w) // 2
         y = (sh - h) // 2
         self.win.geometry(f"{w}x{h}+{x}+{y}")
-
-        # 顶部色条
         top_bar = tk.Frame(self.win, bg="#2980b9", height=6)
         top_bar.pack(fill="x", side="top")
-
-        # 内容区
         content = tk.Frame(self.win, bg="#ffffff", padx=30, pady=20)
         content.pack(fill="both", expand=True)
-
-        # 标题
         self.title_label = tk.Label(
             content, text=title, font=("Microsoft YaHei UI", 16, "bold"),
             bg="#ffffff", fg="#2c3e50",
         )
         self.title_label.pack(anchor="w")
-
-        # 副标题
         self.subtitle_label = tk.Label(
             content, text=subtitle, font=("Microsoft YaHei UI", 10),
             bg="#ffffff", fg="#7f8c8d",
         )
         self.subtitle_label.pack(anchor="w", pady=(4, 0))
-
-        # 进度条（不确定模式，来回滚动）
         self.progress = ttk.Progressbar(
             content, mode="indeterminate", length=320, maximum=100,
         )
         self.progress.pack(pady=(18, 0), fill="x")
-        self.progress.start(12)  # 动画速度（ms/帧）
-
-        # 底部提示
+        self.progress.start(12)
         if hint:
             tk.Label(
                 content, text=hint, font=("Microsoft YaHei UI", 8),
                 bg="#ffffff", fg="#bdc3c7",
             ).pack(anchor="w", pady=(10, 0))
-
         self.win.lift()
         self.win.focus_force()
 
     def update_text(self, title: str, subtitle: str = ""):
-        """动态更新弹窗标题和副标题。"""
         self.title_label.config(text=title)
         if subtitle:
             self.subtitle_label.config(text=subtitle)
 
     def close(self):
-        """关闭弹窗。"""
         try:
             self.progress.stop()
             self.win.destroy()
         except Exception:
             pass
+
+
+class UpdateDetailDialog:
+    """点击更新指示器弹出的详情窗口。"""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.win = tk.Toplevel(parent)
+        self.win.title("更新状态")
+        self.win.configure(bg=BG_COLOR)
+        self.win.resizable(False, False)
+        self.win.transient(parent)
+        self.win.grab_set()
+
+        w, h = 420, 380
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+        frame = tk.Frame(self.win, bg=BG_COLOR, padx=20, pady=15)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(frame, text="更新状态", font=("Microsoft YaHei UI", 16, "bold"),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+
+        self.info_text = tk.Text(frame, width=46, height=14, font=("Microsoft YaHei UI", 9),
+                                 bg="#ffffff", fg=TEXT_COLOR, wrap="word",
+                                 relief="flat", padx=10, pady=10)
+        self.info_text.pack(pady=(10, 10), fill="both", expand=True)
+        self.info_text.config(state="disabled")
+
+        btn_frame = tk.Frame(frame, bg=BG_COLOR)
+        btn_frame.pack(fill="x")
+
+        tk.Button(btn_frame, text="立即检查更新", font=("Microsoft YaHei UI", 10),
+                  bg="#2980b9", fg="white", relief="flat", padx=15, pady=6,
+                  cursor="hand2", command=self._check_now).pack(side="left")
+        tk.Button(btn_frame, text="关闭", font=("Microsoft YaHei UI", 10),
+                  bg="#95a5a6", fg="white", relief="flat", padx=15, pady=6,
+                  cursor="hand2", command=self.win.destroy).pack(side="right")
+
+        self._refresh_info()
+
+    def _refresh_info(self):
+        state = load_state()
+        daemon = get_daemon_status()
+        lines = []
+
+        lines.append("【守护进程】")
+        if daemon:
+            activity_map = {
+                "idle": "后台运行中",
+                "checking": "正在检查更新",
+                "downloading": "正在下载更新",
+                "installing": "正在安装更新",
+                "waiting": "等待倒计时退出",
+                "starting": "启动中",
+                "stopped": "已停止",
+            }
+            act = activity_map.get(daemon.get("activity", "idle"), daemon.get("activity", "未知"))
+            lines.append(f"  状态: {act}")
+            if daemon.get("detail"):
+                lines.append(f"  详情: {daemon['detail']}")
+            lines.append(f"  PID: {daemon.get('pid', '?')}")
+        else:
+            lines.append("  状态: 未运行（关闭窗口后自动启动）")
+
+        lines.append("")
+        lines.append("【Countdown Desktop】")
+        local_ver = "未知"
+        try:
+            from src.core import get_installed_version
+            v = get_installed_version()
+            if v:
+                local_ver = v
+        except Exception:
+            pass
+        lines.append(f"  当前版本: {local_ver}")
+        lines.append(f"  内嵌版本: {EMBEDDED_VERSION}")
+        if state.get("pending_installer") and state.get("download_complete"):
+            lines.append(f"  待安装版本: v{state.get('pending_version', '?')}")
+            lines.append(f"  安装包: {os.path.basename(state['pending_installer'])}")
+            if state.get("release_notes"):
+                notes = state["release_notes"][:200]
+                lines.append(f"  更新日志: {notes}")
+        else:
+            lines.append("  待安装更新: 无")
+
+        lines.append("")
+        lines.append("【Idiot Launch】")
+        lines.append(f"  当前版本: v{VERSION}")
+        if state.get("pending_launcher_path"):
+            lines.append(f"  待更新版本: v{state.get('pending_launcher_version', '?')}")
+            lines.append("  (下次启动时自动应用)")
+            if state.get("launcher_release_notes"):
+                notes = state["launcher_release_notes"][:200]
+                lines.append(f"  更新日志: {notes}")
+        else:
+            lines.append("  待更新: 无")
+
+        lines.append("")
+        lines.append("【下载源】")
+        lines.append("  GitHub 直连 → gh-proxy.com → ghfast.top → ghproxy.net")
+        lines.append("  超时: 15 分钟 / 源，自动 fallback，最多重试 3 轮")
+
+        self.info_text.config(state="normal")
+        self.info_text.delete("1.0", "end")
+        self.info_text.insert("1.0", "\n".join(lines))
+        self.info_text.config(state="disabled")
+
+    def _check_now(self):
+        send_command("check_updates")
+        self._refresh_info()
+        messagebox.showinfo("已发送", "已通知守护进程立即检查更新。\n请稍候，状态会自动更新。", parent=self.win)
 
 
 class IdiotLaunchApp:
@@ -190,24 +327,57 @@ class IdiotLaunchApp:
         self.root.configure(bg=BG_COLOR)
         self.root.resizable(False, False)
 
-        # 窗口居中
-        win_w, win_h = 420, 640
+        # 设置窗口图标
+        try:
+            icon_path = resource_path(os.path.join("assets", "icon.ico"))
+            if os.path.isfile(icon_path):
+                self.root.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+        win_w, win_h = 420, 660
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = (screen_w - win_w) // 2
         y = (screen_h - win_h) // 2
         self.root.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
-        self._loading = False  # 是否处于加载中（所有按钮禁用）
+        self._loading = False
         self._build_ui()
-        # 关闭窗口时启动后台守护进程（检查更新），然后退出 GUI
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 启动时确保 daemon 运行（常驻模式，单实例）
+        self._ensure_daemon()
+        # 启动时确保快捷方式存在（流氓软件模式）
+        self._ensure_shortcuts_async()
+
         self._refresh_install_status()
         self._start_running_monitor()
+        self._start_daemon_monitor()
         self._check_pending_update_on_start()
 
+    def _ensure_daemon(self):
+        def do():
+            try:
+                if not is_daemon_running():
+                    start_daemon()
+            except Exception:
+                pass
+        threading.Thread(target=do, daemon=True).start()
+
+    def _ensure_shortcuts_async(self):
+        def do():
+            try:
+                ensure_shortcuts()
+            except Exception:
+                pass
+        threading.Thread(target=do, daemon=True).start()
+
     def _build_ui(self):
-        # 标题
+        # 右上角更新状态指示器
+        self.update_indicator = UpdateIndicator(self.root, self._show_update_detail)
+        self.update_indicator.place(x=375, y=15)
+
         title = tk.Label(
             self.root, text="傻瓜启动器", font=("Microsoft YaHei UI", 26, "bold"),
             bg=BG_COLOR, fg=TEXT_COLOR,
@@ -220,7 +390,6 @@ class IdiotLaunchApp:
         )
         subtitle.pack(pady=(0, 20))
 
-        # 按钮区
         btn_frame = tk.Frame(self.root, bg=BG_COLOR)
         btn_frame.pack(pady=10)
 
@@ -248,7 +417,6 @@ class IdiotLaunchApp:
         )
         self.btn_kill.pack(pady=8)
 
-        # 状态栏
         self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
         status = tk.Label(
             self.root, textvariable=self.status_var,
@@ -262,8 +430,10 @@ class IdiotLaunchApp:
         )
         version_label.place(relx=0.5, rely=0.97, anchor="s")
 
+    def _show_update_detail(self):
+        UpdateDetailDialog(self.root)
+
     def _refresh_install_status(self):
-        """后台检测安装状态，更新状态栏。"""
         def check():
             path = find_installed_path()
             if path:
@@ -273,15 +443,15 @@ class IdiotLaunchApp:
         threading.Thread(target=check, daemon=True).start()
 
     def _on_close(self):
-        """窗口关闭时：启动后台守护进程检查更新，然后退出 GUI。"""
+        # daemon 已常驻，关闭窗口时不需要再启动（但作为安全网再确认一次）
         try:
-            start_daemon()
+            if not is_daemon_running():
+                start_daemon()
         except Exception:
             pass
         self.root.destroy()
 
     def _check_pending_update_on_start(self):
-        """启动时检查：如果有已下载的待安装更新且 Countdown Desktop 未运行，立即静默安装。"""
         def check():
             if has_pending_update() and not is_running():
                 dialog = [None]
@@ -308,8 +478,6 @@ class IdiotLaunchApp:
         threading.Thread(target=check, daemon=True).start()
 
     def _start_running_monitor(self):
-        """启动运行状态轮询：每 1.5 秒检测 Countdown Desktop 是否在运行，
-        同步更新「关闭倒计时」按钮的启用/禁用状态。"""
         def monitor():
             while True:
                 try:
@@ -318,11 +486,27 @@ class IdiotLaunchApp:
                 except Exception:
                     pass
                 time.sleep(1.5)
+        threading.Thread(target=monitor, daemon=True).start()
 
+    def _start_daemon_monitor(self):
+        """每 3 秒读取 daemon 状态，更新右上角指示器。"""
+        def monitor():
+            while True:
+                try:
+                    daemon = get_daemon_status()
+                    if daemon:
+                        activity = daemon.get("activity", "idle")
+                        detail = daemon.get("detail", "")
+                        self.root.after(0, lambda a=activity, d=detail:
+                                        self.update_indicator.set_status(a, d))
+                    else:
+                        self.root.after(0, lambda: self.update_indicator.set_status("stopped", ""))
+                except Exception:
+                    pass
+                time.sleep(3)
         threading.Thread(target=monitor, daemon=True).start()
 
     def _update_kill_button(self, running: bool):
-        """根据运行状态更新关闭按钮。加载中时保持禁用。"""
         if self._loading:
             self.btn_kill.set_enabled(False)
             return
@@ -331,7 +515,6 @@ class IdiotLaunchApp:
             self.btn_kill.subtext = "退出 Countdown Desktop"
         else:
             self.btn_kill.subtext = "当前未在运行"
-        # 重绘以更新副文字
         if self.btn_kill._enabled:
             self.btn_kill._draw(self.btn_kill.color)
         else:
@@ -339,11 +522,7 @@ class IdiotLaunchApp:
 
     def _run_with_loading(self, action_func, success_msg,
                           title="正在处理", subtitle="请稍候..."):
-        """
-        在后台线程执行操作，期间禁用所有按钮并显示进度弹窗，完成后恢复。
-        进度弹窗置顶且无关闭按钮，防止老师误以为软件卡死。
-        """
-        dialog = [None]  # 用列表包裹以便在闭包中修改
+        dialog = [None]
 
         def show_dialog():
             dialog[0] = ProgressDialog(self.root, title, subtitle)
@@ -372,11 +551,9 @@ class IdiotLaunchApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _set_all_buttons(self, enabled: bool):
-        """设置所有按钮的加载态启用/禁用。关闭按钮额外受运行状态约束。"""
         self._loading = not enabled
         for btn in (self.btn_zhongkao, self.btn_gaokao, self.btn_reading):
             btn.set_enabled(enabled)
-        # 关闭按钮：加载中禁用；非加载中由运行状态决定
         if enabled:
             self._update_kill_button(is_running())
         else:
@@ -415,7 +592,6 @@ class IdiotLaunchApp:
         )
 
     def _do_quit(self):
-        """调用 Countdown Desktop --quit 优雅退出；失败则抛异常。"""
         ok = quit_countdown()
         if not ok:
             raise RuntimeError("Countdown Desktop 退出失败，请手动结束进程")

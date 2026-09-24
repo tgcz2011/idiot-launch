@@ -5,41 +5,71 @@
 - **中考倒计时** — 自动启动 Countdown Desktop（`--exam zhongkao`），未安装则静默安装到 D 盘
 - **高考倒计时** — 自动启动 Countdown Desktop（`--exam gaokao`），未安装则静默安装到 D 盘
 - **早晚读** — 在默认浏览器打开 `https://zztool.free.nf/morning-reading`
-- **关闭倒计时** — 通过命名事件通知 Countdown Desktop 优雅退出（停壁纸、恢复桌面、退托盘）；未运行时按钮自动变灰不可点击
+- **关闭倒计时** — 通过命名事件通知 Countdown Desktop 优雅退出；未运行时按钮自动变灰不可点击
 
 内嵌 Countdown Desktop v3.2.1.1 安装包，首次使用自动安装，无需手动下载。
 
+## 下载与安装
+
+**推荐使用安装包**（`IdiotLaunch_Setup_*.exe`）：
+
+1. 从 [Releases](https://github.com/tgcz2011/idiot-launch/releases) 下载 `IdiotLaunch_Setup_*.exe`。
+2. 双击打开，安装程序自动开始（无需点击"下一步"），仅显示原生进度条。
+3. 自动安装到 `D:\IdiotLaunch`，并在 **D 盘根目录**和**桌面**创建快捷方式。
+4. 安装完成后自动启动。
+
+> 安装包形式基本不会触发 Windows SmartScreen 弹窗（对比单文件 exe）。
+> 也提供单文件绿色版 `IdiotLaunch.exe`，双击即用，但可能触发 SmartScreen。
+
 ## 自动更新机制
 
-Countdown Desktop 会频繁更新，本启动器内置完整的自动更新体系，兼顾开箱即用与后台静默更新：
+### 守护进程常驻（前后端分离）
 
-1. **内嵌保底版本**：每个 Idiot Launch 发行版内嵌一个 Countdown Desktop 安装包，首次使用开箱即用，无需等待下载。
-2. **关闭后后台检查**：关闭启动器窗口时，自动启动无窗口守护进程（`IdiotLaunch.exe --daemon`），查询 GitHub 最新版并慢慢下载更新包（GitHub 不稳定时给足超时，失败下次重试）。
-3. **倒计时退出时静默更新**：更新包下载完成后，守护进程等待 Countdown Desktop 退出；一旦检测到退出，立即删除旧安装目录并静默安装新版，全程无感知。
-4. **启动时补装**：如果守护进程来不及安装（如倒计时一直开着），下次启动启动器时若检测到已下载的更新包且倒计时未运行，会立即补装。
-5. **状态持久化在 D 盘**：`D:\CountdownDesktop_Updates\state.json` 记录检查时间、待安装版本和下载状态，冰点还原不影响。
+v1.3.0.0 起采用前后端分离架构：
 
-> 检查更新间隔为 6 小时，避免频繁请求 GitHub；下载超时 10 分钟，适配不稳定网络。
+- **前端（GUI）**：用户交互界面，关闭后不影响后台。
+- **后端（Daemon）**：无窗口守护进程，启动器打开时自动启动，**关闭后继续常驻后台**，单实例运行（命名互斥量 `IdiotLaunch_Daemon_Single`）。
+- **通信**：通过 `D:\CountdownDesktop_Updates\` 下的文件进行 IPC（`state.json` 状态、`command.json` 命令）。
 
-### Idiot Launch 自身也会自动更新
+频繁打开/关闭启动器不会中断更新流程，daemon 一直在后台运行。
 
-v1.2.0.0 起，启动器自身同样支持后台静默更新，保持单文件特性：
+### Countdown Desktop 自动更新
 
-1. **后台下载**：守护进程（`--daemon`）同时检查 Idiot Launch 自身的 GitHub 最新 Release，有新版则下载到 `D:\CountdownDesktop_Updates\IdiotLaunch_v<版本>.exe`。
-2. **启动时替换**：下次双击启动时，程序检测到已下载的新版，立即生成一个隐藏的 VBScript（Windows 自带，无窗口），然后退出当前进程；VBS 等待进程释放文件后，用新 exe 覆盖旧 exe（原位置），删除下载文件，启动新版，最后自删除。
-3. **用户体验**：程序闪一下关闭，约 1-2 秒后自动重新打开（已是新版），全程无感知，无需手动下载替换。
-4. **失败安全**：如果替换失败（如文件被占用），旧 exe 不受影响，下次启动再试；状态文件记录待更新版本，D 盘持久化不被冰点还原清除。
+1. **内嵌保底版本**：每个发行版内嵌一个 Countdown Desktop 安装包，首次使用开箱即用。
+2. **后台检查下载**：daemon 每 6 小时检查 GitHub 最新版，发现新版后后台下载。
+3. **多镜像源 fallback**：下载依次尝试 GitHub 直连 → gh-proxy.com → ghfast.top → ghproxy.net，每个源超时 15 分钟，最多重试 3 轮，适配校园不稳定网络。
+4. **倒计时退出时静默更新**：下载完成后等待 Countdown Desktop 退出，退出后删除旧目录并静默安装新版。
+5. **启动时补装**：若倒计时一直开着，下次启动时若已下载且未运行则立即补装。
+6. **状态持久化**：`D:\CountdownDesktop_Updates\state.json` 记录所有状态，冰点还原不影响。
 
-> 自我更新仅在打包后的 exe（frozen 模式）中生效，开发模式下自动跳过。
+### Idiot Launch 自身自动更新
 
-### 支持任意文件名（自适应）
+1. **后台下载**：daemon 同时检查自身最新 Release，下载到 `D:\CountdownDesktop_Updates\IdiotLaunch_v<版本>.exe`。
+2. **启动时替换**：下次启动时检测到新版，生成隐藏 VBScript（UTF-16 LE BOM 编码，支持中文路径），退出当前进程 → VBS 等待文件释放 → 覆盖旧 exe（原位置、原文件名）→ 启动新版 → VBS 自删除。
+3. **自适应文件名**：老师可把 exe 改名为任何名字（如"点我.exe"），更新后仍保留该名字。
+4. **失败安全**：替换失败时从新文件恢复旧版，无论成功失败都启动旧 exe，不会丢失程序。
 
-老师可能把 `IdiotLaunch.exe` 改名为任何名字（如"点我.exe""倒计时启动器.exe""教室工具.exe"），**自动更新完全不受影响**，且更新后仍保留用户改过的文件名：
+### 更新状态指示器
 
-- 程序通过 `sys.executable` 动态获取当前 exe 的实际路径和文件名，不硬编码。
-- VBS 替换器将新版复制到当前路径（保留文件名），并以该文件名启动。
-- VBS 脚本使用 UTF-16 LE BOM 编码，Windows 脚本宿主原生支持，中文名/特殊符号路径均不会乱码。
-- GitHub Release 上的下载资产名固定为 `IdiotLaunch.exe`（这是下载源），与本地文件名无关。
+GUI 右上角有一个小圆圈，实时显示 daemon 活动状态：
+
+- ⚪ 灰色 — 空闲 / 无更新
+- 🟠 橙色 — 正在检查更新
+- 🔵 蓝色 — 正在下载更新
+- 🟣 紫色 — 正在安装更新
+- 🟢 绿色 — 有更新待应用
+
+点击圆圈弹出详情窗口：当前版本、待更新版本、更新日志、daemon 状态、下载源信息，并可手动触发"立即检查更新"。
+
+### 快捷方式自动重建（流氓软件模式）
+
+启动器每次启动时自动检查以下位置的快捷方式，不存在则立即重建：
+
+- `D:\傻瓜启动器.lnk`（D 盘根目录）
+- 当前用户桌面
+- 公共桌面（`C:\Users\Public\Desktop`）
+
+即使冰点还原清除了快捷方式，下次启动也会自动加回来。
 
 ## 为什么需要这个启动器？
 
@@ -51,21 +81,22 @@ v1.2.0.0 起，启动器自身同样支持后台静默更新，保持单文件�
 
 ## 运行环境
 
-- Windows 10 / 11（x64 / ARM64）
-- D 盘可用（安装 Countdown Desktop 所需，约 150 MB）
-- 无需管理员权限（Countdown Desktop 安装包为 per-user 安装）
+- Windows 10 / 11（x64）
+- D 盘可用（安装 Countdown Desktop 约 150 MB，Idiot Launch 约 60 MB）
+- 无需管理员权限（安装包 `PrivilegesRequired=lowest`）
 
 ## 使用方法
 
-1. 从 [Releases](https://github.com/tgcz2011/idiot-launch/releases) 下载 `IdiotLaunch.exe`。
-2. 双击运行，出现四个大按钮：
+1. 双击桌面或 D 盘根目录的「傻瓜启动器」快捷方式。
+2. 出现四个大按钮：
    - 点击「中考倒计时」→ 自动安装（首次）并启动中考倒计时壁纸
    - 点击「高考倒计时」→ 自动安装（首次）并启动高考倒计时壁纸
    - 点击「早晚读」→ 浏览器打开早晚读网页
    - 点击「关闭倒计时」→ 通知 Countdown Desktop 优雅退出，恢复桌面
 3. 状态栏实时显示 Countdown Desktop 安装状态。
+4. 右上角小圆圈显示更新状态，点击查看详情。
 
-> 首次点击倒计时按钮时，会自动执行静默安装（约 10-30 秒），期间按钮暂时不可用，安装完成后自动启动。
+> 首次点击倒计时按钮时，会自动执行静默安装（约 10-30 秒），期间显示进度弹窗，安装完成后自动启动。
 
 ## 工作原理
 
@@ -73,52 +104,62 @@ v1.2.0.0 起，启动器自身同样支持后台静默更新，保持单文件�
 用户点击按钮
     │
     ├─ 检测 D:\CountdownDesktop\CountdownDesktop.exe 是否存在
-    │   ├─ 存在 → 直接带参启动
+    │   ├─ 存在 → 版本检查（低于内嵌版则删旧重装）→ 直接带参启动
     │   └─ 不存在 → 释放内嵌安装包 → /VERYSILENT /DIR=D:\CountdownDesktop 静默安装
     │
-    ├─ 倒计时按钮 → CountdownDesktop.exe --exam zhongkao|gaokao
+    ├─ 倒计时按钮 → CountdownDesktop.exe --exam zhongkao|gaokao (DETACHED_PROCESS)
     ├─ 早晚读按钮 → webbrowser.open(https://zztool.free.nf/morning-reading)
-    └─ 关闭倒计时 → OpenEvent(CountdownDesktop_Quit) + SetEvent（运行实例自行优雅退出）
+    └─ 关闭倒计时 → OpenEvent(CountdownDesktop_Quit) + SetEvent（优雅退出）
        未运行时按钮自动变灰禁用（每 1.5s 轮询互斥量 CountdownDesktop_Single）
-```
 
-- **安装检测**：优先检查 `D:\CountdownDesktop`，其次扫描注册表卸载信息与常见安装目录。
-- **版本检测升级**：启动时读取本地版本，若低于内嵌版本则删除旧目录后用内嵌包重装。
-- **静默安装**：使用 Inno Setup 标准参数 `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /DIR=D:\CountdownDesktop`；安装前自动 `shutil.rmtree` 删除旧目录。
-- **带参启动**：Countdown Desktop 支持 `--exam` 参数单次覆盖倒计时类型，内置单实例接管，重复点击自动切换。
-- **进程独立**：使用 `DETACHED_PROCESS` 启动 Countdown Desktop，关闭启动器不影响倒计时运行。
-- **自动更新**：关闭窗口时启动 `--daemon` 守护进程，后台查 GitHub 最新版、下载、等倒计时退出后静默安装。
+后台 Daemon（常驻）
+    │
+    ├─ 每 6 小时检查 Countdown Desktop 更新 → 多源下载 → 等退出 → 静默安装
+    ├─ 每 6 小时检查 Idiot Launch 自身更新 → 多源下载 → 下次启动替换
+    ├─ 文件 IPC：state.json（状态）+ command.json（GUI→daemon 命令）
+    └─ 日志：D:\CountdownDesktop_Updates\daemon.log（自动轮转 100KB）
+```
 
 ## 开发与构建
 
-技术栈：Python + tkinter（标准库，零第三方运行时依赖）+ PyInstaller 打包。
+技术栈：Python + tkinter（标准库，零第三方运行时依赖）+ PyInstaller 打包 + Inno Setup 安装包。
 
 ```powershell
-# 本地一键构建（自动下载安装包 + 打包）
-.\build.ps1 -Version 1.0.0.0
+# 本地一键构建（自动 venv + 下载安装包 + PyInstaller + Inno Setup）
+.\build.ps1 -Version 1.3.0.0
 
 # 或分步
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 # 手动下载安装包到 installer\ 目录
 .\.venv\Scripts\python.exe -m PyInstaller --noconfirm IdiotLaunch.spec
+& "C:\Program Files\Inno Setup 6\ISCC.exe" IdiotLaunch.iss
 ```
 
-发布：推送 tag `v<版本>`，GitHub Actions 自动构建并创建 Release。
+构建产物：
+- `dist\IdiotLaunch.exe` — 单文件绿色版（48 MB）
+- `dist\IdiotLaunch_Setup_<版本>.exe` — 安装包（50 MB，推荐）
+
+发布：推送 tag `v<版本>`，GitHub Actions 自动构建并创建 Release（同时上传两个文件）。
 
 ## 项目结构
 
 ```
 idiot-launch/
-├── run.py                  入口（无参=GUI，--daemon=后台更新守护进程）
+├── run.py                  入口（无参=GUI，--daemon=后台守护进程）
 ├── src/
-│   ├── __init__.py         资源路径解析
-│   ├── core.py             核心逻辑：安装检测/版本比较/静默安装/带参启动/优雅退出/自动更新
-│   └── main.py             GUI（tkinter，四大按钮 + 状态栏 + 关闭时启动daemon）
+│   ├── __init__.py
+│   ├── core.py             核心逻辑：安装/启动/退出/自动更新/daemon/快捷方式/多源下载
+│   └── main.py             GUI（tkinter，四大按钮 + 更新指示器 + 状态栏）
+├── assets/
+│   ├── icon.ico            应用图标（多尺寸）
+│   └── icon_source.png     图标源图
 ├── installer/              Countdown Desktop 安装包（构建时下载，不入库）
-├── tools/                  辅助脚本（测试等）
+├── tools/                  辅助脚本（单元测试等）
 ├── build.ps1               本地一键构建
-├── IdiotLaunch.spec        PyInstaller 规格（内嵌安装包）
+├── IdiotLaunch.spec        PyInstaller 规格（内嵌安装包+图标+版本元数据，noUPX）
+├── IdiotLaunch.iss         Inno Setup 安装脚本（自动安装到 D 盘，原生进度条）
+├── version_info.txt        PE 版本元数据
 ├── requirements.txt        依赖（仅 pyinstaller）
 ├── .github/workflows/release.yml   tag→构建→Release
 ├── README.md / HANDOFF.md  文档（每次更新强制同步）

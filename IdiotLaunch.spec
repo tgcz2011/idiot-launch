@@ -18,6 +18,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (INSTALLER_PATH, "installer"),
+        ("assets", "assets"),
     ],
     hiddenimports=[],
     hookspath=[],
@@ -52,6 +53,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,  # 如有图标可设置 assets/icon.ico
+    icon="assets/icon.ico",  # 应用图标（手指点击图案）
     version='version_info.txt',  # 注入完整版本元数据（公司名/产品名/版权/版本号）
 )

@@ -53,6 +53,36 @@ jobs:
           $size = (Get-Item $exe).Length
           Write-Host "Artifact size: $([math]::Round($size / 1MB, 1)) MB"
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Host "Installing Inno Setup via choco..."
+            choco install innosetup -y --no-progress
+          }
+          if (Test-Path $iscc) {
+            Write-Host "ISCC found: $iscc"
+          } else {
+            Write-Host "ISCC not found after install, checking common paths..."
+            Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          }
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $iscc) { throw "ISCC.exe not found" }
+          Write-Host "Using ISCC: $iscc"
+          & $iscc "IdiotLaunch.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
+          $setup = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe" | Select-Object -First 1
+          if ($setup) {
+            Write-Host "Installer built: $($setup.FullName) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
+          } else {
+            throw "Installer not found after build"
+          }
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -69,12 +99,22 @@ jobs:
             - **早晚读**：打开 `https://zztool.free.nf/morning-reading`
             - 未安装 Countdown Desktop 时自动静默安装到 `D:\CountdownDesktop`
             - 内嵌 Countdown Desktop v3.2.1.1 安装包
+            - 一键优雅关闭 Countdown Desktop（未运行时按钮变灰）
+            - Countdown Desktop 自动更新（后台下载，退出时静默安装）
+            - 启动器自身自动更新（后台下载，下次启动生效）
+            - 多镜像源下载 fallback（GitHub直连 → gh-proxy → ghfast → ghproxy）
+            - 守护进程常驻后台，频繁开关不中断更新
+            - D盘根目录+桌面快捷方式自动重建
+            - 右上角更新状态指示器，点击查看详情
 
             ### 适用场景
             学校机房（C 盘冰点还原，安装到 D 盘持久化）
 
             ### 文件
-            - `IdiotLaunch.exe` — 单文件可执行程序，双击即用
-          files: dist\IdiotLaunch.exe
+            - `IdiotLaunch_Setup_*.exe` — **推荐**：安装包，自动安装到 D:\IdiotLaunch，基本不弹 SmartScreen
+            - `IdiotLaunch.exe` — 单文件绿色版，双击即用（可能触发 SmartScreen）
+          files: |
+            dist\IdiotLaunch.exe
+            dist\IdiotLaunch_Setup_*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
