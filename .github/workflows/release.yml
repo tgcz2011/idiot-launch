@@ -83,6 +83,16 @@ jobs:
             throw "Installer not found after build"
           }
 
+      - name: Compute installer SHA-256
+        shell: pwsh
+        id: hash
+        run: |
+          $setup = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer not found for hashing" }
+          $hash = Get-FileHash -Path $setup.FullName -Algorithm SHA256
+          Write-Host "SHA256: $($hash.Hash)"
+          "sha256=$($hash.Hash)" >> $env:GITHUB_OUTPUT
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -112,6 +122,10 @@ jobs:
 
             ### 文件
             - `IdiotLaunch_Setup_*.exe` — 唯一正式产物：安装包，双击即自动安装到 D:\IdiotLaunch（基本不弹 SmartScreen）
+
+            ### 校验和（SHA-256）
+            - 安装包哈希：`${{ steps.hash.outputs.sha256 }}`
+            - 本机更新时对下载的安装包做 SHA-256 校验，哈希不一致会拒绝更新并重新下载
           files: |
             dist\IdiotLaunch_Setup_*.exe
         env:

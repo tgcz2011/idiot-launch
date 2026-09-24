@@ -46,7 +46,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.net/", 900),
 ]
 
-LAUNCHER_VERSION = "1.5.0.0"
+LAUNCHER_VERSION = "1.6.0.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -460,10 +460,35 @@ def get_latest_version_info() -> dict | None:
                     "version": version, "url": asset["browser_download_url"],
                     "size": asset.get("size", 0), "name": name,
                     "release_notes": data.get("body", ""),
+                    "sha256": asset.get("digest", ""),
                 }
         return None
     except Exception:
         return None
+
+
+def sha256_of(file_path: str) -> str:
+    """计算文件 SHA-256（十六进制小写）。"""
+    import hashlib
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest().lower()
+
+
+def verify_sha256(file_path: str, expected: str) -> bool:
+    """校验文件 SHA-256。expected 为空/缺失时跳过（旧 release 无 digest 字段兼容）。"""
+    expected = (expected or "").strip().lower().removeprefix("sha256:")
+    if not expected:
+        return True
+    try:
+        return sha256_of(file_path) == expected
+    except OSError:
+        return False
 
 
 def _download_single(url: str, dest_path: str, timeout: int) -> bool:
@@ -474,6 +499,7 @@ def _download_single(url: str, dest_path: str, timeout: int) -> bool:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
+            last_report = 0
             with open(tmp_path, "wb") as f:
                 while True:
                     chunk = resp.read(65536)
@@ -481,6 +507,12 @@ def _download_single(url: str, dest_path: str, timeout: int) -> bool:
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
+                    # 进度上报（每 512KB 一次，避免频繁写 state.json）
+                    if total > 0 and downloaded - last_report >= 512 * 1024:
+                        last_report = downloaded
+                        pct = min(99, int(downloaded * 100 / total))
+                        set_daemon_status("downloading", pct,
+                                          f"正在下载... {pct}%（{downloaded // (1024 * 1024)}/{total // (1024 * 1024)} MB）")
         if total > 0 and downloaded < total:
             try:
                 os.remove(tmp_path)
@@ -623,7 +655,7 @@ def _countdown_install_worker(installer_path: str, version: str) -> None:
 
 
 def _countdown_download_worker(latest: dict) -> None:
-    """后台线程：下载 Countdown Desktop 安装包 → 写入 pending → 继续等待退出并安装。"""
+    """后台线程：下载 Countdown Desktop 安装包 → SHA-256 校验 → 写入 pending → 等待退出并安装。"""
     installer_name = latest.get("name", f"CountdownDesktop_Setup_{latest['version']}.exe")
     dest = os.path.join(UPDATE_DIR, installer_name)
     if not (os.path.isfile(dest) and latest.get("size", 0) > 0
@@ -632,6 +664,15 @@ def _countdown_download_worker(latest: dict) -> None:
         if not ok:
             set_daemon_status("idle", 0, "更新下载失败，6 小时后重试")
             return
+    # SHA-256 校验：对不上就删除并拒绝更新
+    if not verify_sha256(dest, latest.get("sha256", "")):
+        log_daemon(f"SHA-256 校验失败，删除安装包并拒绝更新: {os.path.basename(dest)}")
+        set_daemon_status("idle", 0, "更新包校验失败，已拒绝更新，将重新下载")
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        return
     state = load_state()
     state["pending_installer"] = dest
     state["pending_version"] = latest["version"]
@@ -849,6 +890,7 @@ def get_latest_launcher_info() -> dict | None:
                     "version": version, "url": asset["browser_download_url"],
                     "size": asset.get("size", 0), "name": name,
                     "release_notes": data.get("body", ""),
+                    "sha256": asset.get("digest", ""),
                 }
         return None
     except Exception:
@@ -970,7 +1012,8 @@ _launcher_download_thread = None
 _launcher_download_lock = threading.Lock()
 
 
-def _launcher_download_worker(url: str, dest: str, version: str, release_notes: str) -> None:
+def _launcher_download_worker(url: str, dest: str, version: str, release_notes: str,
+                                expected_sha256: str = "") -> None:
     ok = download_installer(url, dest)
     if not ok:
         set_daemon_status("idle", 0, "Idiot Launch 更新下载失败，稍后重试")
@@ -981,13 +1024,22 @@ def _launcher_download_worker(url: str, dest: str, version: str, release_notes: 
         except OSError:
             pass
         return
+    # SHA-256 校验：对不上就删除并拒绝更新（不写 pending）
+    if not verify_sha256(dest, expected_sha256):
+        log_daemon(f"SHA-256 校验失败，删除安装包并拒绝更新: {os.path.basename(dest)}")
+        set_daemon_status("idle", 0, "更新包校验失败，已拒绝更新，将重新下载")
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        return
     state = load_state()
     state["pending_launcher_path"] = dest
     state["pending_launcher_version"] = version
     state["launcher_release_notes"] = release_notes
     save_state(state)
-    set_daemon_status("idle", 0, f"已下载 Idiot Launch v{version}，空闲时自动更新")
-    log_daemon(f"Idiot Launch v{version} 下载完成，空闲时自动更新")
+    set_daemon_status("idle", 0, f"已下载 Idiot Launch v{version}（校验通过），空闲时自动更新")
+    log_daemon(f"Idiot Launch v{version} 下载完成（SHA-256 校验通过），空闲时自动更新")
 
 
 def _check_and_download_launcher_update() -> None:
@@ -1040,7 +1092,8 @@ def _check_and_download_launcher_update() -> None:
             return
         _launcher_download_thread = threading.Thread(
             target=_launcher_download_worker,
-            args=(latest["url"], dest, latest["version"], latest.get("release_notes", "")),
+            args=(latest["url"], dest, latest["version"], latest.get("release_notes", ""),
+                  latest.get("sha256", "")),
             daemon=True,
             name="launcher-update-download",
         )

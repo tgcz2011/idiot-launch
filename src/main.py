@@ -114,26 +114,56 @@ class HoverButton(tk.Canvas):
 
 
 class UpdateIndicator(tk.Canvas):
-    """右上角更新状态小圆圈，点击显示详情。"""
+    """右上角环形进度指示器：圆圈 = 粗略进度条，点击查看详情。
+
+    空闲 → 完整淡灰环 + 中心灰点（一切正常）
+    检查中 → 蓝色进度环
+    下载中 → 蓝色进度环 + 中心百分比（daemon 实时上报进度）
+    等待中 → 深橙进度环（等待倒计时退出）
+    安装中/自我更新 → 紫环
+    有更新待应用 → 绿色满环 + 中心 ↑
+    """
+
+    SIZE = 40
+    RING_WIDTH = 4
+    RING_GAP = 2          # 环与画布边缘的间隙
+    BG_RING = "#e3e8ee"   # 背景环（浅灰）
 
     def __init__(self, parent, on_click):
-        super().__init__(parent, width=36, height=36, bg=BG_COLOR,
+        super().__init__(parent, width=self.SIZE, height=self.SIZE, bg=BG_COLOR,
                          highlightthickness=0, cursor="hand2")
         self.on_click = on_click
         self.current_color = INDICATOR_IDLE
-        self._draw(INDICATOR_IDLE, "")
+        self.current_progress = 0
+        self._last_center = "dot"
+        self._draw_ring(INDICATOR_IDLE, 100, "dot")
         self.bind("<Button-1>", lambda e: on_click())
 
-    def _draw(self, color, tooltip=""):
+    def _draw_ring(self, color: str, progress: float, center: str):
+        """画环形进度：progress 0-100，center 为中心内容（'dot'=小圆点 / 'pct'=百分比 / 其他文字）。"""
         self.delete("all")
-        # 外圈
-        self.create_oval(4, 4, 32, 32, fill=color, outline="", tags="circle")
-        # 内圈（高光）
-        self.create_oval(10, 8, 26, 22, fill="", outline="white", width=1)
+        p = self.RING_GAP
+        s = self.SIZE - self.RING_GAP
+        # 背景环（整圈浅灰）
+        self.create_arc(p, p, s, s, start=0, extent=359.9,
+                        style="arc", outline=self.BG_RING, width=self.RING_WIDTH)
+        # 进度环（从 12 点方向顺时针画 extent 度）
+        extent = max(0.0, progress / 100 * 360)
+        if extent >= 1.0:
+            self.create_arc(p, p, s, s, start=90, extent=-extent,
+                            style="arc", outline=color, width=self.RING_WIDTH)
+        # 中心内容
+        cx = cy = self.SIZE / 2
+        if center == "dot":
+            self.create_oval(cx - 3, cy - 3, cx + 3, cy + 3, fill=color, outline="")
+        elif center:
+            self.create_text(cx, cy, text=center, fill=color,
+                             font=("Microsoft YaHei UI", 8, "bold"))
         self.current_color = color
+        self.current_progress = progress
 
-    def set_status(self, activity: str, detail: str = ""):
-        """根据 daemon 活动状态更新颜色。"""
+    def set_status(self, activity: str, detail: str = "", progress: float = 0):
+        """根据 daemon 活动状态更新环形进度与颜色。"""
         color_map = {
             "idle": INDICATOR_IDLE,
             "starting": INDICATOR_IDLE,
@@ -144,14 +174,23 @@ class UpdateIndicator(tk.Canvas):
             "waiting": INDICATOR_WAITING,
             "updating": INDICATOR_UPDATING,
         }
-        color = color_map.get(activity, INDICATOR_IDLE)
-        # 如果有已下载待安装的更新，显示绿色
+        # 有已下载待应用的更新 → 绿色满环
         state = load_state()
         if (state.get("pending_installer") and state.get("download_complete")) or \
            state.get("pending_launcher_path"):
-            color = INDICATOR_UPDATE_READY
-        if color != self.current_color:
-            self._draw(color)
+            if (self.current_color, self.current_progress) != (INDICATOR_UPDATE_READY, 100):
+                self._draw_ring(INDICATOR_UPDATE_READY, 100, "↑")
+            return
+        color = color_map.get(activity, INDICATOR_IDLE)
+        if activity in ("downloading", "installing", "updating", "waiting", "checking"):
+            p = min(99, max(1, int(progress or 0)))
+            center = f"{p}%" if activity == "downloading" else ""
+            if (self.current_color, self.current_progress, self._last_center) != (color, p, center):
+                self._draw_ring(color, p, center)
+        else:
+            if (self.current_color, self.current_progress) != (color, 100):
+                self._draw_ring(color, 100, "dot")
+        self._last_center = center if activity in ("downloading", "installing", "updating", "waiting", "checking") else "dot"
 
 
 class ProgressDialog:
@@ -507,8 +546,9 @@ class IdiotLaunchApp:
                     if daemon:
                         activity = daemon.get("activity", "idle")
                         detail = daemon.get("detail", "")
-                        self.root.after(0, lambda a=activity, d=detail:
-                                        self.update_indicator.set_status(a, d))
+                        progress = daemon.get("progress", 0)
+                        self.root.after(0, lambda a=activity, d=detail, p=progress:
+                                        self.update_indicator.set_status(a, d, p))
                     else:
                         self.root.after(0, lambda: self.update_indicator.set_status("stopped", ""))
                 except Exception:

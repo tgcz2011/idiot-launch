@@ -335,6 +335,43 @@ def test_iss_overwrite_install_settings():
 
 
 
+def test_sha256_verify():
+    """v1.6.0.0: SHA-256 校验——匹配放行、不匹配拒绝、无期望跳过。"""
+    from src.core import sha256_of, verify_sha256
+    import tempfile
+    # 已知值：sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+        f.write("abc")
+        p = f.name
+    try:
+        h = sha256_of(p)
+        assert h == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", f"sha256 mismatch: {h}"
+        assert verify_sha256(p, h) is True
+        assert verify_sha256(p, "0" * 64) is False          # 不匹配 → 拒绝
+        assert verify_sha256(p, "sha256:" + h) is True      # 带前缀（GitHub digest 格式）→ 放行
+        assert verify_sha256(p, "") is True                 # 无期望哈希 → 跳过（旧 release 兼容）
+        assert verify_sha256(p, None) is True
+    finally:
+        import os as _os
+        try: _os.remove(p)
+        except OSError: pass
+    print("✓ test_sha256_verify passed: 匹配/不匹配/带前缀/无期望 全部正确")
+
+
+def test_release_body_has_sha256():
+    """v1.6.0.0: release.yml 发布时附带 SHA-256 校验和。"""
+    import os
+    yml_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            ".github", "workflows", "release.yml")
+    with io.open(yml_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "Get-FileHash" in content and "-Algorithm SHA256" in content
+    assert "sha256=" in content          # GITHUB_OUTPUT 写入
+    assert "校验和（SHA-256）" in content  # release body 展示
+    print("✓ test_release_body_has_sha256 passed: CI 发布附带哈希")
+
+
+
 if __name__ == "__main__":
     test_constants()
     test_version_parsing()
@@ -361,4 +398,6 @@ if __name__ == "__main__":
     test_installer_asset_name_pattern()
     test_countdown_update_threaded_dev_mode()
     test_iss_overwrite_install_settings()
+    test_sha256_verify()
+    test_release_body_has_sha256()
     print("\n全部测试通过！")
