@@ -42,7 +42,7 @@ DOWNLOAD_MIRRORS = [
     "https://ghproxy.net/",
 ]
 
-LAUNCHER_VERSION = "1.3.0.1"
+LAUNCHER_VERSION = "1.3.0.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
