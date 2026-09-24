@@ -46,7 +46,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.net/", 900),
 ]
 
-LAUNCHER_VERSION = "1.6.0.0"
+LAUNCHER_VERSION = "1.6.0.1"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -659,7 +659,15 @@ def _countdown_download_worker(latest: dict) -> None:
     installer_name = latest.get("name", f"CountdownDesktop_Setup_{latest['version']}.exe")
     dest = os.path.join(UPDATE_DIR, installer_name)
     if not (os.path.isfile(dest) and latest.get("size", 0) > 0
-            and os.path.getsize(dest) == latest["size"]):
+            and os.path.getsize(dest) == latest["size"]
+            and verify_sha256(dest, latest.get("sha256", ""))):
+        # 已存在但校验失败：删除后重新下载
+        if os.path.isfile(dest):
+            log_daemon(f"已存在的安装包哈希校验失败，删除后重新下载: {os.path.basename(dest)}")
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
         ok = download_installer(latest["url"], dest)
         if not ok:
             set_daemon_status("idle", 0, "更新下载失败，6 小时后重试")
@@ -1081,12 +1089,20 @@ def _check_and_download_launcher_update() -> None:
     dest = os.path.join(UPDATE_DIR, dest_name)
     if (os.path.isfile(dest) and latest.get("size", 0) > 0
             and os.path.getsize(dest) == latest["size"]
-            and os.path.getsize(dest) >= LAUNCHER_MIN_SIZE):
+            and os.path.getsize(dest) >= LAUNCHER_MIN_SIZE
+            and verify_sha256(dest, latest.get("sha256", ""))):
         state["pending_launcher_path"] = dest
         state["pending_launcher_version"] = latest["version"]
         state["launcher_release_notes"] = latest.get("release_notes", "")
         save_state(state)
         return
+    # 已存在但哈希校验失败（文件可能被破坏）：删除后重新下载
+    if os.path.isfile(dest):
+        log_daemon(f"已存在的安装包哈希校验失败，删除后重新下载: {os.path.basename(dest)}")
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
     with _launcher_download_lock:
         if _launcher_download_thread and _launcher_download_thread.is_alive():
             return

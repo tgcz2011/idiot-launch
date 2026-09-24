@@ -39,6 +39,7 @@
 | **v1.2.0.2** | 同上 | 全面代码审查（d 升）：VBS 替换失败恢复旧版、OpenMutexW 替代 CreateMutexW 消除竞态 |
 | **v1.2.0.3** | 同上 | 自适应文件名（d 升）：VBS 改用 UTF-16 LE BOM 编码支持中文路径，用户可任意改名不影响更新 |
 | **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**| **v1.4.0.1** | 同上 | 快捷方式守护移到 daemon 循环顶部（d 升）：原实现 ensure_shortcuts() 在下载函数之后，下载阻塞期间快捷方式无法恢复；修复后实测删除 D盘+桌面快捷方式 35 秒内自动重建 |
+| **v1.6.0.1** | 同上 | 已存在完整安装包分支也做哈希校验（d 升）：原"大小匹配直接标记 pending/跳过下载"分支绕过校验，若本地文件被破坏会直接待更新；现该分支也 verify_sha256，不通过删除并重新下载 |
 | **v1.6.0.0** | 同上 | 哈希校验 + UI 重做（b 升）：①GitHub Release 发布时用 Get-FileHash 计算安装包 SHA-256 写入 release body（steps.hash.outputs.sha256）；本地 get_latest_* 从 API asset.digest 取哈希，两个下载 worker（launcher/countdown）下载完成后 verify_sha256 校验，不匹配删除安装包、拒绝更新并重新下载（无 digest 的旧 release 跳过校验兼容）；②右上角指示器重做为环形进度条：背景环+进度环+中心内容（空闲=淡灰环+灰点，下载中=蓝环+实时百分比，待更新=绿环+↑），daemon monitor 传 progress；③_download_single 每 512KB 上报下载进度百分比；④29 项单元测试 |
 | **v1.5.0.0** | 同上 | 产品形态与并发架构大改（b 升）：①Countdown Desktop 更新流程全线程化——下载/等待退出(最长2h)/静默安装都在后台线程执行，daemon 主循环永不被阻塞（原 _wait_and_install 最长阻塞 2h、下载同步阻塞）；②主循环末尾不再覆盖后台 downloading/updating/installing/waiting 状态；③**弃用单文件版**：GitHub Release 只发安装包（files 只留 IdiotLaunch_Setup_*.exe），IdiotLaunch.exe 仅作安装包 payload；④Inno Setup 覆盖安装加固：CloseApplications=yes + CloseApplicationsFilter=IdiotLaunch.exe + RestartApplications=yes（手动升级时自动关停旧进程、装完恢复启动），删除无用的 [Tasks] 死代码；⑤build.ps1 支持 Inno Setup 7；⑥27 项单元测试 |
 | **v1.4.0.2** | 同上 | 下载线程化（d 升）：①Idiot Launch 安装包下载放后台线程，不阻塞 daemon 循环（快捷方式守护/命令响应/Countdown 更新检查不被拖住）；②直连源 60s 短超时快速失败切镜像（原所有源统一 900s，慢速直连会白等 15 分钟）；③DOWNLOAD_MIRRORS 结构改为 (前缀, 超时) 元组 |
