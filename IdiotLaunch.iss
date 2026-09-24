@@ -4,7 +4,7 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.4.0.2"
+#define MyAppVersion "1.5.0.0"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 
@@ -28,6 +28,9 @@ Compression=lzma2/ultra
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+CloseApplications=yes
+CloseApplicationsFilter=IdiotLaunch.exe
+RestartApplications=yes
 Uninstallable=no
 UsePreviousAppDir=no
 UsePreviousGroup=no
@@ -40,8 +43,6 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Languages]
 Name: "chinesesimp"; MessagesFile: "assets\ChineseSimplified.isl"
 
-[Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"; Flags: unchecked
 
 [Files]
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion

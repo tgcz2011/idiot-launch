@@ -4,6 +4,7 @@ test_core.py — core.py 单元测试（无需 GUI）
 """
 import sys
 import os
+import io
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -304,6 +305,36 @@ def test_installer_asset_name_pattern():
 
 
 
+def test_countdown_update_threaded_dev_mode():
+    """v1.5.0.0: Countdown 更新全后台线程化，dev 模式下调度函数安全返回不崩溃。"""
+    from src.core import (
+        _check_and_start_countdown_update,
+        _countdown_download_worker,
+        _countdown_install_worker,
+        _countdown_update_thread,
+    )
+    assert _countdown_update_thread is None  # 初始无线程
+    _check_and_start_countdown_update()  # dev 模式应安全返回（非 frozen 直接 return）
+    assert _countdown_download_worker is not None
+    assert _countdown_install_worker is not None
+    print("✓ test_countdown_update_threaded_dev_mode passed: 调度函数安全返回")
+
+
+def test_iss_overwrite_install_settings():
+    """v1.5.0.0: 安装包覆盖安装加固——自动关停旧进程、装完恢复启动。"""
+    import os
+    iss_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "IdiotLaunch.iss")
+    with io.open(iss_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "CloseApplications=yes" in content
+    assert "CloseApplicationsFilter=IdiotLaunch.exe" in content
+    assert "RestartApplications=yes" in content
+    assert "AppId=" in content  # 固定 AppId，同版本覆盖不产生重复安装
+    assert "[Tasks]" not in content  # 死代码已删
+    print("✓ test_iss_overwrite_install_settings passed: 覆盖安装加固生效")
+
+
+
 if __name__ == "__main__":
     test_constants()
     test_version_parsing()
@@ -328,4 +359,6 @@ if __name__ == "__main__":
     test_launcher_install_mode_constants()
     test_get_file_version()
     test_installer_asset_name_pattern()
+    test_countdown_update_threaded_dev_mode()
+    test_iss_overwrite_install_settings()
     print("\n全部测试通过！")

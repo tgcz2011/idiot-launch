@@ -3,8 +3,8 @@
     Idiot Launch one-click build script
 .DESCRIPTION
     Automates: venv creation -> dependency install -> download Countdown Desktop
-    installer -> PyInstaller packaging.
-    Output: dist\IdiotLaunch.exe (with Countdown Desktop installer embedded)
+    installer -> PyInstaller packaging -> Inno Setup installer.
+    Output: dist\IdiotLaunch_Setup_<version>.exe (唯一正式产物；dist\IdiotLaunch.exe 仅为安装包内部 payload)
 .PARAMETER Version
     Version number in format a.b.c.d, default 1.0.0.0
 .EXAMPLE
@@ -81,6 +81,7 @@ $ISCC = $null
 $ISCCPaths = @(
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
     "C:\Program Files\Inno Setup 6\ISCC.exe",
+    "C:\Program Files\Inno Setup 7\ISCC.exe",
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
 )
 foreach ($p in $ISCCPaths) {

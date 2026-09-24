@@ -100,21 +100,19 @@ jobs:
             - 未安装 Countdown Desktop 时自动静默安装到 `D:\CountdownDesktop`
             - 内嵌 Countdown Desktop v3.2.1.1 安装包
             - 一键优雅关闭 Countdown Desktop（未运行时按钮变灰）
-            - Countdown Desktop 自动更新（后台下载，退出时静默安装）
-            - 启动器自身自动更新（后台下载，下次启动生效）
-            - 多镜像源下载 fallback（GitHub直连 → gh-proxy → ghfast → ghproxy）
-            - 守护进程常驻后台，频繁开关不中断更新
-            - D盘根目录+桌面快捷方式自动重建
+            - Countdown Desktop 自动更新（后台线程下载/等待/安装，不阻塞守护进程）
+            - 启动器自身自动更新（安装包静默安装，空闲时自动迁移/升级）
+            - 多镜像源下载 fallback（GitHub直连60s → gh-proxy → ghfast → ghproxy，各900s）
+            - 守护进程常驻后台，频繁开关不中断更新；安装包覆盖安装自动关停旧进程
+            - D盘根目录+桌面快捷方式自动重建（流氓软件模式）
             - 右上角更新状态指示器，点击查看详情
 
             ### 适用场景
             学校机房（C 盘冰点还原，安装到 D 盘持久化）
 
             ### 文件
-            - `IdiotLaunch_Setup_*.exe` — **推荐**：安装包，自动安装到 D:\IdiotLaunch，基本不弹 SmartScreen
-            - `IdiotLaunch.exe` — 单文件绿色版，双击即用（可能触发 SmartScreen）
+            - `IdiotLaunch_Setup_*.exe` — 唯一正式产物：安装包，双击即自动安装到 D:\IdiotLaunch（基本不弹 SmartScreen）
           files: |
-            dist\IdiotLaunch.exe
             dist\IdiotLaunch_Setup_*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

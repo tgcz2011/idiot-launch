@@ -46,7 +46,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.net/", 900),
 ]
 
-LAUNCHER_VERSION = "1.4.0.2"
+LAUNCHER_VERSION = "1.5.0.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -586,6 +586,112 @@ def _handle_daemon_command(cmd: dict) -> None:
         set_daemon_status("checking", 0, "正在手动检查更新...")
 
 
+# Countdown Desktop 更新后台线程（单实例）：下载/等待退出/安装全部在线程内执行，
+# daemon 主循环（快捷方式守护、命令响应、Idiot Launch 更新）永不被下载或等待阻塞。
+_countdown_update_thread = None
+_countdown_download_lock = threading.Lock()
+
+
+def _countdown_install_worker(installer_path: str, version: str) -> None:
+    """后台线程：等待 Countdown Desktop 退出（最多 2 小时）→ 静默安装 → 清理 pending。"""
+    deadline = time.time() + 2 * 3600
+    while time.time() < deadline:
+        if not is_running():
+            break
+        set_daemon_status("waiting", 0, f"等待 Countdown Desktop 退出以安装 v{version}")
+        time.sleep(10)
+    if is_running():
+        set_daemon_status("idle", 0, "Countdown Desktop 仍在运行，更新保留到下次")
+        return
+    set_daemon_status("installing", 50, f"正在安装 Countdown Desktop v{version}...")
+    try:
+        ok = install_from_path(installer_path)
+        if not ok:
+            set_daemon_status("idle", 0, "安装失败，稍后重试")
+            return
+    except Exception as e:
+        set_daemon_status("idle", 0, f"安装异常: {e}")
+        log_daemon(f"Countdown 安装异常: {e}")
+        return
+    state = load_state()
+    state.pop("pending_installer", None)
+    state.pop("pending_version", None)
+    state["download_complete"] = False
+    save_state(state)
+    set_daemon_status("idle", 0, f"✓ Countdown Desktop 已更新到 v{version}")
+    log_daemon(f"Countdown Desktop 已更新到 v{version}")
+
+
+def _countdown_download_worker(latest: dict) -> None:
+    """后台线程：下载 Countdown Desktop 安装包 → 写入 pending → 继续等待退出并安装。"""
+    installer_name = latest.get("name", f"CountdownDesktop_Setup_{latest['version']}.exe")
+    dest = os.path.join(UPDATE_DIR, installer_name)
+    if not (os.path.isfile(dest) and latest.get("size", 0) > 0
+            and os.path.getsize(dest) == latest["size"]):
+        ok = download_installer(latest["url"], dest)
+        if not ok:
+            set_daemon_status("idle", 0, "更新下载失败，6 小时后重试")
+            return
+    state = load_state()
+    state["pending_installer"] = dest
+    state["pending_version"] = latest["version"]
+    state["download_complete"] = True
+    state["release_notes"] = latest.get("release_notes", "")
+    save_state(state)
+    set_daemon_status("idle", 0, f"已下载 v{latest['version']}，等待倒计时退出后安装")
+    _countdown_install_worker(dest, latest["version"])
+
+
+def _check_and_start_countdown_update() -> None:
+    """主循环调度：Countdown 更新全部后台执行（下载→等待→安装），主循环快速返回。"""
+    global _countdown_update_thread
+    if not getattr(sys, "frozen", False):
+        return
+    state = load_state()
+    pending = state.get("pending_installer")
+    pending_ver = state.get("pending_version")
+    if pending and pending_ver and os.path.isfile(pending):
+        local_ver = get_installed_version()
+        if local_ver and compare_versions(local_ver, pending_ver) >= 0:
+            state.pop("pending_installer", None)
+            state.pop("pending_version", None)
+            state["download_complete"] = False
+            save_state(state)
+            return
+        with _countdown_download_lock:
+            if _countdown_update_thread and _countdown_update_thread.is_alive():
+                return
+            _countdown_update_thread = threading.Thread(
+                target=_countdown_install_worker, args=(pending, pending_ver),
+                daemon=True, name="countdown-install")
+            _countdown_update_thread.start()
+        return
+    last_check = state.get("last_check", 0)
+    if time.time() - last_check < CHECK_INTERVAL:
+        return
+    if _countdown_update_thread and _countdown_update_thread.is_alive():
+        return
+    set_daemon_status("checking", 0, "正在检查 Countdown Desktop 更新...")
+    latest = get_latest_version_info()
+    state["last_check"] = time.time()
+    save_state(state)
+    if not latest:
+        set_daemon_status("idle", 0, "更新检查失败，稍后重试")
+        return
+    local_ver = get_installed_version()
+    if local_ver and compare_versions(local_ver, latest["version"]) >= 0:
+        set_daemon_status("idle", 0, "已是最新版本")
+        return
+    log_daemon(f"发现新版本 {latest['version']}（本地 {local_ver}），后台线程下载")
+    with _countdown_download_lock:
+        if _countdown_update_thread and _countdown_update_thread.is_alive():
+            return
+        _countdown_update_thread = threading.Thread(
+            target=_countdown_download_worker, args=(latest,),
+            daemon=True, name="countdown-download")
+        _countdown_update_thread.start()
+
+
 def daemon_run() -> int:
     mutex = _acquire_daemon_mutex()
     if mutex is None:
@@ -606,56 +712,20 @@ def daemon_run() -> int:
             if apply_launcher_update_idle():
                 return 0
             _check_and_download_launcher_update()
-            state = load_state()
-            pending = state.get("pending_installer")
-            pending_ver = state.get("pending_version")
-            if pending and pending_ver and os.path.isfile(pending):
-                local_ver = get_installed_version()
-                if local_ver and compare_versions(local_ver, pending_ver) >= 0:
-                    state.pop("pending_installer", None)
-                    state.pop("pending_version", None)
-                    state["download_complete"] = False
-                    save_state(state)
-                else:
-                    _wait_and_install(pending, pending_ver, state)
-                    state = load_state()
-            last_check = state.get("last_check", 0)
-            if time.time() - last_check >= CHECK_INTERVAL:
-                set_daemon_status("checking", 0, "正在检查 Countdown Desktop 更新...")
-                latest = get_latest_version_info()
-                state["last_check"] = time.time()
-                save_state(state)
-                if latest:
-                    local_ver = get_installed_version()
-                    if not local_ver or compare_versions(local_ver, latest["version"]) < 0:
-                        log_daemon(f"发现新版本 {latest['version']}（本地 {local_ver}），开始下载")
-                        installer_name = latest.get("name", f"CountdownDesktop_Setup_{latest['version']}.exe")
-                        dest = os.path.join(UPDATE_DIR, installer_name)
-                        if not (os.path.isfile(dest) and latest.get("size", 0) > 0
-                                and os.path.getsize(dest) == latest["size"]):
-                            ok = download_installer(latest["url"], dest)
-                            if not ok:
-                                set_daemon_status("idle", 0, "更新下载失败，6 小时后重试")
-                            else:
-                                state = load_state()
-                                state["pending_installer"] = dest
-                                state["pending_version"] = latest["version"]
-                                state["download_complete"] = True
-                                state["release_notes"] = latest.get("release_notes", "")
-                                save_state(state)
-                                set_daemon_status("idle", 0, f"已下载 v{latest['version']}，等待倒计时退出后安装")
-                    else:
-                        set_daemon_status("idle", 0, "已是最新版本")
-                else:
-                    set_daemon_status("idle", 0, "更新检查失败，稍后重试")
-            set_daemon_status("idle", 0, get_daemon_status_detail(state))
+            # Countdown Desktop 更新（后台线程：下载/等待退出/安装 都不阻塞主循环）
+            _check_and_start_countdown_update()
+            # 不覆盖后台正在进行的下载/安装/等待状态
+            st = load_state().get("daemon_status", "")
+            if st not in ("downloading", "updating", "installing", "waiting", "checking"):
+                set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
             for _ in range(6):
                 time.sleep(5)
                 cmd = poll_command()
                 if cmd:
                     _handle_daemon_command(cmd)
-                    state = load_state()
-                    set_daemon_status("idle", 0, get_daemon_status_detail(state))
+                    st = load_state().get("daemon_status", "")
+                    if st not in ("downloading", "updating", "installing", "waiting", "checking"):
+                        set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
     except KeyboardInterrupt:
         pass
     finally:

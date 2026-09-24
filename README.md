@@ -18,9 +18,9 @@
 3. 自动安装到 `D:\IdiotLaunch`，并在 **D 盘根目录**和**桌面**创建快捷方式。
 4. 安装完成后自动启动。
 
-> **推荐使用安装包**：自动安装到 D 盘、创建快捷方式、基本不触发 SmartScreen。
-> 单文件版 `IdiotLaunch.exe` 为**便携备用版**（过渡期保留），v1.4.0.0 起自我更新一律改为下载安装包并静默安装，
-> 便携版用户会在空闲时自动迁移到安装版；后续版本将逐步停止发布单文件。
+> **唯一正式产物是安装包**（v1.5.0.0 起）`IdiotLaunch_Setup_<版本>.exe`：自动安装到 D 盘、创建快捷方式、基本不触发 SmartScreen。
+> 自 v1.5.0.0 起 **GitHub Release 不再发布单文件版**（`IdiotLaunch.exe` 仅作为安装包内部 payload 存在）；
+> 旧单文件用户仍可在空闲时自动迁移到安装版，存量兼容。
 
 ## 自动更新机制
 
@@ -139,9 +139,9 @@ python -m venv .venv
 & "C:\Program Files\Inno Setup 6\ISCC.exe" IdiotLaunch.iss
 ```
 
-构建产物：
-- `dist\IdiotLaunch.exe` — 单文件便携版（48 MB，过渡期保留，即将弃用）
-- `dist\IdiotLaunch_Setup_<版本>.exe` — 安装包（50 MB，推荐，唯一正式交付形式）
+构建产物（v1.5.0.0 起）：
+- `dist\IdiotLaunch_Setup_<版本>.exe` — 安装包（50 MB，唯一正式交付形式，自动安装到 D:\IdiotLaunch）
+- `dist\IdiotLaunch.exe` — 仅安装包内部 payload（48 MB，不再单独发布）
 
 发布：推送 tag `v<版本>`，GitHub Actions 自动构建并创建 Release（同时上传两个文件）。
 

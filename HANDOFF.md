@@ -39,6 +39,7 @@
 | **v1.2.0.2** | 同上 | 全面代码审查（d 升）：VBS 替换失败恢复旧版、OpenMutexW 替代 CreateMutexW 消除竞态 |
 | **v1.2.0.3** | 同上 | 自适应文件名（d 升）：VBS 改用 UTF-16 LE BOM 编码支持中文路径，用户可任意改名不影响更新 |
 | **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**| **v1.4.0.1** | 同上 | 快捷方式守护移到 daemon 循环顶部（d 升）：原实现 ensure_shortcuts() 在下载函数之后，下载阻塞期间快捷方式无法恢复；修复后实测删除 D盘+桌面快捷方式 35 秒内自动重建 |
+| **v1.5.0.0** | 同上 | 产品形态与并发架构大改（b 升）：①Countdown Desktop 更新流程全线程化——下载/等待退出(最长2h)/静默安装都在后台线程执行，daemon 主循环永不被阻塞（原 _wait_and_install 最长阻塞 2h、下载同步阻塞）；②主循环末尾不再覆盖后台 downloading/updating/installing/waiting 状态；③**弃用单文件版**：GitHub Release 只发安装包（files 只留 IdiotLaunch_Setup_*.exe），IdiotLaunch.exe 仅作安装包 payload；④Inno Setup 覆盖安装加固：CloseApplications=yes + CloseApplicationsFilter=IdiotLaunch.exe + RestartApplications=yes（手动升级时自动关停旧进程、装完恢复启动），删除无用的 [Tasks] 死代码；⑤build.ps1 支持 Inno Setup 7；⑥27 项单元测试 |
 | **v1.4.0.2** | 同上 | 下载线程化（d 升）：①Idiot Launch 安装包下载放后台线程，不阻塞 daemon 循环（快捷方式守护/命令响应/Countdown 更新检查不被拖住）；②直连源 60s 短超时快速失败切镜像（原所有源统一 900s，慢速直连会白等 15 分钟）；③DOWNLOAD_MIRRORS 结构改为 (前缀, 超时) 元组 |
 | **v1.4.0.0** | 同上 | 自我更新改为安装包模式（b 升）：①自我更新不再替换单文件，改为下载 `IdiotLaunch_Setup_<版本>.exe` 并 /VERYSILENT 静默安装到 D:\IdiotLaunch；②便携版用户自动迁移到安装版（检测 sys.executable != LAUNCHER_INSTALL_EXE 时下载安装包完成迁移）；③get_latest_launcher_info 只匹配安装包资产；④快捷方式守护加入 daemon 循环（每 30 秒检查 D 盘根目录+桌面，缺失即重建），真正实现"流氓软件"模式；⑤ensure_shortcuts 优先指向安装版；⑥GUI 便携版提示（检测到已安装版本时提醒用快捷方式打开）；⑦25 项单元测试 |
 | **v1.3.1.0** | 同上 | 空闲时静默自我更新（c 升）：①daemon 用 GetLastInputInfo API 检测系统空闲时间，10 分钟无操作即触发静默更新；②VBS 优雅关闭所有进程（taskkill 不带/F）→ 备份旧 exe→替换→只重启 daemon 不启动 GUI→自删除，全程无窗口无弹窗；③启动时更新保留为兜底机制；④新增 get_idle_seconds()、apply_launcher_update_idle()、IDLE_THRESHOLD=600 常量；⑤更新指示器新增"updating"深紫色状态；⑥22 项单元测试：①daemon 从"一次性执行后退出"改为 while True 常驻循环，通过命名互斥量 `IdiotLaunch_Daemon_Single` 保证单实例；GUI 启动时即启动 daemon（不再等关闭），关闭后 daemon 继续后台运行；②文件 IPC：`state.json` 的 daemon 字段传递状态（activity/progress/detail/timestamp/pid），`command.json` 传递 GUI→daemon 命令（如 check_updates）；③多镜像源下载：DOWNLOAD_MIRRORS 列表（直连→gh-proxy.com→ghfast.top→ghproxy.net），每源 3 次重试，重试间隔 30 秒，超时从 600s 改为 900s（15 分钟）；④快捷方式自动重建：ensure_shortcuts() 在 frozen 模式下确保 D:\傻瓜启动器.lnk、用户桌面、公共桌面三个位置存在，用 PowerShell WScript.Shell COM 创建；⑤Inno Setup 安装包 IdiotLaunch.iss：DefaultDirName=D:\IdiotLaunch，DisableDirPage/DisableReadyPage/DisableFinishedPage=yes，CurPageChanged 自动跳过欢迎页直接安装（保留原生进度条），PrivilegesRequired=lowest，Uninstallable=no，安装后创建 D 盘根目录+桌面快捷方式并自动启动；⑥更新状态指示器 UpdateIndicator：GUI 右上角 Canvas 小圆圈，颜色随 daemon 活动变化（灰=空闲/橙=检查/蓝=下载/紫=安装/绿=有更新），点击弹出 UpdateDetailDialog 显示版本/更新日志/daemon 状态/下载源/手动检查按钮；⑦自定义图标 assets/icon.ico（多尺寸 16/32/48/64/128/256，用户提供手指点击图案去白底生成），spec 加 icon 参数，安装包 SetupIconFile 引用；⑧daemon 日志 log_daemon() 写 D:\IdiotLaunch\data\daemon.log，自动轮转 100KB；⑨CI 增加 choco install innosetup + ISCC 编译 + 同时上传 exe 和安装包；⑩build.ps1 自动检测 ISCC.exe 并编译安装包 |
@@ -88,9 +89,9 @@ IdiotLaunch.exe（单文件，PyInstaller onefile）或 IdiotLaunch_Setup.exe（
 
 **Countdown Desktop 更新**：
 1. daemon 每 6 小时调 `get_latest_version_info()` 查 GitHub API
-2. 有新版 → `download_installer()` 多源下载到 `D:\IdiotLaunch\data\`
+2. 有新版 → 后台线程 `download_installer()` 多源下载到 `D:\IdiotLaunch\data\`（不阻塞主循环）
 3. 下载完成 → 标记 `pending_installer` + `download_complete=True`
-4. `_wait_and_install()` 等 Countdown Desktop 退出（最多 2 小时）→ 删旧目录 → 静默安装
+4. 后台线程 `_countdown_install_worker()` 等 Countdown Desktop 退出（最多 2 小时）→ 删旧目录 → 静默安装（主循环照常运行）
 5. GUI 启动时 `install_pending_if_idle()` 补装（daemon 可能因倒计时一直开着没装）
 
 **Idiot Launch 自身更新**：
