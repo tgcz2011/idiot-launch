@@ -15,6 +15,7 @@ if __name__ == "__main__":
         # 如果有待更新，此函数会生成 VBS 替换器并 sys.exit，不会返回。
         if getattr(sys, "frozen", False):
             from src.core import apply_launcher_update_if_pending
-            apply_launcher_update_if_pending()
+            if apply_launcher_update_if_pending():
+                sys.exit(0)
         from src.main import main
         main()

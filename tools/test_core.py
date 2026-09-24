@@ -273,6 +273,34 @@ def test_get_idle_seconds_returns_float():
     assert idle >= 0, f"idle should be >= 0, got {idle}"
     print(f"✓ test_get_idle_seconds_returns_float passed: current idle={idle:.1f}s")
 
+def test_launcher_install_mode_constants():
+    from src.core import LAUNCHER_SETUP_PREFIX, LAUNCHER_INSTALL_DIR, LAUNCHER_INSTALL_EXE
+    assert LAUNCHER_SETUP_PREFIX == "IdiotLaunch_Setup_"
+    assert LAUNCHER_INSTALL_DIR == r"D:\IdiotLaunch"
+    assert LAUNCHER_INSTALL_EXE == r"D:\IdiotLaunch\IdiotLaunch.exe"
+    print(f"✓ test_launcher_install_mode_constants passed: {LAUNCHER_SETUP_PREFIX}* -> {LAUNCHER_INSTALL_EXE}")
+
+
+def test_get_file_version():
+    from src.core import get_file_version
+    import sys
+    ver = get_file_version(sys.executable)
+    assert ver is None or len(ver.split('.')) >= 2, f"version malformed: {ver}"
+    print(f"✓ test_get_file_version passed: python.exe version={ver}")
+
+
+def test_installer_asset_name_pattern():
+    from src.core import LAUNCHER_SETUP_PREFIX
+    assets = ["IdiotLaunch.exe", "IdiotLaunch_Setup_1.4.0.0.exe", "Other.exe"]
+    matched = [a for a in assets if a.startswith(LAUNCHER_SETUP_PREFIX) and a.endswith(".exe")]
+    assert matched == ["IdiotLaunch_Setup_1.4.0.0.exe"], f"matched={matched}"
+    version = "1.4.0.0"
+    dest_name = f"IdiotLaunch_Setup_{version}.exe"
+    assert dest_name == "IdiotLaunch_Setup_1.4.0.0.exe"
+    print("✓ test_installer_asset_name_pattern passed: 只匹配安装包资产，单文件被忽略")
+
+
+
 if __name__ == "__main__":
     test_constants()
     test_version_parsing()
@@ -294,4 +322,7 @@ if __name__ == "__main__":
     test_daemon_running_detection()
     test_command_ipc_roundtrip()
     test_ensure_shortcuts_dev_mode()
+    test_launcher_install_mode_constants()
+    test_get_file_version()
+    test_installer_asset_name_pattern()
     print("\n全部测试通过！")

@@ -19,7 +19,8 @@
 4. 安装完成后自动启动。
 
 > **推荐使用安装包**：自动安装到 D 盘、创建快捷方式、基本不触发 SmartScreen。
-> 单文件版 `IdiotLaunch.exe` 为**便携备用版**，可放 U 盘携带，但可能触发 SmartScreen，且快捷方式需首次运行后自动创建。
+> 单文件版 `IdiotLaunch.exe` 为**便携备用版**（过渡期保留），v1.4.0.0 起自我更新一律改为下载安装包并静默安装，
+> 便携版用户会在空闲时自动迁移到安装版；后续版本将逐步停止发布单文件。
 
 ## 自动更新机制
 
@@ -117,7 +118,7 @@ GUI 右上角有一个小圆圈，实时显示 daemon 活动状态：
 后台 Daemon（常驻）
     │
     ├─ 每 6 小时检查 Countdown Desktop 更新 → 多源下载 → 等退出 → 静默安装
-    ├─ 每 6 小时检查 Idiot Launch 自身更新 → 多源下载 → 空闲 10 分钟静默替换（启动时兜底）
+    ├─ 每 6 小时检查 Idiot Launch 自身更新 → 下载安装包 → 空闲 10 分钟静默安装（迁移到安装版）
     ├─ 文件 IPC：state.json（状态）+ command.json（GUI→daemon 命令）
     └─ 日志：D:\IdiotLaunch\data\daemon.log（自动轮转 100KB）
 ```
@@ -139,8 +140,8 @@ python -m venv .venv
 ```
 
 构建产物：
-- `dist\IdiotLaunch.exe` — 单文件绿色版（48 MB）
-- `dist\IdiotLaunch_Setup_<版本>.exe` — 安装包（50 MB，推荐）
+- `dist\IdiotLaunch.exe` — 单文件便携版（48 MB，过渡期保留，即将弃用）
+- `dist\IdiotLaunch_Setup_<版本>.exe` — 安装包（50 MB，推荐，唯一正式交付形式）
 
 发布：推送 tag `v<版本>`，GitHub Actions 自动构建并创建 Release（同时上传两个文件）。
 
@@ -157,7 +158,7 @@ idiot-launch/
 │   ├── icon.ico            应用图标（多尺寸）
 │   └── icon_source.png     图标源图
 ├── installer/              Countdown Desktop 安装包（构建时下载，不入库）
-├── tools/                  辅助脚本（单元测试等）
+├── tools/                  辅助脚本（单元测试 test_core.py 等）
 ├── build.ps1               本地一键构建
 ├── IdiotLaunch.spec        PyInstaller 规格（内嵌安装包+图标+版本元数据，noUPX）
 ├── IdiotLaunch.iss         Inno Setup 安装脚本（自动安装到 D 盘，原生进度条）

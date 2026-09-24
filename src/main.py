@@ -27,6 +27,8 @@ from src.core import (
     EMBEDDED_VERSION,
     APP_NAME,
     LAUNCHER_VERSION,
+    LAUNCHER_INSTALL_EXE,
+    LAUNCHER_INSTALL_DIR,
 )
 
 VERSION = LAUNCHER_VERSION
@@ -438,6 +440,11 @@ class IdiotLaunchApp:
 
     def _refresh_install_status(self):
         def check():
+            # 便携版运行提示：检测到已安装版本时提醒用快捷方式打开
+            if getattr(sys, "frozen", False) and os.path.isfile(LAUNCHER_INSTALL_EXE):
+                if os.path.abspath(sys.executable) != os.path.abspath(LAUNCHER_INSTALL_EXE):
+                    self.status_var.set(f"✓ 已安装新版到 {LAUNCHER_INSTALL_DIR}，请用桌面/ D盘快捷方式打开")
+                    return
             path = find_installed_path()
             if path:
                 self.status_var.set(f"✓ {APP_NAME} 已安装：{path}")

@@ -43,11 +43,12 @@ DOWNLOAD_MIRRORS = [
     "https://ghproxy.net/",
 ]
 
-LAUNCHER_VERSION = "1.3.2.0"
+LAUNCHER_VERSION = "1.4.0.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
-LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
+LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
 LAUNCHER_INSTALL_DIR = r"D:\IdiotLaunch"
+LAUNCHER_INSTALL_EXE = os.path.join(LAUNCHER_INSTALL_DIR, "IdiotLaunch.exe")
 
 
 def resource_path(relative: str) -> str:
@@ -208,6 +209,33 @@ def get_installed_version() -> str | None:
                     return f"{v1}.{v2}.{v3}.{v4}"
         except Exception:
             pass
+    return None
+
+
+def get_file_version(path: str) -> str | None:
+    """读取任意 exe 的 FileVersion（a.b.c.d），失败返回 None。"""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+        if size > 0:
+            res = ctypes.create_string_buffer(size)
+            ctypes.windll.version.GetFileVersionInfoW(path, None, size, res)
+            val = ctypes.c_void_p()
+            length = ctypes.c_uint()
+            if ctypes.windll.version.VerQueryValueW(res, "\\", ctypes.byref(val), ctypes.byref(length)):
+                class VS_FIXEDFILEINFO(ctypes.Structure):
+                    _fields_ = [("dwSignature", ctypes.c_uint32), ("dwStrucVersion", ctypes.c_uint32),
+                                ("dwFileVersionMS", ctypes.c_uint32), ("dwFileVersionLS", ctypes.c_uint32),
+                                ("dwProductVersionMS", ctypes.c_uint32), ("dwProductVersionLS", ctypes.c_uint32)]
+                info = ctypes.cast(val, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+                v1 = (info.dwFileVersionMS >> 16) & 0xFFFF
+                v2 = info.dwFileVersionMS & 0xFFFF
+                v3 = (info.dwFileVersionLS >> 16) & 0xFFFF
+                v4 = info.dwFileVersionLS & 0xFFFF
+                return f"{v1}.{v2}.{v3}.{v4}"
+    except Exception:
+        pass
     return None
 
 
@@ -572,6 +600,8 @@ def daemon_run() -> int:
             if apply_launcher_update_idle():
                 return 0
             _check_and_download_launcher_update()
+            # 快捷方式守护（流氓软件模式）：每 30 秒检查一次 D 盘根目录 + 桌面，缺失即重建
+            ensure_shortcuts()
             state = load_state()
             pending = state.get("pending_installer")
             pending_ver = state.get("pending_version")
@@ -675,7 +705,8 @@ $s.WorkingDirectory = "{os.path.dirname(target)}"
 def ensure_shortcuts() -> None:
     if not getattr(sys, "frozen", False):
         return
-    target = sys.executable
+    # 优先指向安装版（D:\IdiotLaunch\IdiotLaunch.exe），便携版跑 daemon 时也能把快捷方式指向已安装版本
+    target = LAUNCHER_INSTALL_EXE if os.path.isfile(LAUNCHER_INSTALL_EXE) else sys.executable
     if not os.path.isfile(target):
         return
     icon = target
@@ -738,10 +769,12 @@ def get_latest_launcher_info() -> dict | None:
         tag = data.get("tag_name", "")
         version = tag.lstrip("vV")
         for asset in data.get("assets", []):
-            if asset.get("name") == LAUNCHER_ASSET_NAME:
+            name = asset.get("name", "")
+            if name.startswith(LAUNCHER_SETUP_PREFIX) and name.endswith(".exe"):
                 return {
                     "version": version, "url": asset["browser_download_url"],
-                    "size": asset.get("size", 0), "release_notes": data.get("body", ""),
+                    "size": asset.get("size", 0), "name": name,
+                    "release_notes": data.get("body", ""),
                 }
         return None
     except Exception:
@@ -778,145 +811,65 @@ def has_pending_launcher_update() -> bool:
     return compare_versions(version, LAUNCHER_VERSION) > 0
 
 
-def apply_launcher_update_if_pending() -> None:
-    if not getattr(sys, "frozen", False):
-        return
-    if not has_pending_launcher_update():
-        return
-    state = load_state()
-    new_exe = state.get("pending_launcher_path")
-    old_exe = sys.executable
-    if not new_exe or not os.path.isfile(new_exe):
-        return
-    import tempfile
-    vbs_content = f'''Option Explicit
-Dim fso, shell, oldExe, newExe, i, success
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set shell = CreateObject("WScript.Shell")
-oldExe = "{old_exe}"
-newExe = "{new_exe}"
-success = False
-For i = 1 To 30
-    WScript.Sleep 500
-    On Error Resume Next
-    fso.CopyFile newExe, oldExe, True
-    If Err.Number = 0 Then
-        success = True
-        On Error GoTo 0
-        Exit For
-    End If
-    On Error GoTo 0
-Next
-If Not success Then
-    On Error Resume Next
-    If Not fso.FileExists(oldExe) Then
-        fso.CopyFile newExe, oldExe, False
-    End If
-    On Error GoTo 0
-End If
-If success Then
-    On Error Resume Next
-    fso.DeleteFile newExe, True
-    On Error GoTo 0
-End If
-On Error Resume Next
-shell.Run Chr(34) & oldExe & Chr(34), 1, False
-On Error GoTo 0
-On Error Resume Next
-fso.DeleteFile WScript.ScriptFullName, True
-On Error GoTo 0
-'''
-    vbs_path = os.path.join(tempfile.gettempdir(), "idiot_launch_selfupdate.vbs")
-    try:
-        with open(vbs_path, "wb") as f:
-            f.write(b"\xff\xfe")
-            f.write(vbs_content.encode("utf-16-le"))
-    except OSError:
-        return
-    try:
-        subprocess.Popen(
-            ["wscript.exe", "//B", "//Nologo", vbs_path],
-            creationflags=0x08000000, close_fds=True,
-        )
-    except Exception:
-        return
-    sys.exit(0)
-
-
-
-def apply_launcher_update_idle() -> bool:
-    """空闲时静默自我更新：关闭所有进程→替换exe→只重启daemon不启动GUI。
-    返回 True 表示已触发（daemon 应立即退出），False 表示条件不满足。
+def apply_launcher_update_if_pending() -> bool:
+    """安装包模式静默自我更新：仅当电脑空闲（>=10 分钟无操作）且有待更新安装包时触发。
+    流程：生成 VBS → 杀进程 → 静默运行安装包(/VERYSILENT) → 启动新 daemon → 清理 → 自删除。
+    返回 True 表示已触发（调用方应退出当前进程），False 表示条件不满足。
     """
     if not getattr(sys, "frozen", False):
         return False
+    if not has_pending_launcher_update():
+        return False
     state = load_state()
-    state = _cleanup_stale_launcher_pending(state)
-    new_exe = state.get("pending_launcher_path")
+    installer = state.get("pending_launcher_path")
     pending_ver = state.get("pending_launcher_version")
-    if not new_exe or not pending_ver or not os.path.isfile(new_exe):
-        return False
-    if os.path.getsize(new_exe) < LAUNCHER_MIN_SIZE:
-        return False
-    if compare_versions(pending_ver, LAUNCHER_VERSION) <= 0:
+    if not installer or not os.path.isfile(installer):
         return False
     idle = get_idle_seconds()
     if idle < IDLE_THRESHOLD:
-        return False
-    old_exe = sys.executable
-    log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s，触发静默自我更新 {LAUNCHER_VERSION} -> {pending_ver}")
+        return False  # 电脑使用中，等 daemon 空闲时再更新
+    log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s，触发静默安装更新 {LAUNCHER_VERSION} -> v{pending_ver}")
     set_daemon_status("updating", 0, f"空闲中静默更新到 v{pending_ver}...")
+    installed_exe = LAUNCHER_INSTALL_EXE
     import tempfile
+    wmi_query = r"winmgmts:\\.\root\cimv2"
     vbs_content = f'''Option Explicit
-Dim fso, shell, oldExe, newExe, i, success, wmi, procs
+Dim fso, shell, installer, installedExe, i, wmi, procs
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
-oldExe = "{old_exe}"
-newExe = "{new_exe}"
+installer = "{installer}"
+installedExe = "{installed_exe}"
 ' 1. 优雅关闭所有 IdiotLaunch 进程（taskkill 不带 /F = 发 WM_CLOSE）
 On Error Resume Next
 shell.Run "taskkill /IM IdiotLaunch.exe", 0, True
 On Error GoTo 0
 ' 2. 等待所有进程退出（最多 30 秒）
-success = False
 For i = 1 To 60
     WScript.Sleep 500
-    Set wmi = GetObject("winmgmts:\\\\.\\root\\cimv2")
+    Set wmi = GetObject("{wmi_query}")
     Set procs = wmi.ExecQuery("SELECT * FROM Win32_Process WHERE Name='IdiotLaunch.exe'")
-    If procs.Count = 0 Then
-        success = True
-        Exit For
-    End If
+    If procs.Count = 0 Then Exit For
 Next
-' 3. 替换 exe（先备份旧版，失败则恢复）
-If success Then
+' 3. 静默运行安装包（完全无窗口，等待安装完成）
+On Error Resume Next
+shell.Run Chr(34) & installer & Chr(34) & " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", 0, True
+On Error GoTo 0
+' 4. 验证安装成功，只启动 daemon（不弹 GUI 打扰用户）
+If fso.FileExists(installedExe) Then
     On Error Resume Next
-    If fso.FileExists(oldExe & ".bak") Then fso.DeleteFile oldExe & ".bak", True
-    fso.MoveFile oldExe, oldExe & ".bak"
-    If Err.Number = 0 Then
-        fso.CopyFile newExe, oldExe, False
-        If Err.Number = 0 Then
-            fso.DeleteFile oldExe & ".bak", True
-        Else
-            fso.MoveFile oldExe & ".bak", oldExe
-        End If
-    End If
+    shell.Run Chr(34) & installedExe & Chr(34) & " --daemon", 0, False
     On Error GoTo 0
 End If
-' 4. 清理下载文件
+' 5. 清理下载的安装包
 On Error Resume Next
-fso.DeleteFile newExe, True
-On Error GoTo 0
-' 5. 只启动 daemon，不启动 GUI（用户空闲中，不弹窗打扰）
-On Error Resume Next
-shell.Run Chr(34) & oldExe & Chr(34) & " --daemon", 0, False
+fso.DeleteFile installer, True
 On Error GoTo 0
 ' 6. 自删除
 On Error Resume Next
 fso.DeleteFile WScript.ScriptFullName, True
 On Error GoTo 0
 '''
-    vbs_path = os.path.join(tempfile.gettempdir(), "idiot_launch_idle_update.vbs")
+    vbs_path = os.path.join(tempfile.gettempdir(), "idiot_launch_install_update.vbs")
     try:
         with open(vbs_path, "wb") as f:
             f.write(b"\xff\xfe")
@@ -932,8 +885,11 @@ On Error GoTo 0
     except Exception:
         set_daemon_status("idle", 0, "静默更新启动失败，稍后重试")
         return False
-    log_daemon("静默更新 VBS 已启动，daemon 即将退出")
-    return True
+    log_daemon("静默安装更新 VBS 已启动，进程即将退出")
+    sys.exit(0)
+def apply_launcher_update_idle() -> bool:
+    """daemon 循环入口：空闲时静默安装更新。逻辑与 apply_launcher_update_if_pending 相同。"""
+    return apply_launcher_update_if_pending()
 
 def _check_and_download_launcher_update() -> None:
     if not getattr(sys, "frozen", False):
@@ -955,10 +911,18 @@ def _check_and_download_launcher_update() -> None:
     save_state(state)
     if not latest:
         return
-    if compare_versions(latest["version"], LAUNCHER_VERSION) <= 0:
-        return
-    log_daemon(f"发现 Idiot Launch 新版本 {latest['version']}，开始下载")
-    dest_name = f"IdiotLaunch_v{latest['version']}.exe"
+    is_installed_mode = (os.path.isfile(LAUNCHER_INSTALL_EXE)
+                         and os.path.abspath(sys.executable) == os.path.abspath(LAUNCHER_INSTALL_EXE))
+    if compare_versions(latest["version"], LAUNCHER_VERSION) <= 0 and is_installed_mode:
+        return  # 安装版且无新版本
+    if compare_versions(latest["version"], LAUNCHER_VERSION) <= 0 and not is_installed_mode:
+        # 便携版（单文件）无新版本：检查是否需要迁移到安装版
+        installed_ver = get_file_version(LAUNCHER_INSTALL_EXE)
+        if installed_ver and compare_versions(installed_ver, latest["version"]) >= 0:
+            return  # 安装版已是最新，无需迁移
+        log_daemon("便携版运行中，迁移到安装版")
+    log_daemon(f"发现 Idiot Launch 新版本 {latest['version']}，开始下载安装包")
+    dest_name = f"IdiotLaunch_Setup_{latest['version']}.exe"
     dest = os.path.join(UPDATE_DIR, dest_name)
     if (os.path.isfile(dest) and latest.get("size", 0) > 0
             and os.path.getsize(dest) == latest["size"]
