@@ -179,15 +179,18 @@ fso.CopyFile newExe, oldExe, True
 
 
 def test_download_mirrors():
-    """验证镜像源配置：直连优先，至少 3 个镜像，超时 900 秒。"""
+    """验证镜像源配置：直连优先(短超时快速失败切镜像)，镜像 900 秒。"""
+    from src.core import DOWNLOAD_MIRRORS, DOWNLOAD_TIMEOUT, DOWNLOAD_RETRY
     assert isinstance(DOWNLOAD_MIRRORS, list)
     assert len(DOWNLOAD_MIRRORS) >= 4
-    assert DOWNLOAD_MIRRORS[0] == ""  # 第一个是直连
-    for m in DOWNLOAD_MIRRORS[1:]:
-        assert m.startswith("https://")
+    assert DOWNLOAD_MIRRORS[0][0] == ""  # 第一个是直连
+    assert DOWNLOAD_MIRRORS[0][1] <= 120  # 直连短超时，避免慢速直连白等 15 分钟
+    for prefix, timeout in DOWNLOAD_MIRRORS[1:]:
+        assert prefix.startswith("https://")
+        assert timeout == 900  # 镜像 900s（用户设定 15 分钟）
     assert DOWNLOAD_TIMEOUT == 900
     assert DOWNLOAD_RETRY >= 2
-    print(f"✓ test_download_mirrors passed: {len(DOWNLOAD_MIRRORS)} 个源, 超时 {DOWNLOAD_TIMEOUT}s")
+    print(f"✓ test_download_mirrors passed: {len(DOWNLOAD_MIRRORS)} 个源, 直连 {DOWNLOAD_MIRRORS[0][1]}s, 镜像 900s")
 
 
 def test_daemon_constants():

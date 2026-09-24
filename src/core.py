@@ -13,6 +13,7 @@ import webbrowser
 import urllib.request
 import ssl
 import ctypes
+import threading
 from pathlib import Path
 
 # ── 常量 ──────────────────────────────────────────────
@@ -36,14 +37,16 @@ DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
 IDLE_THRESHOLD = 600  # 10 分钟无操作视为空闲，此时可静默自我更新
 
+# (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像，避免白等 15 分钟；
+# 镜像给 900s（用户设定：15 分钟还没下完大抵下不完了）。
 DOWNLOAD_MIRRORS = [
-    "",
-    "https://gh-proxy.com/",
-    "https://ghfast.top/",
-    "https://ghproxy.net/",
+    ("", 60),                       # GitHub 直连
+    ("https://gh-proxy.com/", 900),
+    ("https://ghfast.top/", 900),
+    ("https://ghproxy.net/", 900),
 ]
 
-LAUNCHER_VERSION = "1.4.0.1"
+LAUNCHER_VERSION = "1.4.0.2"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -500,12 +503,12 @@ def _download_single(url: str, dest_path: str, timeout: int) -> bool:
 def download_installer(url: str, dest_path: str) -> bool:
     _ensure_update_dir()
     for attempt in range(DOWNLOAD_RETRY):
-        for mirror in DOWNLOAD_MIRRORS:
+        for mirror, mirror_timeout in DOWNLOAD_MIRRORS:
             full_url = mirror + url if mirror else url
             source_name = mirror.rstrip("/") if mirror else "GitHub direct"
             log_daemon(f"下载尝试 ({attempt+1}/{DOWNLOAD_RETRY}) [{source_name}]: {os.path.basename(dest_path)}")
             set_daemon_status("downloading", 0, f"正在从 {source_name} 下载...")
-            if _download_single(full_url, dest_path, DOWNLOAD_TIMEOUT):
+            if _download_single(full_url, dest_path, mirror_timeout):
                 log_daemon(f"下载成功 [{source_name}]: {os.path.basename(dest_path)}")
                 return True
             log_daemon(f"下载失败 [{source_name}]，尝试下一个源")
@@ -892,7 +895,33 @@ def apply_launcher_update_idle() -> bool:
     """daemon 循环入口：空闲时静默安装更新。逻辑与 apply_launcher_update_if_pending 相同。"""
     return apply_launcher_update_if_pending()
 
+# 后台下载线程（单实例，避免下载阻塞 daemon 循环：快捷方式守护、命令响应、Countdown 更新检查都不被下载拖住）
+_launcher_download_thread = None
+_launcher_download_lock = threading.Lock()
+
+
+def _launcher_download_worker(url: str, dest: str, version: str, release_notes: str) -> None:
+    ok = download_installer(url, dest)
+    if not ok:
+        set_daemon_status("idle", 0, "Idiot Launch 更新下载失败，稍后重试")
+        return
+    if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        return
+    state = load_state()
+    state["pending_launcher_path"] = dest
+    state["pending_launcher_version"] = version
+    state["launcher_release_notes"] = release_notes
+    save_state(state)
+    set_daemon_status("idle", 0, f"已下载 Idiot Launch v{version}，空闲时自动更新")
+    log_daemon(f"Idiot Launch v{version} 下载完成，空闲时自动更新")
+
+
 def _check_and_download_launcher_update() -> None:
+    global _launcher_download_thread
     if not getattr(sys, "frozen", False):
         return
     state = load_state()
@@ -905,6 +934,9 @@ def _check_and_download_launcher_update() -> None:
             return
     last_check = state.get("launcher_last_check", 0)
     if now - last_check < CHECK_INTERVAL:
+        return
+    # 已有后台下载线程在跑则跳过本轮（不重复下载、不阻塞循环）
+    if _launcher_download_thread and _launcher_download_thread.is_alive():
         return
     set_daemon_status("checking", 0, "正在检查 Idiot Launch 更新...")
     latest = get_latest_launcher_info()
@@ -922,7 +954,7 @@ def _check_and_download_launcher_update() -> None:
         if installed_ver and compare_versions(installed_ver, latest["version"]) >= 0:
             return  # 安装版已是最新，无需迁移
         log_daemon("便携版运行中，迁移到安装版")
-    log_daemon(f"发现 Idiot Launch 新版本 {latest['version']}，开始下载安装包")
+    log_daemon(f"发现 Idiot Launch 新版本 {latest['version']}，后台线程下载安装包")
     dest_name = f"IdiotLaunch_Setup_{latest['version']}.exe"
     dest = os.path.join(UPDATE_DIR, dest_name)
     if (os.path.isfile(dest) and latest.get("size", 0) > 0
@@ -933,19 +965,13 @@ def _check_and_download_launcher_update() -> None:
         state["launcher_release_notes"] = latest.get("release_notes", "")
         save_state(state)
         return
-    ok = download_installer(latest["url"], dest)
-    if not ok:
-        return
-    if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
-        try:
-            os.remove(dest)
-        except OSError:
-            pass
-        return
-    state = load_state()
-    state["pending_launcher_path"] = dest
-    state["pending_launcher_version"] = latest["version"]
-    state["launcher_release_notes"] = latest.get("release_notes", "")
-    save_state(state)
-    set_daemon_status("idle", 0, f"已下载 Idiot Launch v{latest['version']}，空闲时自动更新")
-    log_daemon(f"Idiot Launch v{latest['version']} 下载完成，空闲时自动更新")
+    with _launcher_download_lock:
+        if _launcher_download_thread and _launcher_download_thread.is_alive():
+            return
+        _launcher_download_thread = threading.Thread(
+            target=_launcher_download_worker,
+            args=(latest["url"], dest, latest["version"], latest.get("release_notes", "")),
+            daemon=True,
+            name="launcher-update-download",
+        )
+        _launcher_download_thread.start()
