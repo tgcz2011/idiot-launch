@@ -18,8 +18,8 @@
 3. 自动安装到 `D:\IdiotLaunch`，并在 **D 盘根目录**和**桌面**创建快捷方式。
 4. 安装完成后自动启动。
 
-> 安装包形式基本不会触发 Windows SmartScreen 弹窗（对比单文件 exe）。
-> 也提供单文件绿色版 `IdiotLaunch.exe`，双击即用，但可能触发 SmartScreen。
+> **推荐使用安装包**：自动安装到 D 盘、创建快捷方式、基本不触发 SmartScreen。
+> 单文件版 `IdiotLaunch.exe` 为**便携备用版**，可放 U 盘携带，但可能触发 SmartScreen，且快捷方式需首次运行后自动创建。
 
 ## 自动更新机制
 
@@ -29,7 +29,7 @@ v1.3.0.0 起采用前后端分离架构：
 
 - **前端（GUI）**：用户交互界面，关闭后不影响后台。
 - **后端（Daemon）**：无窗口守护进程，启动器打开时自动启动，**关闭后继续常驻后台**，单实例运行（命名互斥量 `IdiotLaunch_Daemon_Single`）。
-- **通信**：通过 `D:\CountdownDesktop_Updates\` 下的文件进行 IPC（`state.json` 状态、`command.json` 命令）。
+- **通信**：通过 `D:\IdiotLaunch\data\` 下的文件进行 IPC（`state.json` 状态、`command.json` 命令）。
 
 频繁打开/关闭启动器不会中断更新流程，daemon 一直在后台运行。
 
@@ -40,11 +40,11 @@ v1.3.0.0 起采用前后端分离架构：
 3. **多镜像源 fallback**：下载依次尝试 GitHub 直连 → gh-proxy.com → ghfast.top → ghproxy.net，每个源超时 15 分钟，最多重试 3 轮，适配校园不稳定网络。
 4. **倒计时退出时静默更新**：下载完成后等待 Countdown Desktop 退出，退出后删除旧目录并静默安装新版。
 5. **启动时补装**：若倒计时一直开着，下次启动时若已下载且未运行则立即补装。
-6. **状态持久化**：`D:\CountdownDesktop_Updates\state.json` 记录所有状态，冰点还原不影响。
+6. **状态持久化**：`D:\IdiotLaunch\data\state.json` 记录所有状态，冰点还原不影响。
 
 ### Idiot Launch 自身自动更新
 
-1. **后台下载**：daemon 同时检查自身最新 Release，下载到 `D:\CountdownDesktop_Updates\IdiotLaunch_v<版本>.exe`。
+1. **后台下载**：daemon 同时检查自身最新 Release，下载到 `D:\IdiotLaunch\data\IdiotLaunch_v<版本>.exe`。
 2. **空闲时静默更新（v1.3.1.0）**：daemon 每 30 秒检测系统空闲时间（`GetLastInputInfo` API），当电脑 **10 分钟无键盘/鼠标操作**时，自动触发静默更新：优雅关闭所有 IdiotLaunch 进程 → 备份旧 exe → 替换为新版 → 只重启 daemon（不启动 GUI，不打扰用户）→ VBS 自删除。整个过程无窗口、无弹窗。
 3. **启动时更新（兜底）**：若电脑一直处于使用状态从未空闲，下次启动时仍会检测并应用更新（生成 VBS → 退出 → 替换 → 重启），作为兜底机制。
 4. **自适应文件名**：老师可把 exe 改名为任何名字（如"点我.exe"），更新后仍保留该名字。
@@ -119,7 +119,7 @@ GUI 右上角有一个小圆圈，实时显示 daemon 活动状态：
     ├─ 每 6 小时检查 Countdown Desktop 更新 → 多源下载 → 等退出 → 静默安装
     ├─ 每 6 小时检查 Idiot Launch 自身更新 → 多源下载 → 空闲 10 分钟静默替换（启动时兜底）
     ├─ 文件 IPC：state.json（状态）+ command.json（GUI→daemon 命令）
-    └─ 日志：D:\CountdownDesktop_Updates\daemon.log（自动轮转 100KB）
+    └─ 日志：D:\IdiotLaunch\data\daemon.log（自动轮转 100KB）
 ```
 
 ## 开发与构建

@@ -152,7 +152,7 @@ def test_vbs_encoding_chinese_path():
     import tempfile, os
     # 模拟用户改名后的中文路径
     chinese_old_exe = r"D:\教室工具\点我点我.exe"
-    chinese_new_exe = r"D:\CountdownDesktop_Updates\IdiotLaunch_v9.9.9.9.exe"
+    chinese_new_exe = r"D:\IdiotLaunch\data\IdiotLaunch_v9.9.9.9.exe"
     # 构造与 apply_launcher_update_if_pending 相同格式的 VBS 片段
     vbs_sample = f'''oldExe = "{chinese_old_exe}"
 newExe = "{chinese_new_exe}"
@@ -192,7 +192,7 @@ def test_download_mirrors():
 
 def test_daemon_constants():
     assert DAEMON_MUTEX == "IdiotLaunch_Daemon_Single"
-    assert UPDATE_DIR == r"D:\CountdownDesktop_Updates"
+    assert UPDATE_DIR == r"D:\IdiotLaunch\data"
     assert "state.json" in STATE_FILE
     assert "daemon.log" in DAEMON_LOG
     assert "command.json" in COMMAND_FILE

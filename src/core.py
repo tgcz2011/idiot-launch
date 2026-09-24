@@ -25,7 +25,7 @@ INSTALLER_REL = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VER
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
 INSTALL_TIMEOUT = 300
 
-UPDATE_DIR = r"D:\CountdownDesktop_Updates"
+UPDATE_DIR = r"D:\IdiotLaunch\data"
 STATE_FILE = os.path.join(UPDATE_DIR, "state.json")
 DAEMON_LOG = os.path.join(UPDATE_DIR, "daemon.log")
 COMMAND_FILE = os.path.join(UPDATE_DIR, "command.json")
@@ -43,7 +43,7 @@ DOWNLOAD_MIRRORS = [
     "https://ghproxy.net/",
 ]
 
-LAUNCHER_VERSION = "1.3.1.0"
+LAUNCHER_VERSION = "1.3.2.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_ASSET_NAME = "IdiotLaunch.exe"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024

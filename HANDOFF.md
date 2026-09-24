@@ -38,7 +38,7 @@
 | **v1.2.0.1** | 同上 | 代码审查修复（d 升）：daemon 状态丢失 bug、安装返回值检查、None 检查 |
 | **v1.2.0.2** | 同上 | 全面代码审查（d 升）：VBS 替换失败恢复旧版、OpenMutexW 替代 CreateMutexW 消除竞态 |
 | **v1.2.0.3** | 同上 | 自适应文件名（d 升）：VBS 改用 UTF-16 LE BOM 编码支持中文路径，用户可任意改名不影响更新 |
-| **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**| **v1.3.1.0** | 同上 | 空闲时静默自我更新（c 升）：①daemon 用 GetLastInputInfo API 检测系统空闲时间，10 分钟无操作即触发静默更新；②VBS 优雅关闭所有进程（taskkill 不带/F）→ 备份旧 exe→替换→只重启 daemon 不启动 GUI→自删除，全程无窗口无弹窗；③启动时更新保留为兜底机制；④新增 get_idle_seconds()、apply_launcher_update_idle()、IDLE_THRESHOLD=600 常量；⑤更新指示器新增"updating"深紫色状态；⑥22 项单元测试：①daemon 从"一次性执行后退出"改为 while True 常驻循环，通过命名互斥量 `IdiotLaunch_Daemon_Single` 保证单实例；GUI 启动时即启动 daemon（不再等关闭），关闭后 daemon 继续后台运行；②文件 IPC：`state.json` 的 daemon 字段传递状态（activity/progress/detail/timestamp/pid），`command.json` 传递 GUI→daemon 命令（如 check_updates）；③多镜像源下载：DOWNLOAD_MIRRORS 列表（直连→gh-proxy.com→ghfast.top→ghproxy.net），每源 3 次重试，重试间隔 30 秒，超时从 600s 改为 900s（15 分钟）；④快捷方式自动重建：ensure_shortcuts() 在 frozen 模式下确保 D:\傻瓜启动器.lnk、用户桌面、公共桌面三个位置存在，用 PowerShell WScript.Shell COM 创建；⑤Inno Setup 安装包 IdiotLaunch.iss：DefaultDirName=D:\IdiotLaunch，DisableDirPage/DisableReadyPage/DisableFinishedPage=yes，CurPageChanged 自动跳过欢迎页直接安装（保留原生进度条），PrivilegesRequired=lowest，Uninstallable=no，安装后创建 D 盘根目录+桌面快捷方式并自动启动；⑥更新状态指示器 UpdateIndicator：GUI 右上角 Canvas 小圆圈，颜色随 daemon 活动变化（灰=空闲/橙=检查/蓝=下载/紫=安装/绿=有更新），点击弹出 UpdateDetailDialog 显示版本/更新日志/daemon 状态/下载源/手动检查按钮；⑦自定义图标 assets/icon.ico（多尺寸 16/32/48/64/128/256，用户提供手指点击图案去白底生成），spec 加 icon 参数，安装包 SetupIconFile 引用；⑧daemon 日志 log_daemon() 写 D:\CountdownDesktop_Updates\daemon.log，自动轮转 100KB；⑨CI 增加 choco install innosetup + ISCC 编译 + 同时上传 exe 和安装包；⑩build.ps1 自动检测 ISCC.exe 并编译安装包 |
+| **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**| **v1.3.1.0** | 同上 | 空闲时静默自我更新（c 升）：①daemon 用 GetLastInputInfo API 检测系统空闲时间，10 分钟无操作即触发静默更新；②VBS 优雅关闭所有进程（taskkill 不带/F）→ 备份旧 exe→替换→只重启 daemon 不启动 GUI→自删除，全程无窗口无弹窗；③启动时更新保留为兜底机制；④新增 get_idle_seconds()、apply_launcher_update_idle()、IDLE_THRESHOLD=600 常量；⑤更新指示器新增"updating"深紫色状态；⑥22 项单元测试：①daemon 从"一次性执行后退出"改为 while True 常驻循环，通过命名互斥量 `IdiotLaunch_Daemon_Single` 保证单实例；GUI 启动时即启动 daemon（不再等关闭），关闭后 daemon 继续后台运行；②文件 IPC：`state.json` 的 daemon 字段传递状态（activity/progress/detail/timestamp/pid），`command.json` 传递 GUI→daemon 命令（如 check_updates）；③多镜像源下载：DOWNLOAD_MIRRORS 列表（直连→gh-proxy.com→ghfast.top→ghproxy.net），每源 3 次重试，重试间隔 30 秒，超时从 600s 改为 900s（15 分钟）；④快捷方式自动重建：ensure_shortcuts() 在 frozen 模式下确保 D:\傻瓜启动器.lnk、用户桌面、公共桌面三个位置存在，用 PowerShell WScript.Shell COM 创建；⑤Inno Setup 安装包 IdiotLaunch.iss：DefaultDirName=D:\IdiotLaunch，DisableDirPage/DisableReadyPage/DisableFinishedPage=yes，CurPageChanged 自动跳过欢迎页直接安装（保留原生进度条），PrivilegesRequired=lowest，Uninstallable=no，安装后创建 D 盘根目录+桌面快捷方式并自动启动；⑥更新状态指示器 UpdateIndicator：GUI 右上角 Canvas 小圆圈，颜色随 daemon 活动变化（灰=空闲/橙=检查/蓝=下载/紫=安装/绿=有更新），点击弹出 UpdateDetailDialog 显示版本/更新日志/daemon 状态/下载源/手动检查按钮；⑦自定义图标 assets/icon.ico（多尺寸 16/32/48/64/128/256，用户提供手指点击图案去白底生成），spec 加 icon 参数，安装包 SetupIconFile 引用；⑧daemon 日志 log_daemon() 写 D:\IdiotLaunch\data\daemon.log，自动轮转 100KB；⑨CI 增加 choco install innosetup + ISCC 编译 + 同时上传 exe 和安装包；⑩build.ps1 自动检测 ISCC.exe 并编译安装包 |
 
 ## 三、架构
 
@@ -60,7 +60,7 @@ IdiotLaunch.exe（单文件，PyInstaller onefile）或 IdiotLaunch_Setup.exe（
   │   ├─ log_daemon() 写 daemon.log（自动轮转 100KB）
   │   └─ 睡眠 30 秒/轮，期间每 5 秒检查一次 command.json
   │
-  ├─ 文件 IPC（D:\CountdownDesktop_Updates\）：
+  ├─ 文件 IPC（D:\IdiotLaunch\data\）：
   │   ├─ state.json    — 持久化状态（last_check, pending_installer, pending_launcher_path, daemon{}）
   │   ├─ command.json  — GUI→daemon 命令（如 {"cmd":"check_updates"}），daemon 读取后删除
   │   └─ daemon.log    — daemon 运行日志
@@ -85,14 +85,14 @@ IdiotLaunch.exe（单文件，PyInstaller onefile）或 IdiotLaunch_Setup.exe（
 
 **Countdown Desktop 更新**：
 1. daemon 每 6 小时调 `get_latest_version_info()` 查 GitHub API
-2. 有新版 → `download_installer()` 多源下载到 `D:\CountdownDesktop_Updates\`
+2. 有新版 → `download_installer()` 多源下载到 `D:\IdiotLaunch\data\`
 3. 下载完成 → 标记 `pending_installer` + `download_complete=True`
 4. `_wait_and_install()` 等 Countdown Desktop 退出（最多 2 小时）→ 删旧目录 → 静默安装
 5. GUI 启动时 `install_pending_if_idle()` 补装（daemon 可能因倒计时一直开着没装）
 
 **Idiot Launch 自身更新**：
 1. daemon 每 6 小时调 `get_latest_launcher_info()` 查自身 GitHub API
-2. 有新版 → `download_installer()` 多源下载到 `D:\CountdownDesktop_Updates\IdiotLaunch_v<ver>.exe`
+2. 有新版 → `download_installer()` 多源下载到 `D:\IdiotLaunch\data\IdiotLaunch_v<ver>.exe`
 3. 标记 `pending_launcher_path` + `pending_launcher_version`
 4. 下次启动时 `apply_launcher_update_if_pending()` 生成 UTF-16 LE BOM 编码的 VBS → 退出 → VBS 覆盖旧 exe → 启动新版 → 自删除
 5. `_cleanup_stale_launcher_pending()` 自动清理已过期（版本<=当前）的待更新记录
@@ -286,7 +286,7 @@ D:\CountdownDesktop\CountdownDesktop.exe --exam gaokao
 
 # 7. 验证 daemon 常驻
 # 启动 IdiotLaunch 后关闭 GUI，任务管理器中应仍有 IdiotLaunch.exe 进程
-# 查看 D:\CountdownDesktop_Updates\daemon.log
+# 查看 D:\IdiotLaunch\data\daemon.log
 
 # 8. 验证多源下载
 # 断开 GitHub 直连（修改 hosts），daemon 应自动 fallback 到镜像源
