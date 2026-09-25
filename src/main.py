@@ -382,7 +382,7 @@ class IdiotLaunchApp:
         except Exception:
             pass
 
-        win_w, win_h = 420, 660
+        win_w, win_h = 420, 780
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = (screen_w - win_w) // 2
@@ -463,6 +463,12 @@ class IdiotLaunchApp:
             BTN_KILL, BTN_HOVER_KILL, self.on_kill,
         )
         self.btn_kill.pack(pady=8)
+
+        self.btn_settings = HoverButton(
+            btn_frame, "壁纸设置", "打开 Countdown Desktop 设置",
+            BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_settings,
+        )
+        self.btn_settings.pack(pady=8)
 
         self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
         status = tk.Label(
