@@ -47,7 +47,7 @@ from src.core import (
 
 
 def test_constants():
-    assert INSTALL_DIR == r"D:\CountdownDesktop"
+    assert INSTALL_DIR == r"D:\IdiotLaunch\CountdownDesktop"
     assert EXE_NAME == "CountdownDesktop.exe"
     assert INSTALL_EXE == os.path.join(INSTALL_DIR, EXE_NAME)
     assert "morning-reading" in MORNING_READING_URL

@@ -20,7 +20,7 @@ from pathlib import Path
 APP_NAME = "Countdown Desktop"
 EXE_NAME = "CountdownDesktop.exe"
 EMBEDDED_VERSION = "3.2.1.1"
-INSTALL_DIR = r"D:\CountdownDesktop"
+INSTALL_DIR = r"D:\IdiotLaunch\CountdownDesktop"  # 归拢到 IdiotLaunch 目录下，D 盘根目录不散落文件夹
 INSTALL_EXE = os.path.join(INSTALL_DIR, EXE_NAME)
 INSTALLER_REL = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
@@ -46,7 +46,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.net/", 900),
 ]
 
-LAUNCHER_VERSION = "1.6.0.1"
+LAUNCHER_VERSION = "1.7.0.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -278,7 +278,25 @@ def silent_install() -> bool:
     return install_from_path(installer)
 
 
+def _migrate_old_countdown_dir() -> None:
+    """v1.7.0.0: 旧版 Countdown Desktop 装在 D:\\CountdownDesktop，迁移到 D:\\IdiotLaunch\\CountdownDesktop。"""
+    old_dir = r"D:\CountdownDesktop"
+    if not os.path.isdir(old_dir):
+        return
+    try:
+        os.makedirs(os.path.dirname(INSTALL_DIR), exist_ok=True)
+        if not os.path.isdir(INSTALL_DIR):
+            shutil.move(old_dir, INSTALL_DIR)
+            log_daemon(f"已迁移旧 Countdown Desktop 目录 {old_dir} -> {INSTALL_DIR}")
+        else:
+            shutil.rmtree(old_dir, ignore_errors=True)
+            log_daemon(f"已删除旧 Countdown Desktop 目录 {old_dir}（新版已在 {INSTALL_DIR}）")
+    except Exception as e:
+        log_daemon(f"迁移旧 Countdown Desktop 目录失败: {e}")
+
+
 def ensure_installed() -> str:
+    _migrate_old_countdown_dir()
     path = find_installed_path()
     if path:
         local_ver = get_installed_version()

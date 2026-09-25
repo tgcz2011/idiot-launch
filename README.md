@@ -2,8 +2,8 @@
 
 专为学校电脑设计的一键启动器：四个大按钮，点击即用，零配置。
 
-- **中考倒计时** — 自动启动 Countdown Desktop（`--exam zhongkao`），未安装则静默安装到 D 盘
-- **高考倒计时** — 自动启动 Countdown Desktop（`--exam gaokao`），未安装则静默安装到 D 盘
+- **中考倒计时** — 自动启动 Countdown Desktop（`--exam zhongkao`），未安装则静默安装到 `D:\IdiotLaunch\CountdownDesktop`
+- **高考倒计时** — 自动启动 Countdown Desktop（`--exam gaokao`），未安装则静默安装到 `D:\IdiotLaunch\CountdownDesktop`
 - **早晚读** — 在默认浏览器打开 `https://zztool.free.nf/morning-reading`
 - **关闭倒计时** — 通过命名事件通知 Countdown Desktop 优雅退出；未运行时按钮自动变灰不可点击
 
@@ -17,10 +17,26 @@
 2. 双击打开，安装程序自动开始（无需点击"下一步"），仅显示原生进度条。
 3. 自动安装到 `D:\IdiotLaunch`，并在 **D 盘根目录**和**桌面**创建快捷方式。
 4. 安装完成后自动启动。
+安装后目录结构：
+
+```
+D:\IdiotLaunch\
+├── IdiotLaunch.exe          # 启动器主程序（2MB）
+├── _internal\               # Python 运行时 + 内嵌资源
+│   ├── python314.dll
+│   ├── _tkinter.pyd
+│   ├── installer\           # 内嵌的 Countdown Desktop 安装包
+│   └── assets\              # 图标、语言文件
+├── CountdownDesktop\        # Countdown Desktop 安装目录（v1.7.0.0 起归拢到此）
+└── data\                    # 运行数据（state.json、daemon.log、下载的更新包）
+```
+
+D 盘根目录仅保留一个 `傻瓜启动器.lnk` 快捷方式，不再散落其他文件夹。
 
 > **唯一正式产物是安装包**（v1.5.0.0 起）`IdiotLaunch_Setup_<版本>.exe`：自动安装到 D 盘、创建快捷方式、基本不触发 SmartScreen。
 > 自 v1.5.0.0 起 **GitHub Release 不再发布单文件版**（`IdiotLaunch.exe` 仅作为安装包内部 payload 存在）；
 > 旧单文件用户仍可在空闲时自动迁移到安装版，存量兼容。
+> **v1.7.0.0 起采用 PyInstaller onedir 模式**：安装后 `D:\IdiotLaunch\` 下包含 `IdiotLaunch.exe` + `_internal\` 子目录（Python 运行时、内嵌安装包、图标资源），目录结构与传统安装软件一致，启动更快（无需每次解压到临时目录），且安装后的文件无互联网下载标记，不触发 SmartScreen。
 
 ## 自动更新机制
 

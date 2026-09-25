@@ -48,7 +48,7 @@ jobs:
       - name: Verify build artifact
         shell: pwsh
         run: |
-          $exe = "dist\IdiotLaunch.exe"
+          $exe = "dist\IdiotLaunch\IdiotLaunch.exe"
           if (-not (Test-Path $exe)) { throw "Build artifact not found: $exe" }
           $size = (Get-Item $exe).Length
           Write-Host "Artifact size: $([math]::Round($size / 1MB, 1)) MB"

@@ -4,7 +4,7 @@
 .DESCRIPTION
     Automates: venv creation -> dependency install -> download Countdown Desktop
     installer -> PyInstaller packaging -> Inno Setup installer.
-    Output: dist\IdiotLaunch_Setup_<version>.exe (唯一正式产物；dist\IdiotLaunch.exe 仅为安装包内部 payload)
+    Output: dist\IdiotLaunch_Setup_<version>.exe (唯一正式产物；dist\IdiotLaunch\ 目录为 onedir 打包结果，仅作安装包内部 payload)
 .PARAMETER Version
     Version number in format a.b.c.d, default 1.0.0.0
 .EXAMPLE
@@ -97,8 +97,8 @@ if ($ISCC) {
     Write-Host "  Install from: https://jrsoftware.org/isdl.php" -ForegroundColor Gray
 }
 
-# 6. Verify output
-$OutputExe = Join-Path $ProjectRoot "dist\IdiotLaunch.exe"
+# 6. Verify output (onedir 模式：dist\IdiotLaunch\IdiotLaunch.exe)
+$OutputExe = Join-Path $ProjectRoot "dist\IdiotLaunch\IdiotLaunch.exe"
 if (Test-Path $OutputExe) {
     $size = (Get-Item $OutputExe).Length
     Write-Host ""

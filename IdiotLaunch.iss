@@ -4,7 +4,7 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.6.0.1"
+#define MyAppVersion "1.7.0.0"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 
@@ -45,7 +45,8 @@ Name: "chinesesimp"; MessagesFile: "assets\ChineseSimplified.isl"
 
 
 [Files]
-Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; onedir 模式：打包整个 dist\IdiotLaunch\ 目录（exe + _internal\ + 内嵌资源）
+Source: "dist\IdiotLaunch\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Comment: "教室倒计时一键启动器"
