@@ -34,12 +34,14 @@ jobs:
       - name: Download Countdown Desktop installer
         shell: pwsh
         run: |
-          $url = "https://github.com/tgcz2011/countdown-desktop/releases/download/v3.2.1.1/CountdownDesktop_Setup_3.2.1.1.exe"
-          $out = "installer\CountdownDesktop_Setup_3.2.1.1.exe"
+          # 从 src/core.py 动态读取 EMBEDDED_VERSION
+          $ver = (Select-String -Path "src\core.py" -Pattern "EMBEDDED_VERSION\s*=\s*\"([^\"]+)\"").Matches.Groups[1].Value
+          $url = "https://github.com/tgcz2011/countdown-desktop/releases/download/v$ver/CountdownDesktop_Setup_$ver.exe"
+          $out = "installer\CountdownDesktop_Setup_$ver.exe"
           if (-not (Test-Path "installer")) { New-Item -ItemType Directory -Path installer -Force | Out-Null }
           Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
           $size = (Get-Item $out).Length
-          Write-Host "Installer size: $([math]::Round($size / 1MB, 1)) MB"
+          Write-Host "Installer size: $([math]::Round($size / 1MB, 1)) MB (v$ver)"
 
       - name: Build with PyInstaller
         run: |
