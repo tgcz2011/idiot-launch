@@ -650,6 +650,14 @@ class IdiotLaunchApp:
             subtitle="正在通知 Countdown Desktop 退出...",
         )
 
+    def on_settings(self):
+        self._run_with_loading(
+            lambda: launch_settings(),
+            "✓ 已打开壁纸设置",
+            title="正在打开壁纸设置",
+            subtitle="正在唤起 Countdown Desktop 设置窗口...",
+        )
+
     def _do_quit(self):
         ok = quit_countdown()
         if not ok:

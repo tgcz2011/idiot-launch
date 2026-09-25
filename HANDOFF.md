@@ -39,6 +39,7 @@
 | **v1.2.0.2** | 同上 | 全面代码审查（d 升）：VBS 替换失败恢复旧版、OpenMutexW 替代 CreateMutexW 消除竞态 |
 | **v1.2.0.3** | 同上 | 自适应文件名（d 升）：VBS 改用 UTF-16 LE BOM 编码支持中文路径，用户可任意改名不影响更新 |
 | **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**| **v1.4.0.1** | 同上 | 快捷方式守护移到 daemon 循环顶部（d 升）：原实现 ensure_shortcuts() 在下载函数之后，下载阻塞期间快捷方式无法恢复；修复后实测删除 D盘+桌面快捷方式 35 秒内自动重建 |
+| **v1.8.0.2** | 同上 | 修复 v1.8.0.1 中 on_settings 方法缺失导致 GUI 崩溃的 bug：①main.py 添加 on_settings() 方法；②本地构建验证 5 按钮全部正常显示；③29 项测试全过 |
 | **v1.8.0.1** | 同上 | 修复 v1.8.0.0 中"壁纸设置"按钮未创建的 bug：①main.py 添加 btn_settings 按钮（紫色 #8e44ad）和 on_settings() 方法；②窗口高度从 660 增至 780 以容纳第 5 个按钮；③29 项测试全过 |
 | **v1.8.0.0** | 同上 | 新增"壁纸设置"按钮 + 内嵌 Countdown Desktop 升至 v3.2.3.0（b 升）：①core.py 加 launch_settings()，调用 CountdownDesktop.exe --settings；②main.py 加紫色"壁纸设置"按钮（BTN_SETTINGS=#8e44ad）；③Countdown Desktop v3.2.3.0 新增 --settings 参数和 CountdownDesktop_ShowSettings 命名事件：已有实例运行时发事件弹出设置（不关闭倒计时、不接管），无实例时启动并自动弹出设置；④build.ps1 从 core.py 动态读取 EMBEDDED_VERSION（Select-String），spec 也动态读取，避免升级时手动同步；⑤29 项测试全过 |
 | **v1.7.0.0** | 同上 | onedir 模式 + 目录归拢（b 升）：①PyInstaller 从 onefile 改 onedir，安装后 D:\IdiotLaunch\ 下有 IdiotLaunch.exe + _internal\ 子目录（Python 运行时+内嵌安装包+资源），像传统安装软件，启动更快（无需每次解压到 %TEMP%），安装后文件无 Zone.Identifier 不触发 SmartScreen；②Countdown Desktop 安装目录从 D:\CountdownDesktop 归拢到 D:\IdiotLaunch\CountdownDesktop，D 盘根目录只留傻瓜启动器.lnk；③新增 _migrate_old_countdown_dir() 自动迁移旧目录（ensure_installed 开头调用）；④spec 加 exclude_binaries=True + COLLECT；⑤Inno Setup [Files] 改 recursesubdirs 打包整个目录；⑥build.ps1/CI 产物验证路径改 dist\IdiotLaunch\IdiotLaunch.exe；⑦29 项测试全过 |
