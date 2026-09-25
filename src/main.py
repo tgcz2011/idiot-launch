@@ -11,6 +11,7 @@ import os
 
 from src.core import (
     launch_countdown,
+    launch_settings,
     open_morning_reading,
     quit_countdown,
     find_installed_path,
@@ -44,6 +45,8 @@ BTN_HOVER_ZHONGKAO = "#c0392b"
 BTN_HOVER_GAOKAO = "#1f6fa0"
 BTN_HOVER_READING = "#1e8449"
 BTN_HOVER_KILL = "#4a5568"
+BTN_SETTINGS = "#8e44ad"
+BTN_HOVER_SETTINGS = "#6c3483"
 TEXT_COLOR = "#2c3e50"
 STATUS_COLOR = "#7f8c8d"
 
@@ -602,7 +605,7 @@ class IdiotLaunchApp:
 
     def _set_all_buttons(self, enabled: bool):
         self._loading = not enabled
-        for btn in (self.btn_zhongkao, self.btn_gaokao, self.btn_reading):
+        for btn in (self.btn_zhongkao, self.btn_gaokao, self.btn_reading, self.btn_settings):
             btn.set_enabled(enabled)
         if enabled:
             self._update_kill_button(is_running())

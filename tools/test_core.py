@@ -56,15 +56,15 @@ def test_constants():
 
 
 def test_version_parsing():
-    assert parse_version("3.2.1.1") == (3, 2, 1, 1)
+    assert parse_version("3.2.3.0") == (3, 2, 3, 0)
     assert parse_version("v3.2.0.0") == (3, 2, 0, 0)
     assert parse_version("1.0") == (1, 0, 0, 0)
     print("✓ test_version_parsing passed")
 
 
 def test_version_comparison():
-    assert compare_versions("3.2.1.0", "3.2.1.1") == -1
-    assert compare_versions("3.2.1.1", "3.2.1.1") == 0
+    assert compare_versions("3.2.1.0", "3.2.3.0") == -1
+    assert compare_versions("3.2.3.0", "3.2.3.0") == 0
     assert compare_versions("3.3.0.0", "3.2.9.9") == 1
     assert compare_versions("v4.0.0.0", "3.9.9.9") == 1
     print("✓ test_version_comparison passed")

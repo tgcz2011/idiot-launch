@@ -19,7 +19,7 @@ from pathlib import Path
 # ── 常量 ──────────────────────────────────────────────
 APP_NAME = "Countdown Desktop"
 EXE_NAME = "CountdownDesktop.exe"
-EMBEDDED_VERSION = "3.2.1.1"
+EMBEDDED_VERSION = "3.2.3.0"
 INSTALL_DIR = r"D:\IdiotLaunch\CountdownDesktop"  # 归拢到 IdiotLaunch 目录下，D 盘根目录不散落文件夹
 INSTALL_EXE = os.path.join(INSTALL_DIR, EXE_NAME)
 INSTALLER_REL = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
@@ -46,7 +46,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.net/", 900),
 ]
 
-LAUNCHER_VERSION = "1.7.0.0"
+LAUNCHER_VERSION = "1.8.0.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -279,7 +279,7 @@ def silent_install() -> bool:
 
 
 def _migrate_old_countdown_dir() -> None:
-    """v1.7.0.0: 旧版 Countdown Desktop 装在 D:\\CountdownDesktop，迁移到 D:\\IdiotLaunch\\CountdownDesktop。"""
+    """v1.8.0.0: 旧版 Countdown Desktop 装在 D:\\CountdownDesktop，迁移到 D:\\IdiotLaunch\\CountdownDesktop。"""
     old_dir = r"D:\CountdownDesktop"
     if not os.path.isdir(old_dir):
         return
@@ -321,6 +321,15 @@ def ensure_installed() -> str:
 def launch_countdown(exam_type: str) -> None:
     path = ensure_installed()
     subprocess.Popen([path, "--exam", exam_type], creationflags=0x00000008, close_fds=True)
+
+
+def launch_settings() -> None:
+    """一键唤起 Countdown Desktop 设置窗口。
+    v3.2.3.0+ 的 --settings 自动判断：已有实例则发命名事件弹出设置（不关闭倒计时），
+    无实例则启动并自动弹出设置窗口。
+    """
+    path = ensure_installed()
+    subprocess.Popen([path, "--settings"], creationflags=0x00000008, close_fds=True)
 
 
 def is_running() -> bool:

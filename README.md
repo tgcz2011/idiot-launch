@@ -6,6 +6,7 @@
 - **高考倒计时** — 自动启动 Countdown Desktop（`--exam gaokao`），未安装则静默安装到 `D:\IdiotLaunch\CountdownDesktop`
 - **早晚读** — 在默认浏览器打开 `https://zztool.free.nf/morning-reading`
 - **关闭倒计时** — 通过命名事件通知 Countdown Desktop 优雅退出；未运行时按钮自动变灰不可点击
+- **壁纸设置** — 一键唤起 Countdown Desktop 设置窗口（v3.2.3.0+ 支持，已有实例运行时不关闭倒计时）
 
 内嵌 Countdown Desktop v3.2.1.1 安装包，首次使用自动安装，无需手动下载。
 

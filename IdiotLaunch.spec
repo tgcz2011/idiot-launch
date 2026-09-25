@@ -2,7 +2,7 @@
 """
 PyInstaller 规格文件 — Idiot Launch (v1.7.0.0 onedir 模式)
 打包时将 Countdown Desktop 安装包作为数据文件内嵌。
-构建前请确保 installer/CountdownDesktop_Setup_3.2.1.1.exe 存在（build.ps1 会自动下载）。
+构建前请确保 installer/CountdownDesktop_Setup_<EMBEDDED_VERSION>.exe 存在（build.ps1 会自动下载）。
 
 onedir 模式说明：
 - 产物为 dist/IdiotLaunch/ 目录（IdiotLaunch.exe + _internal/ 子目录 + 内嵌资源）
@@ -13,10 +13,14 @@ onedir 模式说明：
 import os
 import sys
 
+# 从 src/core.py 动态读取 EMBEDDED_VERSION，避免每次升级手动同步
+sys.path.insert(0, os.getcwd())
+from src.core import EMBEDDED_VERSION
+
 block_cipher = None
 
 # 内嵌安装包路径
-INSTALLER_PATH = os.path.join("installer", "CountdownDesktop_Setup_3.2.1.1.exe")
+INSTALLER_PATH = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
 
 a = Analysis(
     ["run.py"],

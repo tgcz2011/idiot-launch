@@ -4,24 +4,25 @@
 .DESCRIPTION
     Automates: venv creation -> dependency install -> download Countdown Desktop
     installer -> PyInstaller packaging -> Inno Setup installer.
-    Output: dist\IdiotLaunch_Setup_<version>.exe (唯一正式产物；dist\IdiotLaunch\ 目录为 onedir 打包结果，仅作安装包内部 payload)
+    Output: dist\IdiotLaunch_Setup_<version>.exe
 .PARAMETER Version
     Version number in format a.b.c.d, default 1.0.0.0
-.EXAMPLE
-    .\build.ps1
-    .\build.ps1 -Version 1.0.0.1
 #>
 param(
     [string]$Version = "1.0.0.0"
 )
 
 $ErrorActionPreference = "Continue"
-$ProjectRoot = $PSScriptRoot
+if ($PSScriptRoot) {
+    $ProjectRoot = $PSScriptRoot
+} elseif ($MyInvocation.MyCommand.Path) {
+    $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+} else {
+    $ProjectRoot = (Get-Location).Path
+}
 $VenvDir = Join-Path $ProjectRoot ".venv"
 $Python = Join-Path $VenvDir "Scripts\python.exe"
 $InstallerDir = Join-Path $ProjectRoot "installer"
-$InstallerFile = Join-Path $InstallerDir "CountdownDesktop_Setup_3.2.1.1.exe"
-$InstallerUrl = "https://github.com/tgcz2011/countdown-desktop/releases/download/v3.2.1.1/CountdownDesktop_Setup_3.2.1.1.exe"
 
 function Invoke-Step {
     param([string]$Name, [scriptblock]$Action)
@@ -48,7 +49,15 @@ Invoke-Step "Install dependencies" {
     & $Python -m pip install -r (Join-Path $ProjectRoot "requirements.txt")
 }
 
-# 3. Download Countdown Desktop installer if not present
+# 3. 从 src/core.py 读取 EMBEDDED_VERSION
+$CorePyPath = Join-Path $ProjectRoot "src\core.py"
+$EmbeddedVersion = (Select-String -Path $CorePyPath -Pattern 'EMBEDDED_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+if (-not $EmbeddedVersion) { throw "Failed to read EMBEDDED_VERSION from $CorePyPath" }
+Write-Host "  Embedded Countdown Desktop version: $EmbeddedVersion" -ForegroundColor Gray
+$InstallerFile = Join-Path $InstallerDir "CountdownDesktop_Setup_$EmbeddedVersion.exe"
+$InstallerUrl = "https://github.com/tgcz2011/countdown-desktop/releases/download/v$EmbeddedVersion/CountdownDesktop_Setup_$EmbeddedVersion.exe"
+
+# 4. Download Countdown Desktop installer if not present
 if (-not (Test-Path $InstallerFile)) {
     Invoke-Step "Download Countdown Desktop installer" {
         if (-not (Test-Path $InstallerDir)) {
@@ -69,14 +78,12 @@ if ($installerSize -lt 1MB) {
 }
 Write-Host "  Installer size: $([math]::Round($installerSize / 1MB, 1)) MB" -ForegroundColor Gray
 
-# 4. PyInstaller build
+# 5. PyInstaller build
 Invoke-Step "PyInstaller build" {
-    # noUPX 和版本元数据均在 IdiotLaunch.spec 中配置（upx=False, version='version_info.txt'）
-    # 使用 spec 文件时命令行不允许 --noupx/--version-file 等 makespec 参数
     & $Python -m PyInstaller --noconfirm --clean (Join-Path $ProjectRoot "IdiotLaunch.spec")
 }
 
-# 5. Inno Setup build (if ISCC is available)
+# 6. Inno Setup build (if ISCC is available)
 $ISCC = $null
 $ISCCPaths = @(
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
@@ -97,7 +104,7 @@ if ($ISCC) {
     Write-Host "  Install from: https://jrsoftware.org/isdl.php" -ForegroundColor Gray
 }
 
-# 6. Verify output (onedir 模式：dist\IdiotLaunch\IdiotLaunch.exe)
+# 7. Verify output (onedir 模式：dist\IdiotLaunch\IdiotLaunch.exe)
 $OutputExe = Join-Path $ProjectRoot "dist\IdiotLaunch\IdiotLaunch.exe"
 if (Test-Path $OutputExe) {
     $size = (Get-Item $OutputExe).Length
