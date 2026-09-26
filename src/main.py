@@ -284,6 +284,10 @@ class UpdateDetailDialog:
         btn_frame = tk.Frame(frame, bg=BG_COLOR)
         btn_frame.pack(fill="x")
 
+        self.btn_update_now = tk.Button(btn_frame, text="立即更新", font=("Microsoft YaHei UI", 10, "bold"),
+                                         bg="#27ae60", fg="white", relief="flat", padx=15, pady=6,
+                                         cursor="hand2", command=self._update_now)
+        self.btn_update_now.pack(side="left", padx=(0, 8))
         tk.Button(btn_frame, text="立即检查更新", font=("Microsoft YaHei UI", 10),
                   bg="#2980b9", fg="white", relief="flat", padx=15, pady=6,
                   cursor="hand2", command=self._check_now).pack(side="left")
@@ -364,11 +368,27 @@ class UpdateDetailDialog:
         self.info_text.delete("1.0", "end")
         self.info_text.insert("1.0", "\n".join(lines))
         self.info_text.config(state="disabled")
+        # 更新"立即更新"按钮状态
+        has_pending = bool(state.get("pending_launcher_path") and os.path.isfile(state["pending_launcher_path"]))
+        if has_pending:
+            self.btn_update_now.config(state="normal", bg="#27ae60")
+        else:
+            self.btn_update_now.config(state="disabled", bg="#95a5a6")
 
     def _check_now(self):
         send_command("check_updates")
         self._refresh_info()
         messagebox.showinfo("已发送", "已通知守护进程立即检查更新。\n请稍候，状态会自动更新。", parent=self.win)
+
+    def _update_now(self):
+        state = load_state()
+        pending_ver = state.get("pending_launcher_version", "?")
+        if not messagebox.askyesno("确认更新", f"即将更新到 v{pending_ver}。\n\n更新过程中软件会自动关闭并重启，\n请确保没有正在进行的操作。\n\n是否立即更新？", parent=self.win):
+            return
+        send_command("apply_launcher_update_now")
+        messagebox.showinfo("正在更新", f"正在更新到 v{pending_ver}...\n\n软件将自动关闭并重启，请稍候。", parent=self.win)
+        self.win.destroy()
+        self.parent.destroy()
 
 
 class IdiotLaunchApp:

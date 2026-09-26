@@ -37,16 +37,20 @@ DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
 IDLE_THRESHOLD = 600  # 10 分钟无操作视为空闲，此时可静默自我更新
 
-# (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像，避免白等 15 分钟；
-# 镜像给 900s（用户设定：15 分钟还没下完大抵下不完了）。
+# (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像；
+# 每个镜像给 120s 超时：卡住后 2 分钟切换下一个，7 个源总计约 14 分钟，
+# 接近用户设定的 15 分钟上限（15 分钟还没下完大抵下不完了）。
 DOWNLOAD_MIRRORS = [
-    ("", 60),                       # GitHub 直连
-    ("https://gh-proxy.com/", 900),
-    ("https://ghfast.top/", 900),
-    ("https://ghproxy.net/", 900),
+    ("", 60),                           # GitHub 直连
+    ("https://gh-proxy.com/", 120),     # GH-Proxy 2.0，全球 CDN
+    ("https://ghfast.top/", 120),       # ghfast
+    ("https://ghproxy.net/", 120),      # ghproxy.net
+    ("https://gh.llkk.cc/", 120),       # LLKK 公益加速
+    ("https://hub.gitmirror.com/", 120),# GitMirror 公益加速
+    ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.1.4"
+LAUNCHER_VERSION = "1.8.1.5"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -651,6 +655,8 @@ def _handle_daemon_command(cmd: dict) -> None:
         state["launcher_last_check"] = 0
         save_state(state)
         set_daemon_status("checking", 0, "正在手动检查更新...")
+    elif action == "apply_launcher_update_now":
+        apply_launcher_update_now()
 
 
 # Countdown Desktop 更新后台线程（单实例）：下载/等待退出/安装全部在线程内执行，
@@ -807,7 +813,7 @@ def daemon_run() -> int:
             # Countdown Desktop 更新（后台线程：下载/等待退出/安装 都不阻塞主循环）
             _check_and_start_countdown_update()
             # 不覆盖后台正在进行的下载/安装/等待状态
-            st = load_state().get("daemon_status", "")
+            st = load_state().get("daemon", {}).get("activity", "")
             if st not in ("downloading", "updating", "installing", "waiting", "checking"):
                 set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
             for _ in range(6):
@@ -815,7 +821,7 @@ def daemon_run() -> int:
                 cmd = poll_command()
                 if cmd:
                     _handle_daemon_command(cmd)
-                    st = load_state().get("daemon_status", "")
+                    st = load_state().get("daemon", {}).get("activity", "")
                     if st not in ("downloading", "updating", "installing", "waiting", "checking"):
                         set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
     except KeyboardInterrupt:
@@ -1014,7 +1020,7 @@ def has_pending_launcher_update() -> bool:
     return compare_versions(version, LAUNCHER_VERSION) > 0
 
 
-def apply_launcher_update_if_pending() -> bool:
+def apply_launcher_update_if_pending(force: bool = False) -> bool:
     """安装包模式静默自我更新：仅当电脑空闲（>=10 分钟无操作）且有待更新安装包时触发。
     流程：生成 VBS → 杀进程 → 静默运行安装包(/VERYSILENT) → 启动新 daemon → 清理 → 自删除。
     返回 True 表示已触发（调用方应退出当前进程），False 表示条件不满足。
@@ -1028,14 +1034,19 @@ def apply_launcher_update_if_pending() -> bool:
     pending_ver = state.get("pending_launcher_version")
     if not installer or not os.path.isfile(installer):
         return False
-    idle = get_idle_seconds()
-    if idle < IDLE_THRESHOLD:
-        return False  # 电脑使用中，等 daemon 空闲时再更新
-    log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s，触发静默安装更新 {LAUNCHER_VERSION} -> v{pending_ver}")
-    set_daemon_status("updating", 0, f"空闲中静默更新到 v{pending_ver}...")
+    if not force:
+        idle = get_idle_seconds()
+        if idle < IDLE_THRESHOLD:
+            return False  # 电脑使用中，等 daemon 空闲时再更新
+        log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s，触发静默安装更新 {LAUNCHER_VERSION} -> v{pending_ver}")
+        set_daemon_status("updating", 0, f"空闲中静默更新到 v{pending_ver}...")
+    else:
+        log_daemon(f"用户触发立即更新 {LAUNCHER_VERSION} -> v{pending_ver}")
+        set_daemon_status("updating", 0, f"正在更新到 v{pending_ver}...")
     installed_exe = LAUNCHER_INSTALL_EXE
     import tempfile
     wmi_query = r"winmgmts:\\.\root\cimv2"
+    force_flag = "1" if force else "0"
     vbs_content = f'''Option Explicit
 Dim fso, shell, installer, installedExe, i, wmi, procs
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -1057,12 +1068,16 @@ Next
 On Error Resume Next
 shell.Run Chr(34) & installer & Chr(34) & " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", 0, True
 On Error GoTo 0
-' 4. 验证安装成功，只启动 daemon（不弹 GUI 打扰用户）
-If fso.FileExists(installedExe) Then
-    On Error Resume Next
-    shell.Run Chr(34) & installedExe & Chr(34) & " --daemon", 0, False
-    On Error GoTo 0
-End If
+    ' 4. 验证安装成功，启动新程序（force 时启动 GUI，否则只启动 daemon）
+    If fso.FileExists(installedExe) Then
+        On Error Resume Next
+        If "{force_flag}" = "1" Then
+            shell.Run Chr(34) & installedExe & Chr(34), 1, False
+        Else
+            shell.Run Chr(34) & installedExe & Chr(34) & " --daemon", 0, False
+        End If
+        On Error GoTo 0
+    End If
 ' 5. 清理下载的安装包
 On Error Resume Next
 fso.DeleteFile installer, True
@@ -1090,6 +1105,12 @@ On Error GoTo 0
         return False
     log_daemon("静默安装更新 VBS 已启动，进程即将退出")
     sys.exit(0)
+
+def apply_launcher_update_now() -> bool:
+    """立即更新 Idiot Launch（不等待空闲时间）。供 GUI"一键更新"按钮调用。"""
+    return apply_launcher_update_if_pending(force=True)
+
+
 def apply_launcher_update_idle() -> bool:
     """daemon 循环入口：空闲时静默安装更新。逻辑与 apply_launcher_update_if_pending 相同。"""
     return apply_launcher_update_if_pending()
