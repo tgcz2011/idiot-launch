@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.2.0"
+LAUNCHER_VERSION = "1.8.2.1"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -773,7 +773,9 @@ def _check_and_start_countdown_update() -> None:
             state.pop("pending_installer", None)
             state.pop("pending_version", None)
             state["download_complete"] = False
+            state.pop("cd_download", None)  # 同步清除下载状态，避免详情框误显示
             save_state(state)
+            log_daemon(f"本地已更新到 {local_ver}，清除待安装的 v{pending_ver}")
             return
         with _countdown_download_lock:
             if _countdown_update_thread and _countdown_update_thread.is_alive():
@@ -798,6 +800,10 @@ def _check_and_start_countdown_update() -> None:
     local_ver = get_installed_version()
     if local_ver and compare_versions(local_ver, latest["version"]) >= 0:
         set_daemon_status("idle", 0, "已是最新版本")
+        # 清除可能残留的 cd_download
+        if state.get("cd_download"):
+            state.pop("cd_download", None)
+            save_state(state)
         return
     log_daemon(f"发现新版本 {latest['version']}（本地 {local_ver}），后台线程下载")
     with _countdown_download_lock:
@@ -1029,6 +1035,7 @@ def _cleanup_stale_launcher_pending(state: dict) -> dict:
                 pass
             state.pop("pending_launcher_path", None)
             state.pop("pending_launcher_version", None)
+            state.pop("launcher_download", None)  # 同步清除下载状态
             save_state(state)
     return state
 
@@ -1183,6 +1190,18 @@ def _launcher_download_worker(url: str, dest: str, version: str, release_notes: 
             pass
         return
     state = load_state()
+    # 下载完成后再次检查当前版本：如果已经更新到同版本或更新版，不设置 pending
+    if compare_versions(version, LAUNCHER_VERSION) <= 0:
+        log_daemon(f"下载完成但当前已是 v{LAUNCHER_VERSION}（>= v{version}），跳过更新")
+        try:
+            os.remove(dest)
+        except OSError:
+            pass
+        state = load_state()
+        state.pop("launcher_download", None)
+        save_state(state)
+        set_daemon_status("idle", 0, "已是最新版本")
+        return
     state["pending_launcher_path"] = dest
     state["pending_launcher_version"] = version
     state["launcher_release_notes"] = release_notes
