@@ -4,7 +4,7 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.8.1.0"
+#define MyAppVersion "1.8.1.1"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 
@@ -49,7 +49,7 @@ Name: "chinesesimp"; MessagesFile: "assets\ChineseSimplified.isl"
 Source: "dist\IdiotLaunch\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Comment: "教室倒计时一键启动器"
+; 桌面快捷方式由 daemon 守护创建（ensure_shortcuts），避免重复
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
