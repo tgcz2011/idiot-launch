@@ -316,9 +316,6 @@ class UpdateDetailDialog:
             }
             act = activity_map.get(daemon.get("activity", "idle"), daemon.get("activity", "未知"))
             lines.append(f"  状态: {act}")
-            if daemon.get("detail"):
-                lines.append(f"  详情: {daemon['detail']}")
-            lines.append(f"  PID: {daemon.get('pid', '?')}")
         else:
             lines.append("  状态: 未运行（关闭窗口后自动启动）")
 
@@ -333,36 +330,52 @@ class UpdateDetailDialog:
         except Exception:
             pass
         lines.append(f"  当前版本: {local_ver}")
-        lines.append(f"  内嵌版本: {EMBEDDED_VERSION}")
-        if state.get("pending_installer") and state.get("download_complete"):
-            lines.append(f"  待安装版本: v{state.get('pending_version', '?')}")
-            lines.append(f"  安装包: {os.path.basename(state['pending_installer'])}")
-            if state.get("release_notes"):
-                notes = state["release_notes"][:200]
+        # 优先从 cd_download 读取待更新状态（下载中/已下载）
+        cd_dl = state.get("cd_download")
+        if cd_dl and cd_dl.get("version"):
+            cd_ver = cd_dl.get("version", "?")
+            cd_status = cd_dl.get("status", "")
+            cd_prog = cd_dl.get("progress", 0)
+            if cd_status == "downloading":
+                lines.append(f"  待更新版本: v{cd_ver}（正在下载 {cd_prog}%）")
+            elif cd_status == "complete":
+                lines.append(f"  待更新版本: v{cd_ver}（已下载，等待倒计时退出后安装）")
+            elif cd_status == "failed":
+                lines.append(f"  待更新版本: v{cd_ver}（下载失败，稍后重试）")
+            else:
+                lines.append(f"  待更新版本: v{cd_ver}")
+            if cd_dl.get("release_notes"):
+                notes = cd_dl["release_notes"][:150]
                 lines.append(f"  更新日志: {notes}")
-        else:
-            lines.append("  待安装更新: 无")
-
-        lines.append("")
-        lines.append("【Idiot Launch】")
-        lines.append(f"  当前版本: v{VERSION}")
-        if state.get("pending_launcher_path") and os.path.isfile(state["pending_launcher_path"]):
-            lines.append(f"  待更新版本: v{state.get('pending_launcher_version', '?')}")
-            lines.append("  (电脑空闲 10 分钟后静默更新)")
-            if state.get("launcher_release_notes"):
-                notes = state["launcher_release_notes"][:200]
-                lines.append(f"  更新日志: {notes}")
-        elif daemon and daemon.get("activity") == "downloading":
-            lines.append(f"  正在下载更新: {daemon.get('detail', '下载中...')}")
-            if daemon.get("progress"):
-                lines.append(f"  进度: {daemon['progress']}%")
+        elif state.get("pending_installer") and state.get("download_complete"):
+            lines.append(f"  待安装版本: v{state.get('pending_version', '?')}（已下载）")
         else:
             lines.append("  待更新: 无")
 
         lines.append("")
-        lines.append("【下载源】")
-        lines.append("  GitHub 直连 → gh-proxy.com → ghfast.top → ghproxy.net")
-        lines.append("  超时: 15 分钟 / 源，自动 fallback，最多重试 3 轮")
+        lines.append("【Idiot Launch】")
+        lines.append(f"  当前版本: v{VERSION}")
+        # 优先从 launcher_download 读取待更新状态
+        il_dl = state.get("launcher_download")
+        if il_dl and il_dl.get("version"):
+            il_ver = il_dl.get("version", "?")
+            il_status = il_dl.get("status", "")
+            il_prog = il_dl.get("progress", 0)
+            if il_status == "downloading":
+                lines.append(f"  待更新版本: v{il_ver}（正在下载 {il_prog}%）")
+            elif il_status == "complete":
+                lines.append(f"  待更新版本: v{il_ver}（已下载，电脑空闲 10 分钟后静默更新）")
+            elif il_status == "failed":
+                lines.append(f"  待更新版本: v{il_ver}（下载失败，稍后重试）")
+            else:
+                lines.append(f"  待更新版本: v{il_ver}")
+            if il_dl.get("release_notes"):
+                notes = il_dl["release_notes"][:150]
+                lines.append(f"  更新日志: {notes}")
+        elif state.get("pending_launcher_path") and os.path.isfile(state["pending_launcher_path"]):
+            lines.append(f"  待更新版本: v{state.get('pending_launcher_version', '?')}（已下载）")
+        else:
+            lines.append("  待更新: 无")
 
         self.info_text.config(state="normal")
         self.info_text.delete("1.0", "end")
@@ -374,6 +387,8 @@ class UpdateDetailDialog:
             self.btn_update_now.config(state="normal", bg="#27ae60")
         else:
             self.btn_update_now.config(state="disabled", bg="#95a5a6")
+        # 3秒后自动刷新
+        self.win.after(3000, self._refresh_info)
 
     def _check_now(self):
         send_command("check_updates")
@@ -406,21 +421,15 @@ class IdiotLaunchApp:
         except Exception:
             pass
 
-        # 自适应窗口尺寸：根据按钮数量计算高度，不超过屏幕 85%
-        self._btn_count = 5  # 当前按钮数量，未来增加时修改
-        self._btn_height = 80
-        self._btn_gap = 6
-        self._fixed_height = 170  # 标题+副标题+状态栏+版本号+边距
-        content_h = self._btn_count * (self._btn_height + self._btn_gap) - self._btn_gap
-        win_w = 400
-        win_h = min(self._fixed_height + content_h + 20,
-                    int(self.root.winfo_screenheight() * 0.85))
+        # 2列网格布局：窗口宽度自适应，高度固定
+        win_w = 560
+        win_h = 420
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = (screen_w - win_w) // 2
         y = (screen_h - win_h) // 2
         self.root.geometry(f"{win_w}x{win_h}+{x}+{y}")
-        self.root.minsize(win_w, 400)
+        self.root.minsize(win_w, win_h)
 
         self._loading = False
         self._build_ui()
@@ -456,105 +465,76 @@ class IdiotLaunchApp:
     def _build_ui(self):
         # 右上角更新状态指示器
         self.update_indicator = UpdateIndicator(self.root, self._show_update_detail)
-        self.update_indicator.place(x=355, y=12)
+        self.update_indicator.place(x=515, y=12)
 
-        # 顶部标题区（固定）
-        header = tk.Frame(self.root, bg=BG_COLOR)
-        header.pack(fill="x", side="top")
-
+        # 顶部标题区
         title = tk.Label(
-            header, text="傻瓜启动器", font=("Microsoft YaHei UI", 22, "bold"),
+            self.root, text="傻瓜启动器", font=("Microsoft YaHei UI", 20, "bold"),
             bg=BG_COLOR, fg=TEXT_COLOR,
         )
-        title.pack(pady=(20, 3))
+        title.pack(pady=(15, 2))
 
         subtitle = tk.Label(
-            header, text="一键启动，无需配置",
+            self.root, text="一键启动，无需配置",
             font=("Microsoft YaHei UI", 10), bg=BG_COLOR, fg=STATUS_COLOR,
         )
         subtitle.pack(pady=(0, 10))
 
-        # 底部状态栏（固定）
-        footer = tk.Frame(self.root, bg=BG_COLOR)
-        footer.pack(fill="x", side="bottom")
+        # 按钮区：2列网格布局
+        btn_frame = tk.Frame(self.root, bg=BG_COLOR)
+        btn_frame.pack(pady=5, padx=15)
 
-        self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
-        status = tk.Label(
-            footer, textvariable=self.status_var,
-            font=("Microsoft YaHei UI", 9), bg=BG_COLOR, fg=STATUS_COLOR,
-        )
-        status.pack(pady=(8, 2))
-
-        version_label = tk.Label(
-            footer, text=f"v{VERSION}  |  内嵌 Countdown Desktop v{EMBEDDED_VERSION}",
-            font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
-        )
-        version_label.pack(pady=(0, 8))
-
-        # 中间按钮区（可滚动）
-        scroll_frame = tk.Frame(self.root, bg=BG_COLOR)
-        scroll_frame.pack(fill="both", expand=True, padx=10)
-
-        self._btn_canvas = tk.Canvas(scroll_frame, bg=BG_COLOR, highlightthickness=0)
-        self._btn_scrollbar = tk.Scrollbar(scroll_frame, orient="vertical",
-                                            command=self._btn_canvas.yview)
-        self._btn_canvas.configure(yscrollcommand=self._btn_scrollbar.set)
-
-        self._btn_canvas.pack(side="left", fill="both", expand=True)
-        self._btn_scrollbar.pack(side="right", fill="y")
-
-        btn_frame = tk.Frame(self._btn_canvas, bg=BG_COLOR)
-        self._btn_canvas.create_window((0, 0), window=btn_frame, anchor="nw",
-                                        tags="btn_frame")
-
-        def _update_scroll_region(event=None):
-            self._btn_canvas.configure(scrollregion=self._btn_canvas.bbox("all"))
-            # 隐藏滚动条（内容不超出时）
-            content_h = btn_frame.winfo_reqheight()
-            canvas_h = self._btn_canvas.winfo_height()
-            if content_h <= canvas_h:
-                self._btn_scrollbar.pack_forget()
-            else:
-                self._btn_scrollbar.pack(side="right", fill="y")
-
-        btn_frame.bind("<Configure>", _update_scroll_region)
-        self._btn_canvas.bind("<Configure>", lambda e: self._btn_canvas.itemconfigure(
-            "btn_frame", width=self._btn_canvas.winfo_width()))
-
-        # 鼠标滚轮滚动
-        def _on_mousewheel(event):
-            self._btn_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        self._btn_canvas.bind_all("<MouseWheel>", _on_mousewheel)
-
+        # 第一行：中考倒计时 + 高考倒计时
         self.btn_zhongkao = HoverButton(
             btn_frame, "中考倒计时", "启动中考倒计时壁纸",
             BTN_ZHONGKAO, BTN_HOVER_ZHONGKAO, self.on_zhongkao,
+            width=240, height=75,
         )
-        self.btn_zhongkao.pack(pady=3)
+        self.btn_zhongkao.grid(row=0, column=0, padx=5, pady=5)
 
         self.btn_gaokao = HoverButton(
             btn_frame, "高考倒计时", "启动高考倒计时壁纸",
             BTN_GAOKAO, BTN_HOVER_GAOKAO, self.on_gaokao,
+            width=240, height=75,
         )
-        self.btn_gaokao.pack(pady=3)
+        self.btn_gaokao.grid(row=0, column=1, padx=5, pady=5)
 
+        # 第二行：早晚读 + 关闭倒计时
         self.btn_reading = HoverButton(
             btn_frame, "早晚读", "打开早晚读网页",
             BTN_READING, BTN_HOVER_READING, self.on_reading,
+            width=240, height=75,
         )
-        self.btn_reading.pack(pady=3)
+        self.btn_reading.grid(row=1, column=0, padx=5, pady=5)
 
         self.btn_kill = HoverButton(
             btn_frame, "关闭倒计时", "退出 Countdown Desktop",
             BTN_KILL, BTN_HOVER_KILL, self.on_kill,
+            width=240, height=75,
         )
-        self.btn_kill.pack(pady=3)
+        self.btn_kill.grid(row=1, column=1, padx=5, pady=5)
 
+        # 第三行：壁纸设置（居中，跨两列）
         self.btn_settings = HoverButton(
             btn_frame, "壁纸设置", "打开 Countdown Desktop 设置",
             BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_settings,
+            width=500, height=75,
         )
-        self.btn_settings.pack(pady=3)
+        self.btn_settings.grid(row=2, column=0, columnspan=2, padx=5, pady=5)
+
+        # 底部状态栏
+        self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
+        status = tk.Label(
+            self.root, textvariable=self.status_var,
+            font=("Microsoft YaHei UI", 9), bg=BG_COLOR, fg=STATUS_COLOR,
+        )
+        status.pack(side="bottom", pady=(6, 2))
+
+        version_label = tk.Label(
+            self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v{EMBEDDED_VERSION}",
+            font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
+        )
+        version_label.pack(side="bottom", pady=(0, 6))
 
     def _show_update_detail(self):
         UpdateDetailDialog(self.root)

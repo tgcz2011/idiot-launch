@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.1.8"
+LAUNCHER_VERSION = "1.8.1.9"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -530,7 +530,7 @@ def verify_sha256(file_path: str, expected: str) -> bool:
         return False
 
 
-def _download_single(url: str, dest_path: str, timeout: int) -> bool:
+def _download_single(url: str, dest_path: str, timeout: int, tag: str = "") -> bool:
     tmp_path = dest_path + ".part"
     try:
         ctx = ssl.create_default_context()
@@ -550,8 +550,17 @@ def _download_single(url: str, dest_path: str, timeout: int) -> bool:
                     if total > 0 and downloaded - last_report >= 512 * 1024:
                         last_report = downloaded
                         pct = min(99, int(downloaded * 100 / total))
-                        set_daemon_status("downloading", pct,
-                                          f"正在下载... {pct}%（{downloaded // (1024 * 1024)}/{total // (1024 * 1024)} MB）")
+                        # 分别存储两个软件的下载进度
+                        if tag:
+                            try:
+                                _st = load_state()
+                                key = f"{tag}_download"
+                                _st[key] = {"version": _st.get(key, {}).get("version", ""),
+                                            "progress": pct, "status": "downloading"}
+                                save_state(_st)
+                            except Exception:
+                                pass
+                        set_daemon_status("downloading", pct, f"正在下载... {pct}%")
         if total > 0 and downloaded < total:
             try:
                 os.remove(tmp_path)
@@ -571,7 +580,7 @@ def _download_single(url: str, dest_path: str, timeout: int) -> bool:
         return False
 
 
-def download_installer(url: str, dest_path: str) -> bool:
+def download_installer(url: str, dest_path: str, tag: str = "") -> bool:
     _ensure_update_dir()
     for attempt in range(DOWNLOAD_RETRY):
         # 动态超时：第1轮 1x，第2轮 2x，第3轮 3x——避免所有源都在短超时内失败后永远更新不了
@@ -581,8 +590,7 @@ def download_installer(url: str, dest_path: str) -> bool:
             full_url = mirror + url if mirror else url
             source_name = mirror.rstrip("/") if mirror else "GitHub direct"
             log_daemon(f"下载尝试 ({attempt+1}/{DOWNLOAD_RETRY}) [{source_name}] 超时{mirror_timeout}s: {os.path.basename(dest_path)}")
-            set_daemon_status("downloading", 0, f"正在从 {source_name} 下载...（第{attempt+1}轮，超时{mirror_timeout}s）")
-            if _download_single(full_url, dest_path, mirror_timeout):
+            if _download_single(full_url, dest_path, mirror_timeout, tag):
                 log_daemon(f"下载成功 [{source_name}]: {os.path.basename(dest_path)}")
                 return True
             log_daemon(f"下载失败 [{source_name}]，尝试下一个源")
@@ -702,6 +710,14 @@ def _countdown_download_worker(latest: dict) -> None:
     """后台线程：下载 Countdown Desktop 安装包 → SHA-256 校验 → 写入 pending → 等待退出并安装。"""
     installer_name = latest.get("name", f"CountdownDesktop_Setup_{latest['version']}.exe")
     dest = os.path.join(UPDATE_DIR, installer_name)
+    # 立即标记为待更新（下载中）
+    try:
+        _st = load_state()
+        _st["cd_download"] = {"version": latest["version"], "progress": 0, "status": "downloading",
+                              "installer": dest, "release_notes": latest.get("release_notes", "")}
+        save_state(_st)
+    except Exception:
+        pass
     if not (os.path.isfile(dest) and latest.get("size", 0) > 0
             and os.path.getsize(dest) == latest["size"]
             and verify_sha256(dest, latest.get("sha256", ""))):
@@ -712,8 +728,14 @@ def _countdown_download_worker(latest: dict) -> None:
                 os.remove(dest)
             except OSError:
                 pass
-        ok = download_installer(latest["url"], dest)
+        ok = download_installer(latest["url"], dest, tag="cd")
         if not ok:
+            try:
+                _st = load_state()
+                _st["cd_download"] = {"version": latest["version"], "progress": 0, "status": "failed"}
+                save_state(_st)
+            except Exception:
+                pass
             set_daemon_status("idle", 0, "更新下载失败，6 小时后重试")
             return
     # SHA-256 校验：对不上就删除并拒绝更新
@@ -730,6 +752,8 @@ def _countdown_download_worker(latest: dict) -> None:
     state["pending_version"] = latest["version"]
     state["download_complete"] = True
     state["release_notes"] = latest.get("release_notes", "")
+    state["cd_download"] = {"version": latest["version"], "progress": 100, "status": "complete",
+                            "installer": dest, "release_notes": latest.get("release_notes", "")}
     save_state(state)
     set_daemon_status("idle", 0, f"已下载 v{latest['version']}，等待倒计时退出后安装")
     _countdown_install_worker(dest, latest["version"])
@@ -1125,8 +1149,22 @@ _launcher_download_lock = threading.Lock()
 
 def _launcher_download_worker(url: str, dest: str, version: str, release_notes: str,
                                 expected_sha256: str = "") -> None:
-    ok = download_installer(url, dest)
+    # 立即标记为待更新（下载中）
+    try:
+        _st = load_state()
+        _st["launcher_download"] = {"version": version, "progress": 0, "status": "downloading",
+                                    "installer": dest, "release_notes": release_notes}
+        save_state(_st)
+    except Exception:
+        pass
+    ok = download_installer(url, dest, tag="launcher")
     if not ok:
+        try:
+            _st = load_state()
+            _st["launcher_download"] = {"version": version, "progress": 0, "status": "failed"}
+            save_state(_st)
+        except Exception:
+            pass
         set_daemon_status("idle", 0, "Idiot Launch 更新下载失败，稍后重试")
         return
     if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
@@ -1148,6 +1186,8 @@ def _launcher_download_worker(url: str, dest: str, version: str, release_notes: 
     state["pending_launcher_path"] = dest
     state["pending_launcher_version"] = version
     state["launcher_release_notes"] = release_notes
+    state["launcher_download"] = {"version": version, "progress": 100, "status": "complete",
+                                  "installer": dest, "release_notes": release_notes}
     save_state(state)
     set_daemon_status("idle", 0, f"已下载 Idiot Launch v{version}（校验通过），空闲时自动更新")
     log_daemon(f"Idiot Launch v{version} 下载完成（SHA-256 校验通过），空闲时自动更新")
