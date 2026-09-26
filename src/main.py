@@ -342,12 +342,16 @@ class UpdateDetailDialog:
         lines.append("")
         lines.append("【Idiot Launch】")
         lines.append(f"  当前版本: v{VERSION}")
-        if state.get("pending_launcher_path"):
+        if state.get("pending_launcher_path") and os.path.isfile(state["pending_launcher_path"]):
             lines.append(f"  待更新版本: v{state.get('pending_launcher_version', '?')}")
-            lines.append("  (下次启动时自动应用)")
+            lines.append("  (电脑空闲 10 分钟后静默更新)")
             if state.get("launcher_release_notes"):
                 notes = state["launcher_release_notes"][:200]
                 lines.append(f"  更新日志: {notes}")
+        elif daemon and daemon.get("activity") == "downloading":
+            lines.append(f"  正在下载更新: {daemon.get('detail', '下载中...')}")
+            if daemon.get("progress"):
+                lines.append(f"  进度: {daemon['progress']}%")
         else:
             lines.append("  待更新: 无")
 
@@ -481,7 +485,7 @@ class IdiotLaunchApp:
             self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v{EMBEDDED_VERSION}",
             font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
         )
-        version_label.place(relx=0.5, rely=0.97, anchor="s")
+        version_label.pack(side="bottom", pady=(0, 8))
 
     def _show_update_detail(self):
         UpdateDetailDialog(self.root)

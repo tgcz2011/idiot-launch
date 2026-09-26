@@ -46,7 +46,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.net/", 900),
 ]
 
-LAUNCHER_VERSION = "1.8.0.2"
+LAUNCHER_VERSION = "1.8.1.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -470,6 +470,7 @@ def poll_command() -> dict | None:
 
 
 def get_latest_version_info() -> dict | None:
+    # 优先用 API
     try:
         ctx = ssl.create_default_context()
         req = urllib.request.Request(
@@ -489,9 +490,16 @@ def get_latest_version_info() -> dict | None:
                     "release_notes": data.get("body", ""),
                     "sha256": asset.get("digest", ""),
                 }
-        return None
     except Exception:
-        return None
+        pass
+    # API 限流时 fallback：302 重定向获取版本号
+    version = _get_latest_tag_via_redirect("tgcz2011/countdown-desktop")
+    if version:
+        name = f"CountdownDesktop_Setup_{version}.exe"
+        url = f"https://github.com/tgcz2011/countdown-desktop/releases/download/v{version}/{name}"
+        return {"version": version, "url": url, "size": 0, "name": name,
+                "release_notes": "", "sha256": ""}
+    return None
 
 
 def sha256_of(file_path: str) -> str:
@@ -775,6 +783,14 @@ def daemon_run() -> int:
         return 0
     log_daemon(f"daemon 启动 (pid={os.getpid()}, v{LAUNCHER_VERSION})")
     set_daemon_status("starting", 0, "守护进程启动")
+    # 启动时重置检查时间，使重启后立即检查更新（不受 6 小时间隔限制）
+    try:
+        _st = load_state()
+        _st["launcher_last_check"] = 0
+        _st["last_check"] = 0
+        save_state(_st)
+    except Exception:
+        pass
     try:
         while True:
             state = load_state()
@@ -844,8 +860,9 @@ $s.WorkingDirectory = "{os.path.dirname(target)}"
             ps_script += f'$s.Description = "{description}"\n'
         ps_script += "$s.Save()\n"
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", ps_script],
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
             capture_output=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
         )
         return result.returncode == 0 and os.path.isfile(shortcut_path)
     except Exception:
@@ -864,16 +881,25 @@ def ensure_shortcuts() -> None:
     locations = []
     if os.path.isdir("D:\\"):
         locations.append(r"D:\傻瓜启动器.lnk")
-    desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
-    if os.path.isdir(desktop):
-        locations.append(os.path.join(desktop, "傻瓜启动器.lnk"))
+    # 桌面只创建一个：优先公共桌面（所有用户可见），失败则用户桌面
     public_desktop = r"C:\Users\Public\Desktop"
+    user_desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
+    desktop_lnk = None
     if os.path.isdir(public_desktop):
-        locations.append(os.path.join(public_desktop, "傻瓜启动器.lnk"))
+        desktop_lnk = os.path.join(public_desktop, "傻瓜启动器.lnk")
+    elif os.path.isdir(user_desktop):
+        desktop_lnk = os.path.join(user_desktop, "傻瓜启动器.lnk")
+    if desktop_lnk:
+        locations.append(desktop_lnk)
     for lnk in locations:
         try:
             if not os.path.isfile(lnk):
-                _create_shortcut(target, lnk, icon, desc)
+                if _create_shortcut(target, lnk, icon, desc):
+                    try:
+                        subprocess.run(["ie4uinit.exe", "-show"], capture_output=True, timeout=5,
+                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -907,7 +933,26 @@ def install_pending_if_idle() -> bool:
     return ok
 
 
+def _get_latest_tag_via_redirect(repo: str) -> str | None:
+    """通过 GitHub releases/latest 的 302 重定向获取最新 tag，绕过 API 限流。
+    未认证 API 限 60 次/小时/IP，教室共用 IP 易被限流；重定向不限流。"""
+    try:
+        url = f"https://github.com/{repo}/releases/latest"
+        req = urllib.request.Request(url, headers={"User-Agent": "idiot-launch-updater"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            final = resp.geturl()
+        # final 形如 https://github.com/tgcz2011/idiot-launch/releases/tag/v1.8.0.2
+        import re
+        m = re.search(r"/releases/tag/([^/]+)$", final)
+        if m:
+            return m.group(1).lstrip("vV")
+    except Exception:
+        pass
+    return None
+
+
 def get_latest_launcher_info() -> dict | None:
+    # 优先用 API（含 release notes / size / sha256）
     try:
         ctx = ssl.create_default_context()
         req = urllib.request.Request(
@@ -927,9 +972,16 @@ def get_latest_launcher_info() -> dict | None:
                     "release_notes": data.get("body", ""),
                     "sha256": asset.get("digest", ""),
                 }
-        return None
     except Exception:
-        return None
+        pass
+    # API 限流或失败时：用 302 重定向获取版本号，构造下载 URL（不限流）
+    version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
+    if version:
+        name = f"{LAUNCHER_SETUP_PREFIX}{version}.exe"
+        url = f"https://github.com/tgcz2011/idiot-launch/releases/download/v{version}/{name}"
+        return {"version": version, "url": url, "size": 0, "name": name,
+                "release_notes": "", "sha256": ""}
+    return None
 
 
 def _cleanup_stale_launcher_pending(state: dict) -> dict:
