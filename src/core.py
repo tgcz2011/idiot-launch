@@ -19,7 +19,7 @@ from pathlib import Path
 # ── 常量 ──────────────────────────────────────────────
 APP_NAME = "Countdown Desktop"
 EXE_NAME = "CountdownDesktop.exe"
-EMBEDDED_VERSION = "3.2.4.0"
+EMBEDDED_VERSION = "3.2.5.0"
 INSTALL_DIR = r"D:\IdiotLaunch\CountdownDesktop"  # 归拢到 IdiotLaunch 目录下，D 盘根目录不散落文件夹
 INSTALL_EXE = os.path.join(INSTALL_DIR, EXE_NAME)
 INSTALLER_REL = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.1.5"
+LAUNCHER_VERSION = "1.8.1.6"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -324,7 +324,7 @@ def ensure_installed() -> str:
 
 def launch_countdown(exam_type: str) -> None:
     path = ensure_installed()
-    subprocess.Popen([path, "--exam", exam_type], creationflags=0x00000008, close_fds=True)
+    subprocess.Popen([path, "--exam", exam_type, "--auto-check-update", "off"], creationflags=0x00000008, close_fds=True)
 
 
 def launch_settings() -> None:
@@ -333,7 +333,7 @@ def launch_settings() -> None:
     无实例则启动并自动弹出设置窗口。
     """
     path = ensure_installed()
-    subprocess.Popen([path, "--settings"], creationflags=0x00000008, close_fds=True)
+    subprocess.Popen([path, "--settings", "--auto-check-update", "off"], creationflags=0x00000008, close_fds=True)
 
 
 def is_running() -> bool:
@@ -574,11 +574,14 @@ def _download_single(url: str, dest_path: str, timeout: int) -> bool:
 def download_installer(url: str, dest_path: str) -> bool:
     _ensure_update_dir()
     for attempt in range(DOWNLOAD_RETRY):
-        for mirror, mirror_timeout in DOWNLOAD_MIRRORS:
+        # 动态超时：第1轮 1x，第2轮 2x，第3轮 3x——避免所有源都在短超时内失败后永远更新不了
+        timeout_multiplier = attempt + 1
+        for mirror, base_timeout in DOWNLOAD_MIRRORS:
+            mirror_timeout = base_timeout * timeout_multiplier
             full_url = mirror + url if mirror else url
             source_name = mirror.rstrip("/") if mirror else "GitHub direct"
-            log_daemon(f"下载尝试 ({attempt+1}/{DOWNLOAD_RETRY}) [{source_name}]: {os.path.basename(dest_path)}")
-            set_daemon_status("downloading", 0, f"正在从 {source_name} 下载...")
+            log_daemon(f"下载尝试 ({attempt+1}/{DOWNLOAD_RETRY}) [{source_name}] 超时{mirror_timeout}s: {os.path.basename(dest_path)}")
+            set_daemon_status("downloading", 0, f"正在从 {source_name} 下载...（第{attempt+1}轮，超时{mirror_timeout}s）")
             if _download_single(full_url, dest_path, mirror_timeout):
                 log_daemon(f"下载成功 [{source_name}]: {os.path.basename(dest_path)}")
                 return True
