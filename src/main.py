@@ -62,7 +62,7 @@ INDICATOR_UPDATING = "#8e44ad"    # 深紫 - 静默自我更新中
 
 class HoverButton(tk.Canvas):
     def __init__(self, parent, text, subtext, color, hover_color, command,
-                 width=320, height=110):
+                 width=340, height=80):
         super().__init__(parent, width=width, height=height, bg=BG_COLOR,
                          highlightthickness=0)
         self.color = color
@@ -88,11 +88,11 @@ class HoverButton(tk.Canvas):
         self.create_oval(w - 2 * r, 0, w, 2 * r, fill=color, outline="")
         self.create_oval(0, h - 2 * r, 2 * r, h, fill=color, outline="")
         self.create_oval(w - 2 * r, h - 2 * r, w, h, fill=color, outline="")
-        self.create_text(w // 2, h // 2 - 10, text=self.text, fill=text_color,
-                         font=("Microsoft YaHei UI", 22, "bold"))
-        self.create_text(w // 2, h // 2 + 24, text=self.subtext,
+        self.create_text(w // 2, h // 2 - 8, text=self.text, fill=text_color,
+                         font=("Microsoft YaHei UI", 18, "bold"))
+        self.create_text(w // 2, h // 2 + 16, text=self.subtext,
                          fill=BTN_DISABLED_TEXT if not self._enabled else "white",
-                         font=("Microsoft YaHei UI", 11))
+                         font=("Microsoft YaHei UI", 10))
 
     def _on_enter(self, event):
         if self._enabled:
@@ -406,12 +406,21 @@ class IdiotLaunchApp:
         except Exception:
             pass
 
-        win_w, win_h = 420, 780
+        # 自适应窗口尺寸：根据按钮数量计算高度，不超过屏幕 85%
+        self._btn_count = 5  # 当前按钮数量，未来增加时修改
+        self._btn_height = 80
+        self._btn_gap = 6
+        self._fixed_height = 170  # 标题+副标题+状态栏+版本号+边距
+        content_h = self._btn_count * (self._btn_height + self._btn_gap) - self._btn_gap
+        win_w = 400
+        win_h = min(self._fixed_height + content_h + 20,
+                    int(self.root.winfo_screenheight() * 0.85))
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = (screen_w - win_w) // 2
         y = (screen_h - win_h) // 2
         self.root.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        self.root.minsize(win_w, 400)
 
         self._loading = False
         self._build_ui()
@@ -447,65 +456,105 @@ class IdiotLaunchApp:
     def _build_ui(self):
         # 右上角更新状态指示器
         self.update_indicator = UpdateIndicator(self.root, self._show_update_detail)
-        self.update_indicator.place(x=375, y=15)
+        self.update_indicator.place(x=355, y=12)
+
+        # 顶部标题区（固定）
+        header = tk.Frame(self.root, bg=BG_COLOR)
+        header.pack(fill="x", side="top")
 
         title = tk.Label(
-            self.root, text="傻瓜启动器", font=("Microsoft YaHei UI", 26, "bold"),
+            header, text="傻瓜启动器", font=("Microsoft YaHei UI", 22, "bold"),
             bg=BG_COLOR, fg=TEXT_COLOR,
         )
-        title.pack(pady=(30, 5))
+        title.pack(pady=(20, 3))
 
         subtitle = tk.Label(
-            self.root, text="一键启动，无需配置",
-            font=("Microsoft YaHei UI", 11), bg=BG_COLOR, fg=STATUS_COLOR,
+            header, text="一键启动，无需配置",
+            font=("Microsoft YaHei UI", 10), bg=BG_COLOR, fg=STATUS_COLOR,
         )
-        subtitle.pack(pady=(0, 20))
+        subtitle.pack(pady=(0, 10))
 
-        btn_frame = tk.Frame(self.root, bg=BG_COLOR)
-        btn_frame.pack(pady=10)
+        # 底部状态栏（固定）
+        footer = tk.Frame(self.root, bg=BG_COLOR)
+        footer.pack(fill="x", side="bottom")
+
+        self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
+        status = tk.Label(
+            footer, textvariable=self.status_var,
+            font=("Microsoft YaHei UI", 9), bg=BG_COLOR, fg=STATUS_COLOR,
+        )
+        status.pack(pady=(8, 2))
+
+        version_label = tk.Label(
+            footer, text=f"v{VERSION}  |  内嵌 Countdown Desktop v{EMBEDDED_VERSION}",
+            font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
+        )
+        version_label.pack(pady=(0, 8))
+
+        # 中间按钮区（可滚动）
+        scroll_frame = tk.Frame(self.root, bg=BG_COLOR)
+        scroll_frame.pack(fill="both", expand=True, padx=10)
+
+        self._btn_canvas = tk.Canvas(scroll_frame, bg=BG_COLOR, highlightthickness=0)
+        self._btn_scrollbar = tk.Scrollbar(scroll_frame, orient="vertical",
+                                            command=self._btn_canvas.yview)
+        self._btn_canvas.configure(yscrollcommand=self._btn_scrollbar.set)
+
+        self._btn_canvas.pack(side="left", fill="both", expand=True)
+        self._btn_scrollbar.pack(side="right", fill="y")
+
+        btn_frame = tk.Frame(self._btn_canvas, bg=BG_COLOR)
+        self._btn_canvas.create_window((0, 0), window=btn_frame, anchor="nw",
+                                        tags="btn_frame")
+
+        def _update_scroll_region(event=None):
+            self._btn_canvas.configure(scrollregion=self._btn_canvas.bbox("all"))
+            # 隐藏滚动条（内容不超出时）
+            content_h = btn_frame.winfo_reqheight()
+            canvas_h = self._btn_canvas.winfo_height()
+            if content_h <= canvas_h:
+                self._btn_scrollbar.pack_forget()
+            else:
+                self._btn_scrollbar.pack(side="right", fill="y")
+
+        btn_frame.bind("<Configure>", _update_scroll_region)
+        self._btn_canvas.bind("<Configure>", lambda e: self._btn_canvas.itemconfigure(
+            "btn_frame", width=self._btn_canvas.winfo_width()))
+
+        # 鼠标滚轮滚动
+        def _on_mousewheel(event):
+            self._btn_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self._btn_canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         self.btn_zhongkao = HoverButton(
             btn_frame, "中考倒计时", "启动中考倒计时壁纸",
             BTN_ZHONGKAO, BTN_HOVER_ZHONGKAO, self.on_zhongkao,
         )
-        self.btn_zhongkao.pack(pady=8)
+        self.btn_zhongkao.pack(pady=3)
 
         self.btn_gaokao = HoverButton(
             btn_frame, "高考倒计时", "启动高考倒计时壁纸",
             BTN_GAOKAO, BTN_HOVER_GAOKAO, self.on_gaokao,
         )
-        self.btn_gaokao.pack(pady=8)
+        self.btn_gaokao.pack(pady=3)
 
         self.btn_reading = HoverButton(
             btn_frame, "早晚读", "打开早晚读网页",
             BTN_READING, BTN_HOVER_READING, self.on_reading,
         )
-        self.btn_reading.pack(pady=8)
+        self.btn_reading.pack(pady=3)
 
         self.btn_kill = HoverButton(
             btn_frame, "关闭倒计时", "退出 Countdown Desktop",
             BTN_KILL, BTN_HOVER_KILL, self.on_kill,
         )
-        self.btn_kill.pack(pady=8)
+        self.btn_kill.pack(pady=3)
 
         self.btn_settings = HoverButton(
             btn_frame, "壁纸设置", "打开 Countdown Desktop 设置",
             BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_settings,
         )
-        self.btn_settings.pack(pady=8)
-
-        self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
-        status = tk.Label(
-            self.root, textvariable=self.status_var,
-            font=("Microsoft YaHei UI", 9), bg=BG_COLOR, fg=STATUS_COLOR,
-        )
-        status.pack(side="bottom", pady=15)
-
-        version_label = tk.Label(
-            self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v{EMBEDDED_VERSION}",
-            font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
-        )
-        version_label.pack(side="bottom", pady=(0, 8))
+        self.btn_settings.pack(pady=3)
 
     def _show_update_detail(self):
         UpdateDetailDialog(self.root)
