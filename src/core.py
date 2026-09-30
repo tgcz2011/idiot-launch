@@ -19,7 +19,7 @@ from pathlib import Path
 # ── 常量 ──────────────────────────────────────────────
 APP_NAME = "Countdown Desktop"
 EXE_NAME = "CountdownDesktop.exe"
-EMBEDDED_VERSION = "3.2.5.3"
+EMBEDDED_VERSION = "3.2.5.4"
 INSTALL_DIR = r"D:\IdiotLaunch\CountdownDesktop"  # 归拢到 IdiotLaunch 目录下，D 盘根目录不散落文件夹
 INSTALL_EXE = os.path.join(INSTALL_DIR, EXE_NAME)
 INSTALLER_REL = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.2.3"
+LAUNCHER_VERSION = "1.8.2.4"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -109,12 +109,20 @@ def log_daemon(msg: str) -> None:
     try:
         _ensure_update_dir()
         line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+        # 日志轮转：超过 100KB 时，当前日志改名为 .1，.1 改名为 .2（最多保留 3 份）
         if os.path.isfile(DAEMON_LOG) and os.path.getsize(DAEMON_LOG) > 100 * 1024:
-            with open(DAEMON_LOG, "w", encoding="utf-8") as f:
-                f.write(line)
-        else:
-            with open(DAEMON_LOG, "a", encoding="utf-8") as f:
-                f.write(line)
+            for i in range(2, 0, -1):
+                src = f"{DAEMON_LOG}.{i}" if i > 1 else DAEMON_LOG
+                dst = f"{DAEMON_LOG}.{i+1}"
+                if os.path.isfile(src):
+                    try:
+                        if os.path.isfile(dst):
+                            os.remove(dst)
+                        os.replace(src, dst)
+                    except OSError:
+                        pass
+        with open(DAEMON_LOG, "a", encoding="utf-8") as f:
+            f.write(line)
     except Exception:
         pass
 
@@ -409,20 +417,27 @@ def load_state() -> dict:
 
 
 def save_state(state: dict) -> None:
+    """原子写入：先写 .tmp，再 os.replace 覆盖，避免断电/并发导致 JSON 损坏。"""
     try:
         _ensure_update_dir()
-        with open(STATE_FILE, "w", encoding="utf-8") as f:
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, STATE_FILE)
     except Exception:
         pass
 
 
-def set_daemon_status(activity: str, progress: float = 0, detail: str = "") -> None:
+def set_daemon_status(activity: str, progress: float = 0, detail: str = "", download_tag: str = "") -> None:
     state = load_state()
     state["daemon"] = {
         "activity": activity, "progress": progress, "detail": detail,
         "timestamp": time.time(), "pid": os.getpid(),
     }
+    if download_tag:
+        state["daemon"]["download_tag"] = download_tag
+    elif "download_tag" in state.get("daemon", {}):
+        state["daemon"].pop("download_tag", None)
     save_state(state)
 
 
@@ -560,7 +575,7 @@ def _download_single(url: str, dest_path: str, timeout: int, tag: str = "") -> b
                                 save_state(_st)
                             except Exception:
                                 pass
-                        set_daemon_status("downloading", pct, f"正在下载... {pct}%")
+                        set_daemon_status("downloading", pct, f"正在下载... {pct}%", download_tag=tag)
         if total > 0 and downloaded < total:
             try:
                 os.remove(tmp_path)
@@ -677,16 +692,42 @@ _countdown_download_lock = threading.Lock()
 
 
 def _countdown_install_worker(installer_path: str, version: str) -> None:
-    """后台线程：等待 Countdown Desktop 退出（最多 2 小时）→ 静默安装 → 清理 pending。"""
-    deadline = time.time() + 2 * 3600
+    """后台线程：等待 Countdown Desktop 退出（最多 30 分钟）→ 超时则强制关闭 → 静默安装 → 按之前状态重启 CD。"""
+    # 记录更新前 CD 的运行状态和考试类型，用于安装后恢复
+    was_running = is_running()
+    previous_exam = None
+    if was_running:
+        try:
+            cfg_path = os.path.join(os.environ.get("APPDATA", ""), "CountdownDesktop", "config.json")
+            if os.path.isfile(cfg_path):
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                previous_exam = cfg.get("exam_type")
+        except Exception:
+            pass
+    deadline = time.time() + 30 * 60  # 30 分钟超时
     while time.time() < deadline:
         if not is_running():
             break
         set_daemon_status("waiting", 0, f"等待 Countdown Desktop 退出以安装 v{version}")
         time.sleep(10)
+    # 超时后强制关闭（先优雅退出事件，再 taskkill /F 兜底）
     if is_running():
-        set_daemon_status("idle", 0, "Countdown Desktop 仍在运行，更新保留到下次")
-        return
+        log_daemon(f"等待超时（30分钟），强制关闭 Countdown Desktop 以更新到 v{version}")
+        set_daemon_status("installing", 10, "倒计时运行中，强制关闭以更新...")
+        try:
+            quit_countdown()  # 发命名事件优雅退出
+        except Exception:
+            pass
+        time.sleep(10)
+        if is_running():
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", EXE_NAME],
+                               capture_output=True, timeout=10,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+            except Exception:
+                pass
+            time.sleep(3)
     set_daemon_status("installing", 50, f"正在安装 Countdown Desktop v{version}...")
     try:
         ok = install_from_path(installer_path)
@@ -701,7 +742,24 @@ def _countdown_install_worker(installer_path: str, version: str) -> None:
     state.pop("pending_installer", None)
     state.pop("pending_version", None)
     state["download_complete"] = False
+    state.pop("cd_download", None)
     save_state(state)
+    try:
+        os.remove(installer_path)
+    except OSError:
+        pass
+    # 安装后恢复：如果之前 CD 在运行，按之前的考试类型重启
+    if was_running:
+        try:
+            path = find_installed_path()
+            if path:
+                args = [path, "--auto-check-update", "off"]
+                if previous_exam and previous_exam in ("zhongkao", "gaokao"):
+                    args.extend(["--exam", previous_exam])
+                subprocess.Popen(args, creationflags=0x00000008, close_fds=True)
+                log_daemon(f"Countdown Desktop v{version} 已更新并恢复运行（exam={previous_exam}）")
+        except Exception as e:
+            log_daemon(f"更新后恢复 Countdown Desktop 失败: {e}")
     set_daemon_status("idle", 0, f"✓ Countdown Desktop 已更新到 v{version}")
     log_daemon(f"Countdown Desktop 已更新到 v{version}")
 
@@ -887,6 +945,27 @@ def start_daemon() -> bool:
 
 
 def _create_shortcut(target: str, shortcut_path: str, icon_path: str = "", description: str = "") -> bool:
+    # 优先用 win32com 进程内创建（不弹任何窗口，消除 PowerShell 闪窗）
+    try:
+        import pythoncom
+        from win32com.client import Dispatch
+        pythoncom.CoInitialize()
+        try:
+            shell = Dispatch("WScript.Shell")
+            shortcut = shell.CreateShortcut(shortcut_path)
+            shortcut.TargetPath = target
+            shortcut.WorkingDirectory = os.path.dirname(target)
+            if icon_path:
+                shortcut.IconLocation = f"{icon_path},0"
+            if description:
+                shortcut.Description = description
+            shortcut.Save()
+            return os.path.isfile(shortcut_path)
+        finally:
+            pythoncom.CoUninitialize()
+    except Exception:
+        pass
+    # 兜底：PowerShell（pywin32 不可用时）
     try:
         ps_script = f'''$ws = New-Object -ComObject WScript.Shell
 $s = $ws.CreateShortcut("{shortcut_path}")
@@ -990,7 +1069,23 @@ def _get_latest_tag_via_redirect(repo: str) -> str | None:
     return None
 
 
+def get_build_type() -> str:
+    """读取安装时写入的 build_type 标记：compressed 或 store。不存在则默认 compressed。"""
+    try:
+        marker = os.path.join(LAUNCHER_INSTALL_DIR, "build_type.txt")
+        if os.path.isfile(marker):
+            with open(marker, "r", encoding="utf-8") as f:
+                t = f.read().strip().lower()
+                if t in ("compressed", "store"):
+                    return t
+    except Exception:
+        pass
+    return "compressed"
+
+
 def get_latest_launcher_info() -> dict | None:
+    build_type = get_build_type()
+    suffix = "_store" if build_type == "store" else ""
     # 优先用 API（含 release notes / size / sha256）
     try:
         ctx = ssl.create_default_context()
@@ -1004,7 +1099,9 @@ def get_latest_launcher_info() -> dict | None:
         version = tag.lstrip("vV")
         for asset in data.get("assets", []):
             name = asset.get("name", "")
-            if name.startswith(LAUNCHER_SETUP_PREFIX) and name.endswith(".exe"):
+            # 匹配对应 build_type 的安装包：compressed 匹配无后缀，store 匹配 _store 后缀
+            expected = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
+            if name == expected:
                 return {
                     "version": version, "url": asset["browser_download_url"],
                     "size": asset.get("size", 0), "name": name,
@@ -1013,10 +1110,10 @@ def get_latest_launcher_info() -> dict | None:
                 }
     except Exception:
         pass
-    # API 限流或失败时：用 302 重定向获取版本号，构造下载 URL（不限流）
+    # API 限流或失败时：用 302 重定向获取版本号，构造对应 build_type 的下载 URL
     version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
     if version:
-        name = f"{LAUNCHER_SETUP_PREFIX}{version}.exe"
+        name = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
         url = f"https://github.com/tgcz2011/idiot-launch/releases/download/v{version}/{name}"
         return {"version": version, "url": url, "size": 0, "name": name,
                 "release_notes": "", "sha256": ""}
@@ -1069,10 +1166,17 @@ def apply_launcher_update_if_pending(force: bool = False) -> bool:
     if not installer or not os.path.isfile(installer):
         return False
     if not force:
-        idle = get_idle_seconds()
-        if idle < IDLE_THRESHOLD:
+        # 连续检查 3 次空闲（间隔 2 秒），避免检测到空闲后用户刚好开始操作的竞态
+        idle_ok = True
+        for _ in range(3):
+            if get_idle_seconds() < IDLE_THRESHOLD:
+                idle_ok = False
+                break
+            time.sleep(2)
+        if not idle_ok:
             return False  # 电脑使用中，等 daemon 空闲时再更新
-        log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s，触发静默安装更新 {LAUNCHER_VERSION} -> v{pending_ver}")
+        idle = get_idle_seconds()
+        log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s（连续3次确认），触发静默安装更新 {LAUNCHER_VERSION} -> v{pending_ver}")
         set_daemon_status("updating", 0, f"空闲中静默更新到 v{pending_ver}...")
     else:
         log_daemon(f"用户触发立即更新 {LAUNCHER_VERSION} -> v{pending_ver}")
@@ -1091,18 +1195,25 @@ installedExe = "{installed_exe}"
 On Error Resume Next
 shell.Run "taskkill /IM IdiotLaunch.exe", 0, True
 On Error GoTo 0
-' 2. 等待所有进程退出（最多 30 秒）
-For i = 1 To 60
+' 2. 等待优雅退出（最多 10 秒）
+For i = 1 To 20
     WScript.Sleep 500
     Set wmi = GetObject("{wmi_query}")
     Set procs = wmi.ExecQuery("SELECT * FROM Win32_Process WHERE Name='IdiotLaunch.exe'")
     If procs.Count = 0 Then Exit For
 Next
-' 3. 静默运行安装包（完全无窗口，等待安装完成）
+' 3. 如果还没退出，强制杀（兜底，确保安装时文件不被占用）
+If procs.Count > 0 Then
+    On Error Resume Next
+    shell.Run "taskkill /F /IM IdiotLaunch.exe", 0, True
+    On Error GoTo 0
+    WScript.Sleep 2000
+End If
+' 4. 静默运行安装包（完全无窗口，等待安装完成）
 On Error Resume Next
 shell.Run Chr(34) & installer & Chr(34) & " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", 0, True
 On Error GoTo 0
-    ' 4. 验证安装成功，启动新程序（force 时启动 GUI，否则只启动 daemon）
+    ' 5. 验证安装成功，启动新程序（force 时启动 GUI，否则只启动 daemon）
     If fso.FileExists(installedExe) Then
         On Error Resume Next
         If "{force_flag}" = "1" Then
@@ -1112,11 +1223,11 @@ On Error GoTo 0
         End If
         On Error GoTo 0
     End If
-' 5. 清理下载的安装包
+' 6. 清理下载的安装包
 On Error Resume Next
 fso.DeleteFile installer, True
 On Error GoTo 0
-' 6. 自删除
+' 7. 自删除
 On Error Resume Next
 fso.DeleteFile WScript.ScriptFullName, True
 On Error GoTo 0

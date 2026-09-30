@@ -210,9 +210,18 @@ class ProgressDialog:
         x = (sw - w) // 2
         y = (sh - h) // 2
         self.win.geometry(f"{w}x{h}+{x}+{y}")
-        top_bar = tk.Frame(self.win, bg="#2980b9", height=6)
+        # 顶部蓝色条 + 右上角关闭按钮
+        top_bar = tk.Frame(self.win, bg="#2980b9", height=28)
         top_bar.pack(fill="x", side="top")
-        content = tk.Frame(self.win, bg="#ffffff", padx=30, pady=20)
+        top_bar.pack_propagate(False)
+        tk.Label(top_bar, text="", bg="#2980b9").pack(side="left", padx=10)
+        close_btn = tk.Label(top_bar, text="×", font=("Arial", 14, "bold"),
+                             bg="#2980b9", fg="white", cursor="hand2")
+        close_btn.pack(side="right", padx=10)
+        close_btn.bind("<Button-1>", lambda e: self.close())
+        close_btn.bind("<Enter>", lambda e: close_btn.config(fg="#ffcccc"))
+        close_btn.bind("<Leave>", lambda e: close_btn.config(fg="white"))
+        content = tk.Frame(self.win, bg="#ffffff", padx=30, pady=15)
         content.pack(fill="both", expand=True)
         self.title_label = tk.Label(
             content, text=title, font=("Microsoft YaHei UI", 16, "bold"),

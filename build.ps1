@@ -1,10 +1,10 @@
-<#
+﻿<#
 .SYNOPSIS
     Idiot Launch one-click build script
 .DESCRIPTION
     Automates: venv creation -> dependency install -> download Countdown Desktop
-    installer -> PyInstaller packaging -> Inno Setup installer.
-    Output: dist\IdiotLaunch_Setup_<version>.exe
+    installer -> PyInstaller packaging -> Inno Setup installer (compressed + store).
+    Output: dist\IdiotLaunch_Setup_<version>.exe and IdiotLaunch_Setup_<version>_store.exe
 .PARAMETER Version
     Version number in format a.b.c.d, default 1.0.0.0
 #>
@@ -78,6 +78,13 @@ if ($installerSize -lt 1MB) {
 }
 Write-Host "  Installer size: $([math]::Round($installerSize / 1MB, 1)) MB" -ForegroundColor Gray
 
+# 4.5 同步版本号到 version_info.txt（用 Python 脚本生成，避免 PowerShell 编码问题）
+$LauncherVersion = (Select-String -Path $CorePyPath -Pattern 'LAUNCHER_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+if ($LauncherVersion) {
+    $genScript = Join-Path $ProjectRoot "tools\gen_version_info.py"
+    & $Python $genScript $LauncherVersion
+}
+
 # 5. PyInstaller build
 Invoke-Step "PyInstaller build" {
     & $Python -m PyInstaller --noconfirm --clean (Join-Path $ProjectRoot "IdiotLaunch.spec")
@@ -95,8 +102,12 @@ foreach ($p in $ISCCPaths) {
     if (Test-Path $p) { $ISCC = $p; break }
 }
 if ($ISCC) {
-    Invoke-Step "Inno Setup build" {
+    # 构建两个版本：默认压缩版（自动更新用）+ 仅储存版（供测试 SmartScreen）
+    Invoke-Step "Inno Setup build (compressed)" {
         & $ISCC (Join-Path $ProjectRoot "IdiotLaunch.iss")
+    }
+    Invoke-Step "Inno Setup build (store)" {
+        & $ISCC (Join-Path $ProjectRoot "IdiotLaunch.iss") "/DCOMPRESSION=none" "/DSTOREBUILD=1"
     }
 } else {
     Write-Host ""

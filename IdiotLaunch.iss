@@ -4,9 +4,24 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.8.2.3"
+#define MyAppVersion "1.8.2.4"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
+
+; 压缩级别：默认 lzma2/max（比 ultra 宽松，降低 SmartScreen 误报概率）
+; 可用 /DCOMPRESSION=none 参数构建仅储存版（供测试 SmartScreen 表现）
+#ifdef COMPRESSION
+  #define MyCompression COMPRESSION
+#else
+  #define MyCompression lzma2/max
+#endif
+
+; 仅储存版输出文件名加 _store 后缀
+#ifdef STOREBUILD
+  #define MyOutputSuffix "_store"
+#else
+  #define MyOutputSuffix ""
+#endif
 
 [Setup]
 AppId={{B7E3A2D1-4F5A-4C8E-9B2D-1A3F5E7C9D0B}
@@ -23,9 +38,9 @@ DisableReadyPage=yes
 DisableFinishedPage=yes
 DisableStartupPrompt=yes
 OutputDir=dist
-OutputBaseFilename=IdiotLaunch_Setup_{#MyAppVersion}
-Compression=lzma2/ultra
-SolidCompression=yes
+OutputBaseFilename=IdiotLaunch_Setup_{#MyAppVersion}{#MyOutputSuffix}
+Compression={#MyCompression}
+SolidCompression=no
 WizardStyle=modern
 PrivilegesRequired=lowest
 CloseApplications=yes
@@ -78,6 +93,8 @@ var
   DShortcutPath: String;
   WshShell: Variant;
   Shortcut: Variant;
+  BuildTypeFile: String;
+  BuildTypeContent: String;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -93,6 +110,17 @@ begin
       Shortcut.Save;
     except
       // 静默失败，应用启动时会重试
+    end;
+    // 写 build_type 标记：compressed 或 store，供自动更新时选择对应安装包
+    try
+      BuildTypeFile := ExpandConstant('{app}\build_type.txt');
+      #ifdef STOREBUILD
+        BuildTypeContent := 'store';
+      #else
+        BuildTypeContent := 'compressed';
+      #endif
+      SaveStringToFile(BuildTypeFile, BuildTypeContent, False);
+    except
     end;
   end;
 end;

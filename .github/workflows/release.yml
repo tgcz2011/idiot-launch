@@ -89,45 +89,59 @@ jobs:
         shell: pwsh
         id: hash
         run: |
-          $setup = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe" | Select-Object -First 1
-          if (-not $setup) { throw "Installer not found for hashing" }
+          $setup = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe" | Where-Object { $_.Name -notlike "*_store*" } | Select-Object -First 1
+          if (-not $setup) { throw "Compressed installer not found for hashing" }
           $hash = Get-FileHash -Path $setup.FullName -Algorithm SHA256
           Write-Host "SHA256: $($hash.Hash)"
           "sha256=$($hash.Hash)" >> $env:GITHUB_OUTPUT
+
+      - name: Generate release body
+        shell: pwsh
+        id: body
+        run: |
+          $embeddedVer = (Select-String -Path "src\core.py" -Pattern 'EMBEDDED_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          $launcherVer = (Select-String -Path "src\core.py" -Pattern 'LAUNCHER_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          $body = @"
+          ## Idiot Launch `${{ github.ref_name }}`
+
+          傻瓜式启动器，一键启动中考/高考倒计时或早晚读网页。
+
+          ### 功能
+          - **中考倒计时**：自动检测并启动 Countdown Desktop（`--exam zhongkao`）
+          - **高考倒计时**：自动检测并启动 Countdown Desktop（`--exam gaokao`）
+          - **早晚读**：打开 `https://zztool.free.nf/morning-reading`
+          - **壁纸设置**：一键唤起 Countdown Desktop 设置窗口
+          - 未安装 Countdown Desktop 时自动静默安装到 `D:\IdiotLaunch\CountdownDesktop`
+          - 内嵌 Countdown Desktop v$embeddedVer 安装包
+          - 一键优雅关闭 Countdown Desktop（未运行时按钮变灰）
+          - Countdown Desktop 自动更新（后台线程下载/等待/安装，不阻塞守护进程）
+          - 启动器自身自动更新（安装包静默安装，空闲10分钟自动升级）
+          - 7镜像源下载 fallback（GitHub直连60s → 6个镜像各120s，3轮重试动态超时）
+          - 守护进程常驻后台，频繁开关不中断更新；安装包覆盖安装自动关停旧进程
+          - D盘根目录+桌面快捷方式自动重建（流氓软件模式）
+          - 右上角更新状态指示器，点击查看详情和立即更新
+
+          ### 适用场景
+          学校机房（C 盘冰点还原，安装到 D 盘持久化）
+
+          ### 文件
+          - `IdiotLaunch_Setup_*.exe` — 默认压缩版（自动更新用此版本）
+          - `IdiotLaunch_Setup_*_store.exe` — 仅储存版（供测试 SmartScreen 表现，体积较大）
+
+          ### 校验和（SHA-256）
+          - 默认压缩版哈希：`${{ steps.hash.outputs.sha256 }}`
+          - 本机更新时对下载的安装包做 SHA-256 校验，哈希不一致会拒绝更新并重新下载
+          "@
+          # 写入临时文件，避免多行字符串传递问题
+          $body | Out-File -FilePath release_body.md -Encoding utf8
+          Write-Host "Release body generated (embedded CD v$embeddedVer, launcher v$launcherVer)"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: Idiot Launch ${{ github.ref_name }}
-          body: |
-            ## Idiot Launch ${{ github.ref_name }}
-
-            傻瓜式启动器，一键启动中考/高考倒计时或早晚读网页。
-
-            ### 功能
-            - **中考倒计时**：自动检测并启动 Countdown Desktop（`--exam zhongkao`）
-            - **高考倒计时**：自动检测并启动 Countdown Desktop（`--exam gaokao`）
-            - **早晚读**：打开 `https://zztool.free.nf/morning-reading`
-            - 未安装 Countdown Desktop 时自动静默安装到 `D:\CountdownDesktop`
-            - 内嵌 Countdown Desktop v3.2.1.1 安装包
-            - 一键优雅关闭 Countdown Desktop（未运行时按钮变灰）
-            - Countdown Desktop 自动更新（后台线程下载/等待/安装，不阻塞守护进程）
-            - 启动器自身自动更新（安装包静默安装，空闲时自动迁移/升级）
-            - 多镜像源下载 fallback（GitHub直连60s → gh-proxy → ghfast → ghproxy，各900s）
-            - 守护进程常驻后台，频繁开关不中断更新；安装包覆盖安装自动关停旧进程
-            - D盘根目录+桌面快捷方式自动重建（流氓软件模式）
-            - 右上角更新状态指示器，点击查看详情
-
-            ### 适用场景
-            学校机房（C 盘冰点还原，安装到 D 盘持久化）
-
-            ### 文件
-            - `IdiotLaunch_Setup_*.exe` — 唯一正式产物：安装包，双击即自动安装到 D:\IdiotLaunch（基本不弹 SmartScreen）
-
-            ### 校验和（SHA-256）
-            - 安装包哈希：`${{ steps.hash.outputs.sha256 }}`
-            - 本机更新时对下载的安装包做 SHA-256 校验，哈希不一致会拒绝更新并重新下载
+          body_path: release_body.md
           files: |
             dist\IdiotLaunch_Setup_*.exe
         env:

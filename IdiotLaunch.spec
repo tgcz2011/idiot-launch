@@ -30,7 +30,7 @@ a = Analysis(
         (INSTALLER_PATH, "installer"),
         ("assets", "assets"),
     ],
-    hiddenimports=[],
+    hiddenimports=["pythoncom", "win32com.client", "pywintypes"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
