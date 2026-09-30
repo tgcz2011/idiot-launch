@@ -9,6 +9,7 @@ import time
 import sys
 import os
 
+from src.timer_dialog import CountdownDialog, StopwatchDialog
 from src.core import (
     launch_countdown,
     launch_settings,
@@ -47,6 +48,10 @@ BTN_HOVER_READING = "#1e8449"
 BTN_HOVER_KILL = "#4a5568"
 BTN_SETTINGS = "#8e44ad"
 BTN_HOVER_SETTINGS = "#6c3483"
+BTN_COUNTDOWN = "#e67e22"
+BTN_HOVER_COUNTDOWN = "#ca6f1e"
+BTN_STOPWATCH = "#16a085"
+BTN_HOVER_STOPWATCH = "#117a65"
 TEXT_COLOR = "#2c3e50"
 STATUS_COLOR = "#7f8c8d"
 
@@ -432,7 +437,7 @@ class IdiotLaunchApp:
 
         # 2列网格布局：窗口宽度自适应，高度固定
         win_w = 560
-        win_h = 420
+        win_h = 520
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         x = (screen_w - win_w) // 2
@@ -523,13 +528,28 @@ class IdiotLaunchApp:
         )
         self.btn_kill.grid(row=1, column=1, padx=5, pady=5)
 
-        # 第三行：壁纸设置（居中，跨两列）
+        # 第三行：壁纸设置 + 倒计时
         self.btn_settings = HoverButton(
             btn_frame, "壁纸设置", "打开 Countdown Desktop 设置",
             BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_settings,
+            width=240, height=75,
+        )
+        self.btn_settings.grid(row=2, column=0, padx=5, pady=5)
+
+        self.btn_countdown = HoverButton(
+            btn_frame, "倒计时", "Material 风格倒计时",
+            BTN_COUNTDOWN, BTN_HOVER_COUNTDOWN, self.on_countdown,
+            width=240, height=75,
+        )
+        self.btn_countdown.grid(row=2, column=1, padx=5, pady=5)
+
+        # 第四行：秒表（跨两列）
+        self.btn_stopwatch = HoverButton(
+            btn_frame, "秒表", "记次秒表",
+            BTN_STOPWATCH, BTN_HOVER_STOPWATCH, self.on_stopwatch,
             width=500, height=75,
         )
-        self.btn_settings.grid(row=2, column=0, columnspan=2, padx=5, pady=5)
+        self.btn_stopwatch.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
 
         # 底部状态栏
         self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
@@ -673,7 +693,8 @@ class IdiotLaunchApp:
 
     def _set_all_buttons(self, enabled: bool):
         self._loading = not enabled
-        for btn in (self.btn_zhongkao, self.btn_gaokao, self.btn_reading, self.btn_settings):
+        for btn in (self.btn_zhongkao, self.btn_gaokao, self.btn_reading,
+                    self.btn_settings, self.btn_countdown, self.btn_stopwatch):
             btn.set_enabled(enabled)
         if enabled:
             self._update_kill_button(is_running())
@@ -719,6 +740,12 @@ class IdiotLaunchApp:
             title="正在打开壁纸设置",
             subtitle="正在唤起 Countdown Desktop 设置窗口...",
         )
+
+    def on_countdown(self):
+        CountdownDialog(self.root)
+
+    def on_stopwatch(self):
+        StopwatchDialog(self.root)
 
     def _do_quit(self):
         ok = quit_countdown()
