@@ -76,14 +76,17 @@ jobs:
           $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if (-not $iscc) { throw "ISCC.exe not found" }
           Write-Host "Using ISCC: $iscc"
+          # Build compressed variant (default, used for auto-update)
           & $iscc "IdiotLaunch.iss"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
-          $setup = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe" | Select-Object -First 1
-          if ($setup) {
-            Write-Host "Installer built: $($setup.FullName) ($([math]::Round($setup.Length / 1MB, 1)) MB)"
-          } else {
-            throw "Installer not found after build"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compressed build failed" }
+          # Build store variant (no compression, for SmartScreen testing)
+          & $iscc "IdiotLaunch.iss" "/DCOMPRESSION=none" "/DSTOREBUILD=1"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup store build failed" }
+          $setups = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe"
+          foreach ($s in $setups) {
+            Write-Host "Installer built: $($s.Name) ($([math]::Round($s.Length / 1MB, 1)) MB)"
           }
+          if ($setups.Count -lt 2) { throw "Expected 2 installers, got $($setups.Count)" }
 
       - name: Compute installer SHA-256
         shell: pwsh

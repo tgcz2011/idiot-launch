@@ -10,11 +10,6 @@
 
 ; 压缩级别：默认 lzma2/max（比 ultra 宽松，降低 SmartScreen 误报概率）
 ; 可用 /DCOMPRESSION=none 参数构建仅储存版（供测试 SmartScreen 表现）
-#ifdef COMPRESSION
-  #define MyCompression COMPRESSION
-#else
-  #define MyCompression lzma2/max
-#endif
 
 ; 仅储存版输出文件名加 _store 后缀
 #ifdef STOREBUILD
@@ -39,7 +34,11 @@ DisableFinishedPage=yes
 DisableStartupPrompt=yes
 OutputDir=dist
 OutputBaseFilename=IdiotLaunch_Setup_{#MyAppVersion}{#MyOutputSuffix}
-Compression={#MyCompression}
+#ifdef COMPRESSION
+Compression={#COMPRESSION}
+#else
+Compression=lzma2/max
+#endif
 SolidCompression=no
 WizardStyle=modern
 PrivilegesRequired=lowest
