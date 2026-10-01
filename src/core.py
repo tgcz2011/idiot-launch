@@ -29,8 +29,12 @@ DAEMON_LOG = os.path.join(UPDATE_DIR, "daemon.log")
 COMMAND_FILE = os.path.join(UPDATE_DIR, "command.json")
 GITHUB_API_URL = "https://api.github.com/repos/tgcz2011/countdown-desktop/releases/latest"
 CHECK_INTERVAL = 1 * 3600
-# GitHub Token：从环境变量读取（可选）。未设置时用未认证 API（60次/小时，本应用每小时仅检查1次，够用）
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+# GitHub Token：优先从构建时生成的 _secrets.py 读取（不进 git），否则从环境变量读取。
+# 未设置时用未认证 API（60次/小时，本应用每小时仅检查1次，够用）。
+try:
+    from src._secrets import GITHUB_TOKEN
+except ImportError:
+    GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"

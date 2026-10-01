@@ -56,6 +56,22 @@ if ($LauncherVersion) {
     & $Python $genScript $LauncherVersion
 }
 
+# 3.5 Generate _secrets.py (GitHub Token for update check, injected at build time, not in git)
+Invoke-Step "Generate _secrets.py" {
+    $secretsPath = Join-Path $ProjectRoot "src\_secrets.py"
+    $token = $env:GITHUB_TOKEN
+    if ($token) {
+        # 用 Python 写入，避免 PowerShell 编码问题
+        $pyCode = "GITHUB_TOKEN = '$token'`n"
+        [System.IO.File]::WriteAllText($secretsPath, $pyCode, (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "  GITHUB_TOKEN injected (length: $($token.Length))"
+    } else {
+        # 无 Token 时生成空文件，使用未认证 API
+        [System.IO.File]::WriteAllText($secretsPath, "GITHUB_TOKEN = ''`n", (New-Object System.Text.UTF8Encoding $false))
+        Write-Host "  No GITHUB_TOKEN env var, using unauthenticated API (60 req/hour)"
+    }
+}
+
 # 4. PyInstaller build
 Invoke-Step "PyInstaller build" {
     & $Python -m PyInstaller --noconfirm --clean (Join-Path $ProjectRoot "IdiotLaunch.spec")

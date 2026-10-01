@@ -29,3 +29,6 @@ Desktop.ini
 
 # 日志
 *.log
+
+# 构建时注入的密钥（不入库）
+src/_secrets.py
