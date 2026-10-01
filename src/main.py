@@ -41,25 +41,27 @@ from src.core import (
 
 VERSION = LAUNCHER_VERSION
 
-BG_COLOR = "#f5f7fa"
-BTN_ZHONGKAO = "#e74c3c"
-BTN_GAOKAO = "#2980b9"
-BTN_READING = "#27ae60"
-BTN_KILL = "#5d6d7e"
-BTN_DISABLED = "#bdc3c7"
-BTN_DISABLED_TEXT = "#ecf0f1"
-BTN_HOVER_ZHONGKAO = "#c0392b"
-BTN_HOVER_GAOKAO = "#1f6fa0"
-BTN_HOVER_READING = "#1e8449"
-BTN_HOVER_KILL = "#4a5568"
-BTN_SETTINGS = "#8e44ad"
-BTN_HOVER_SETTINGS = "#6c3483"
-BTN_COUNTDOWN = "#e67e22"
-BTN_HOVER_COUNTDOWN = "#ca6f1e"
-BTN_STOPWATCH = "#16a085"
-BTN_HOVER_STOPWATCH = "#117a65"
-TEXT_COLOR = "#2c3e50"
-STATUS_COLOR = "#7f8c8d"
+BG_COLOR = "#f0f2f5"
+CARD_BG = "#ffffff"
+BTN_ZHONGKAO = "#ef4444"
+BTN_GAOKAO = "#3b82f6"
+BTN_READING = "#22c55e"
+BTN_KILL = "#64748b"
+BTN_DISABLED = "#cbd5e1"
+BTN_DISABLED_TEXT = "#f1f5f9"
+BTN_HOVER_ZHONGKAO = "#dc2626"
+BTN_HOVER_GAOKAO = "#2563eb"
+BTN_HOVER_READING = "#16a34a"
+BTN_HOVER_KILL = "#475569"
+BTN_SETTINGS = "#a855f7"
+BTN_HOVER_SETTINGS = "#9333ea"
+BTN_COUNTDOWN = "#f97316"
+BTN_HOVER_COUNTDOWN = "#ea580c"
+BTN_STOPWATCH = "#14b8a6"
+BTN_HOVER_STOPWATCH = "#0d9488"
+TEXT_COLOR = "#1e293b"
+STATUS_COLOR = "#64748b"
+ACCENT_COLOR = "#6366f1"
 
 # 更新状态指示器颜色
 INDICATOR_IDLE = "#95a5a6"       # 灰色 - 空闲
@@ -74,7 +76,7 @@ INDICATOR_UPDATING = "#8e44ad"    # 深紫 - 静默自我更新中
 class HoverButton(tk.Canvas):
     def __init__(self, parent, text, subtext, color, hover_color, command,
                  width=340, height=80):
-        super().__init__(parent, width=width, height=height, bg=BG_COLOR,
+        super().__init__(parent, width=width, height=height, bg=CARD_BG,
                          highlightthickness=0)
         self.color = color
         self.hover_color = hover_color
@@ -91,8 +93,18 @@ class HoverButton(tk.Canvas):
 
     def _draw(self, color, text_color="white", sub_alpha=0.85):
         self.delete("all")
-        r = 16
+        r = 18
         w, h = self.width, self.height
+        # 阴影
+        shadow_offset = 3
+        shadow_color = "#d1d5db"
+        self.create_rectangle(r + shadow_offset, shadow_offset, w - r + shadow_offset, h + shadow_offset, fill=shadow_color, outline="")
+        self.create_rectangle(shadow_offset, r + shadow_offset, w + shadow_offset, h - r + shadow_offset, fill=shadow_color, outline="")
+        self.create_oval(shadow_offset, shadow_offset, 2 * r + shadow_offset, 2 * r + shadow_offset, fill=shadow_color, outline="")
+        self.create_oval(w - 2 * r + shadow_offset, shadow_offset, w + shadow_offset, 2 * r + shadow_offset, fill=shadow_color, outline="")
+        self.create_oval(shadow_offset, h - 2 * r + shadow_offset, 2 * r + shadow_offset, h + shadow_offset, fill=shadow_color, outline="")
+        self.create_oval(w - 2 * r + shadow_offset, h - 2 * r + shadow_offset, w + shadow_offset, h + shadow_offset, fill=shadow_color, outline="")
+        # 按钮主体
         self.create_rectangle(r, 0, w - r, h, fill=color, outline="")
         self.create_rectangle(0, r, w, h - r, fill=color, outline="")
         self.create_oval(0, 0, 2 * r, 2 * r, fill=color, outline="")
@@ -456,27 +468,52 @@ class IdiotLaunchApp:
                 pass
         threading.Thread(target=do, daemon=True).start()
 
+    def _draw_gradient(self):
+        """绘制从浅紫到浅蓝的渐变背景。"""
+        w, h = 560, 520
+        for y in range(h):
+            ratio = y / h
+            r = int(240 + (224 - 240) * ratio)
+            g = int(242 + (231 - 242) * ratio)
+            b = int(245 + (255 - 245) * ratio)
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            self._bg_canvas.create_line(0, y, w, y, fill=color)
+
     def _build_ui(self):
+        # 渐变背景
+        self._bg_canvas = tk.Canvas(self.root, width=560, height=520, highlightthickness=0)
+        self._bg_canvas.place(x=0, y=0)
+        self._draw_gradient()
+
         # 右上角更新状态指示器
         self.update_indicator = UpdateIndicator(self.root, self._show_update_detail)
-        self.update_indicator.place(x=515, y=12)
+        self.update_indicator.place(x=515, y=14)
 
         # 顶部标题区
+        title_frame = tk.Frame(self.root, bg=BG_COLOR)
+        title_frame.pack(pady=(18, 0))
+
+        # 标题装饰线
+        tk.Frame(title_frame, width=40, height=3, bg=ACCENT_COLOR).pack(side="left", padx=(0, 12))
         title = tk.Label(
-            self.root, text="傻瓜启动器", font=("Microsoft YaHei UI", 20, "bold"),
+            title_frame, text="傻瓜启动器", font=("Microsoft YaHei UI", 22, "bold"),
             bg=BG_COLOR, fg=TEXT_COLOR,
         )
-        title.pack(pady=(15, 2))
+        title.pack(side="left")
+        tk.Frame(title_frame, width=40, height=3, bg=ACCENT_COLOR).pack(side="left", padx=(12, 0))
 
         subtitle = tk.Label(
-            self.root, text="一键启动，无需配置",
+            self.root, text="一键启动，无需配置  ·  教室专用",
             font=("Microsoft YaHei UI", 10), bg=BG_COLOR, fg=STATUS_COLOR,
         )
-        subtitle.pack(pady=(0, 10))
+        subtitle.pack(pady=(6, 12))
 
-        # 按钮区：2列网格布局
-        btn_frame = tk.Frame(self.root, bg=BG_COLOR)
-        btn_frame.pack(pady=5, padx=15)
+        # 按钮区：2列网格布局，白色卡片背景
+        card = tk.Frame(self.root, bg=CARD_BG, highlightthickness=1,
+                        highlightbackground="#e2e8f0")
+        card.pack(pady=(0, 8), padx=18)
+        btn_frame = tk.Frame(card, bg=CARD_BG)
+        btn_frame.pack(pady=12, padx=12)
 
         # 第一行：中考倒计时 + 高考倒计时
         self.btn_zhongkao = HoverButton(

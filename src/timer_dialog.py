@@ -2,12 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Material Three 风格的计时器对话框。
-包含：滚轮时间选择器、倒计时（结束转正计时+声音+1/5变红）、秒表（记次）。
+自定义标题栏（无原生窗口边框），支持拖动。
 """
 import tkinter as tk
 from tkinter import ttk
 import time
-import math
 
 # Material Three 配色
 M3_BACKGROUND = "#FEF7FF"
@@ -20,6 +19,51 @@ M3_ON_SURFACE_VARIANT = "#49454F"
 M3_OUTLINE = "#79747E"
 M3_ERROR = "#B3261E"
 M3_TERTIARY = "#7D5260"
+
+
+class _CustomTitleBar:
+    """自定义标题栏：紫色背景 + 标题 + × 按钮，支持拖动。"""
+
+    def __init__(self, parent, title, on_close):
+        self.parent = parent
+        self.on_close = on_close
+        self._drag_start_x = 0
+        self._drag_start_y = 0
+
+        self.bar = tk.Frame(parent, bg=M3_PRIMARY, height=44)
+        self.bar.pack(fill="x", side="top")
+        self.bar.pack_propagate(False)
+
+        tk.Label(
+            self.bar, text=title, font=("Microsoft YaHei UI", 14, "bold"),
+            bg=M3_PRIMARY, fg=M3_ON_PRIMARY,
+        ).pack(side="left", padx=16)
+
+        close_btn = tk.Label(
+            self.bar, text="×", font=("Arial", 22, "bold"),
+            bg=M3_PRIMARY, fg=M3_ON_PRIMARY, cursor="hand2",
+            padx=12, pady=0,
+        )
+        close_btn.pack(side="right")
+        close_btn.bind("<Button-1>", lambda e: on_close())
+        close_btn.bind("<Enter>", lambda e: close_btn.configure(bg="#7C5DBD"))
+        close_btn.bind("<Leave>", lambda e: close_btn.configure(bg=M3_PRIMARY))
+
+        # 拖动
+        for widget in (self.bar,) + tuple(self.bar.winfo_children()):
+            widget.bind("<ButtonPress-1>", self._start_drag)
+            widget.bind("<B1-Motion>", self._on_drag)
+        # × 按钮不触发拖动
+        close_btn.bind("<ButtonPress-1>", lambda e: on_close())
+
+    def _start_drag(self, event):
+        self._drag_start_x = event.x_root - self.parent.winfo_x()
+        self._drag_start_y = event.y_root - self.parent.winfo_y()
+
+    def _on_drag(self, event):
+        x = event.x_root - self._drag_start_x
+        y = event.y_root - self._drag_start_y
+        self.parent.geometry(f"+{x}+{y}")
 
 
 class WheelPicker(tk.Canvas):
@@ -164,7 +208,6 @@ class WheelPicker(tk.Canvas):
 
 
 def _format_time(seconds, with_ms=False):
-    """统一格式：始终显示 HH:MM:SS，可选毫秒。"""
     h = int(seconds) // 3600
     m = (int(seconds) % 3600) // 60
     s = int(seconds) % 60
@@ -175,7 +218,7 @@ def _format_time(seconds, with_ms=False):
 
 
 class CountdownDialog:
-    """倒计时对话框：紧凑布局，结束转正计时，1/5变红，结束声音。"""
+    """倒计时对话框：自定义标题栏，紧凑布局。"""
 
     def __init__(self, parent):
         self.parent = parent
@@ -183,7 +226,8 @@ class CountdownDialog:
         self.win.title("倒计时")
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
-        self.win.geometry("360x400")
+        self.win.overrideredirect(True)  # 去掉原生标题栏
+        self.win.geometry("360x420")
 
         self._running = False
         self._paused = False
@@ -195,6 +239,9 @@ class CountdownDialog:
         self._pause_elapsed = 0
         self._timer_id = None
         self._red_threshold = 0
+
+        # 自定义标题栏
+        self.title_bar = _CustomTitleBar(self.win, "倒计时", self._close)
 
         self._build_ui()
         self._center_window()
@@ -208,7 +255,7 @@ class CountdownDialog:
         self.win.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
-        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=20, pady=16)
+        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=20, pady=14)
         content.pack(fill="both", expand=True)
 
         # 选择器区域
@@ -250,9 +297,8 @@ class CountdownDialog:
             font=("Roboto", 52, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE,
         )
-        self.time_label.pack(pady=(8, 12))
+        self.time_label.pack(pady=(6, 12))
 
-        # 按钮区域：暂停/继续 在时间下方，重置在右侧
         btn_row = tk.Frame(self.display_frame, bg=M3_BACKGROUND)
         btn_row.pack(fill="x")
 
@@ -266,11 +312,11 @@ class CountdownDialog:
         )
         self.reset_btn.pack(side="right", expand=True, fill="x", padx=(6, 0))
 
-        # 底部开始按钮（选择器模式）
+        # 底部开始按钮
         self.start_btn = self._make_button(
             content, "开始倒计时", M3_PRIMARY, M3_ON_PRIMARY, self._start,
         )
-        self.start_btn.pack(side="bottom", fill="x", pady=(12, 0))
+        self.start_btn.pack(side="bottom", fill="x", pady=(10, 0))
 
     def _make_button(self, parent, text, bg, fg, cmd):
         btn = tk.Label(parent, text=text, font=("Microsoft YaHei UI", 13, "bold"),
@@ -315,13 +361,11 @@ class CountdownDialog:
         if not self._running:
             return
         if self._paused:
-            # 继续
             self._start_time = time.time() - self._pause_elapsed
             self._paused = False
             self.pause_btn.configure(text="暂停")
             self._tick()
         else:
-            # 暂停
             self._paused = True
             self._pause_elapsed = time.time() - self._start_time
             if self._timer_id:
@@ -341,7 +385,7 @@ class CountdownDialog:
         self.time_label.configure(text="00:00:00", fg=M3_ON_SURFACE)
         self.display_frame.pack_forget()
         self.picker_frame.pack(fill="x")
-        self.start_btn.pack(side="bottom", fill="x", pady=(12, 0))
+        self.start_btn.pack(side="bottom", fill="x", pady=(10, 0))
 
     def _tick(self):
         if not self._running or self._paused:
@@ -375,9 +419,14 @@ class CountdownDialog:
         except Exception:
             pass
 
+    def _close(self):
+        if self._timer_id:
+            self.win.after_cancel(self._timer_id)
+        self.win.destroy()
+
 
 class StopwatchDialog:
-    """秒表对话框：支持暂停/继续、记次、可滚动列表。"""
+    """秒表对话框：自定义标题栏，支持记次。"""
 
     def __init__(self, parent):
         self.parent = parent
@@ -385,14 +434,17 @@ class StopwatchDialog:
         self.win.title("秒表")
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
-        self.win.geometry("360x480")
+        self.win.overrideredirect(True)
+        self.win.geometry("360x500")
 
         self._running = False
         self._paused = False
         self._start_time = 0
         self._elapsed = 0
-        self._laps = []  # [(lap_time, total_time), ...]
+        self._laps = []
         self._timer_id = None
+
+        self.title_bar = _CustomTitleBar(self.win, "秒表", self._close)
 
         self._build_ui()
         self._center_window()
@@ -406,20 +458,18 @@ class StopwatchDialog:
         self.win.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
-        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=20, pady=16)
+        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=20, pady=14)
         content.pack(fill="both", expand=True)
 
-        # 时间显示
         self.time_label = tk.Label(
             content, text="00:00:00.00",
             font=("Roboto", 40, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE,
         )
-        self.time_label.pack(pady=(8, 12))
+        self.time_label.pack(pady=(6, 12))
 
-        # 按钮区域
         btn_frame = tk.Frame(content, bg=M3_BACKGROUND)
-        btn_frame.pack(fill="x", pady=(0, 12))
+        btn_frame.pack(fill="x", pady=(0, 10))
 
         self.start_btn = self._make_button(
             btn_frame, "开始", M3_PRIMARY, M3_ON_PRIMARY, self._toggle_start_pause,
@@ -445,7 +495,6 @@ class StopwatchDialog:
                                   highlightbackground=M3_OUTLINE)
         list_container.pack(fill="both", expand=True)
 
-        # 表头
         header = tk.Frame(list_container, bg=M3_SURFACE_VARIANT)
         header.pack(fill="x")
         tk.Label(header, text="#", font=("Microsoft YaHei UI", 9, "bold"),
@@ -458,7 +507,6 @@ class StopwatchDialog:
                  bg=M3_SURFACE_VARIANT, fg=M3_ON_SURFACE_VARIANT,
                  width=12).pack(side="left", padx=4, pady=6)
 
-        # 可滚动列表
         self.lap_canvas = tk.Canvas(list_container, bg=M3_SURFACE, highlightthickness=0)
         self.lap_scroll = ttk.Scrollbar(list_container, orient="vertical",
                                         command=self.lap_canvas.yview)
@@ -471,7 +519,6 @@ class StopwatchDialog:
         self.lap_canvas.pack(side="left", fill="both", expand=True)
         self.lap_scroll.pack(side="right", fill="y")
 
-        # 绑定鼠标滚轮
         self.lap_canvas.bind("<MouseWheel>", self._on_mousewheel)
         self.lap_inner.bind("<MouseWheel>", self._on_mousewheel)
 
@@ -492,7 +539,6 @@ class StopwatchDialog:
 
     def _toggle_start_pause(self):
         if not self._running:
-            # 开始
             self._start_time = time.time()
             self._elapsed = 0
             self._running = True
@@ -502,7 +548,6 @@ class StopwatchDialog:
             self.reset_btn.pack_forget()
             self._tick()
         elif not self._paused:
-            # 暂停
             self._paused = True
             self._elapsed = time.time() - self._start_time
             if self._timer_id:
@@ -512,7 +557,6 @@ class StopwatchDialog:
             self.lap_btn.pack_forget()
             self.reset_btn.pack(side="right", expand=True, fill="x", padx=(6, 0))
         else:
-            # 继续
             self._start_time = time.time() - self._elapsed
             self._paused = False
             self.start_btn.configure(text="暂停")
@@ -524,7 +568,6 @@ class StopwatchDialog:
         if not self._running or self._paused:
             return
         total = time.time() - self._start_time
-        # 修复：用 l[0]（lap_time）求和，而不是 l[1]（total）
         prev_total = sum(l[0] for l in self._laps)
         lap_time = total - prev_total
         self._laps.append((lap_time, total))
@@ -564,3 +607,8 @@ class StopwatchDialog:
         self._elapsed = time.time() - self._start_time
         self.time_label.configure(text=_format_time(self._elapsed, with_ms=True))
         self._timer_id = self.win.after(30, self._tick)
+
+    def _close(self):
+        if self._timer_id:
+            self.win.after_cancel(self._timer_id)
+        self.win.destroy()
