@@ -38,6 +38,8 @@ a = Analysis(
         "countdown_app.cli", "countdown_app.config", "countdown_app.settings",
         "countdown_app.update", "countdown_app.version", "countdown_app.win32",
         "countdown_app.media",
+        # 构建时注入的密钥模块
+        "src._secrets",
     ],
     hookspath=[],
     hooksconfig={},
