@@ -77,24 +77,22 @@ jobs:
           $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if (-not $iscc) { throw "ISCC.exe not found" }
           Write-Host "Using ISCC: $iscc"
-          # Build compressed variant (default, used for auto-update)
           & $iscc "IdiotLaunch.iss"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup compressed build failed" }
-          # Build store variant (no compression, for SmartScreen testing)
-          & $iscc "IdiotLaunch.iss" "/DCOMPRESSION=none" "/DSTOREBUILD=1"
-          if ($LASTEXITCODE -ne 0) { throw "Inno Setup store build failed" }
-          $setups = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
+          Write-Host "=== dist directory contents ==="
+          Get-ChildItem "dist" -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
+          $setups = Get-ChildItem "dist\*.exe"
+          if ($setups.Count -lt 1) { throw "No installer found in dist/" }
           foreach ($s in $setups) {
-            Write-Host "Installer built: $($s.Name) ($([math]::Round($s.Length / 1MB, 1)) MB)"
+            Write-Host "Installer: $($s.FullName) ($([math]::Round($s.Length / 1MB, 1)) MB)"
           }
-          if ($setups.Count -lt 2) { throw "Expected 2 installers, got $($setups.Count)" }
 
       - name: Compute installer SHA-256
         shell: pwsh
         id: hash
         run: |
-          $setup = Get-ChildItem "dist\IdiotLaunch_Setup_*.exe" | Where-Object { $_.Name -notlike "*_store*" } | Select-Object -First 1
-          if (-not $setup) { throw "Compressed installer not found for hashing" }
+          $setup = Get-ChildItem "dist\*.exe" | Select-Object -First 1
+          if (-not $setup) { throw "Installer not found for hashing" }
           $hash = Get-FileHash -Path $setup.FullName -Algorithm SHA256
           Write-Host "SHA256: $($hash.Hash)"
           "sha256=$($hash.Hash)" >> $env:GITHUB_OUTPUT
@@ -150,8 +148,6 @@ jobs:
           name: Idiot Launch ${{ github.ref_name }}
           body_path: release_body.md
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
-          fail_on_unmatched_files: true
-          files: |
-            dist/IdiotLaunch_Setup_*.exe
+          files: dist/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
