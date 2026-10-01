@@ -18,11 +18,8 @@ from pathlib import Path
 
 # ── 常量 ──────────────────────────────────────────────
 APP_NAME = "Countdown Desktop"
-EXE_NAME = "CountdownDesktop.exe"
-EMBEDDED_VERSION = "3.2.5.4"
-INSTALL_DIR = r"D:\IdiotLaunch\CountdownDesktop"  # 归拢到 IdiotLaunch 目录下，D 盘根目录不散落文件夹
-INSTALL_EXE = os.path.join(INSTALL_DIR, EXE_NAME)
-INSTALLER_REL = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
+# Countdown Desktop 已合并到本项目（countdown_app/），不再需要独立安装
+COUNTDOWN_VERSION = "3.2.5.4"  # 合并时的 CD 版本，随 IL 一起更新
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
 INSTALL_TIMEOUT = 300
 
@@ -53,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.3.3"
+LAUNCHER_VERSION = "1.9.0.0-beta1"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -89,6 +86,12 @@ def compare_versions(v1: str, v2: str) -> int:
     if a > b:
         return 1
     return 0
+
+
+def is_beta_version(version: str) -> bool:
+    """判断版本号是否为 beta 版本（包含 beta/alpha/rc 等预发布标记）。"""
+    v = version.lower()
+    return any(tag in v for tag in ["beta", "alpha", "rc", "pre", "-dev"])
 
 
 
@@ -131,52 +134,8 @@ def log_daemon(msg: str) -> None:
 
 
 def find_installed_path() -> str | None:
-    if os.path.isfile(INSTALL_EXE):
-        return INSTALL_EXE
-    reg_paths = [
-        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-    ]
-    for root, subkey in reg_paths:
-        try:
-            with winreg.OpenKey(root, subkey) as key:
-                idx = 0
-                while True:
-                    try:
-                        app_name = winreg.EnumKey(key, idx)
-                        idx += 1
-                        if "countdown" not in app_name.lower():
-                            continue
-                        with winreg.OpenKey(key, app_name) as app_key:
-                            try:
-                                loc, _ = winreg.QueryValueEx(app_key, "InstallLocation")
-                                if loc and os.path.isfile(os.path.join(loc, EXE_NAME)):
-                                    return os.path.join(loc, EXE_NAME)
-                            except OSError:
-                                pass
-                            try:
-                                icon, _ = winreg.QueryValueEx(app_key, "DisplayIcon")
-                                if icon and "," in icon:
-                                    icon = icon.split(",")[0]
-                                if icon and os.path.isfile(icon):
-                                    return icon
-                            except OSError:
-                                pass
-                    except OSError:
-                        break
-        except OSError:
-            continue
-    candidates = [
-        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "CountdownDesktop", EXE_NAME),
-        os.path.join(os.environ.get("PROGRAMFILES", ""), "CountdownDesktop", EXE_NAME),
-        os.path.join(os.environ.get("PROGRAMFILES(X86)", ""), "CountdownDesktop", EXE_NAME),
-    ]
-    for c in candidates:
-        if c and os.path.isfile(c):
-            return c
-    return None
-
+    """CD 已合并到本项目，永远返回可用标记。"""
+    return "bundled"
 
 def get_installed_version() -> str | None:
     reg_paths = [
@@ -258,93 +217,41 @@ def get_file_version(path: str) -> str | None:
 
 
 def remove_install_dir() -> None:
-    if os.path.isdir(INSTALL_DIR):
-        try:
-            shutil.rmtree(INSTALL_DIR, ignore_errors=True)
-        except Exception:
-            pass
-
+    """CD 已合并，不再需要删除安装目录。"""
+    pass
 
 def install_from_path(installer_path: str) -> bool:
-    if not os.path.isfile(installer_path):
-        return False
-    if not os.path.isdir("D:\\"):
-        raise RuntimeError("D 盘不存在，无法安装")
-    remove_install_dir()
-    try:
-        result = subprocess.run(
-            [installer_path, "/VERYSILENT", "/NORESTART", "/SUPPRESSMSGBOXES", f"/DIR={INSTALL_DIR}"],
-            timeout=INSTALL_TIMEOUT,
-            creationflags=0x08000000,
-        )
-        if result.returncode != 0:
-            return False
-    except subprocess.TimeoutExpired:
-        return False
-    time.sleep(2)
-    path = find_installed_path()
-    return path is not None and os.path.isfile(path)
-
+    """CD 已合并，不再需要安装。保留接口兼容。"""
+    return True
 
 def silent_install() -> bool:
-    installer = resource_path(INSTALLER_REL)
-    if not os.path.isfile(installer):
-        raise RuntimeError(f"内嵌安装包不存在: {installer}")
-    return install_from_path(installer)
-
+    """CD 已合并，不再需要安装。"""
+    return True
 
 def _migrate_old_countdown_dir() -> None:
-    """v1.8.0.0: 旧版 Countdown Desktop 装在 D:\\CountdownDesktop，迁移到 D:\\IdiotLaunch\\CountdownDesktop。"""
-    old_dir = r"D:\CountdownDesktop"
-    if not os.path.isdir(old_dir):
-        return
-    try:
-        os.makedirs(os.path.dirname(INSTALL_DIR), exist_ok=True)
-        if not os.path.isdir(INSTALL_DIR):
-            shutil.move(old_dir, INSTALL_DIR)
-            log_daemon(f"已迁移旧 Countdown Desktop 目录 {old_dir} -> {INSTALL_DIR}")
-        else:
-            shutil.rmtree(old_dir, ignore_errors=True)
-            log_daemon(f"已删除旧 Countdown Desktop 目录 {old_dir}（新版已在 {INSTALL_DIR}）")
-    except Exception as e:
-        log_daemon(f"迁移旧 Countdown Desktop 目录失败: {e}")
-
+    """CD 已合并，不再需要迁移旧目录。"""
+    pass
 
 def ensure_installed() -> str:
-    _migrate_old_countdown_dir()
-    path = find_installed_path()
-    if path:
-        local_ver = get_installed_version()
-        if local_ver and compare_versions(local_ver, EMBEDDED_VERSION) < 0:
-            log_daemon(f"本地版本 {local_ver} 低于内嵌版本 {EMBEDDED_VERSION}，开始重装")
-            ok = silent_install()
-            if not ok:
-                raise RuntimeError("Countdown Desktop 重装失败")
-            path = find_installed_path()
-            if path is None:
-                raise RuntimeError("重装后未找到 Countdown Desktop")
-        return path
-    ok = silent_install()
-    if not ok:
-        raise RuntimeError("Countdown Desktop 静默安装失败")
-    path = find_installed_path()
-    if path is None:
-        raise RuntimeError("安装后未找到 Countdown Desktop")
-    return path
-
+    """CD 已合并，直接返回。"""
+    return "bundled"
 
 def launch_countdown(exam_type: str) -> None:
-    path = ensure_installed()
-    subprocess.Popen([path, "--exam", exam_type, "--auto-check-update", "off"], creationflags=0x00000008, close_fds=True)
+    """启动倒计时壁纸。CD 已合并，用同一个 Python 解释器启动。"""
+    subprocess.Popen(
+        [sys.executable, "-m", "countdown_app", "--exam", exam_type, "--auto-check-update", "off"],
+        creationflags=0x00000008, close_fds=True,
+    )
 
 
 def launch_settings() -> None:
     """一键唤起 Countdown Desktop 设置窗口。
-    v3.2.3.0+ 的 --settings 自动判断：已有实例则发命名事件弹出设置（不关闭倒计时），
-    无实例则启动并自动弹出设置窗口。
+    CD 已合并，用同一个 Python 解释器启动。
     """
-    path = ensure_installed()
-    subprocess.Popen([path, "--settings", "--auto-check-update", "off"], creationflags=0x00000008, close_fds=True)
+    subprocess.Popen(
+        [sys.executable, "-m", "countdown_app", "--settings", "--auto-check-update", "off"],
+        creationflags=0x00000008, close_fds=True,
+    )
 
 
 def is_running() -> bool:
@@ -358,14 +265,7 @@ def is_running() -> bool:
             return True
         return False
     except Exception:
-        try:
-            result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq CountdownDesktop.exe", "/NH"],
-                capture_output=True, text=True, timeout=10,
-            )
-            return "CountdownDesktop.exe" in result.stdout
-        except Exception:
-            return False
+        return False
 
 
 def quit_countdown() -> bool:
@@ -730,7 +630,7 @@ def check_show_window_event(event_handle) -> bool:
         return False
 
 
-def _wait_and_install(installer_path: str, version: str, state: dict) -> None:
+            # CD 已合并：def _wait_and_install(installer_path: str, version: str, state: dict) -> None:
     deadline = time.time() + 2 * 3600
     while time.time() < deadline:
         if not is_running():
@@ -822,7 +722,7 @@ def _countdown_install_worker(installer_path: str, version: str) -> None:
         time.sleep(10)
         if is_running():
             try:
-                subprocess.run(["taskkill", "/F", "/IM", EXE_NAME],
+                subprocess.run(["taskkill", "/F", "/IM", "python.exe"],
                                capture_output=True, timeout=10,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
             except Exception:
@@ -917,7 +817,7 @@ def _countdown_download_worker(latest: dict) -> None:
     _countdown_install_worker(dest, latest["version"])
 
 
-def _check_and_start_countdown_update() -> None:
+            # CD 已合并，不再单独更新：def _check_and_start_countdown_update() -> None:
     """主循环调度：Countdown 更新全部后台执行（下载→等待→安装），主循环快速返回。"""
     global _countdown_update_thread
     if not getattr(sys, "frozen", False):
@@ -1195,7 +1095,40 @@ def get_build_type() -> str:
 def get_latest_launcher_info() -> dict | None:
     build_type = get_build_type()
     suffix = "_store" if build_type == "store" else ""
-    # 优先用 API（含 release notes / size / sha256）
+    current_is_beta = is_beta_version(LAUNCHER_VERSION)
+
+    # beta 版本：用 /releases API 找最新的 beta 或正式版（生产环境用 /latest 自动跳过 beta）
+    if current_is_beta:
+        try:
+            ctx = ssl.create_default_context()
+            req = urllib.request.Request(
+                "https://api.github.com/repos/tgcz2011/idiot-launch/releases?per_page=20",
+                headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json"},
+            )
+            with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+                releases = json.loads(resp.read().decode("utf-8"))
+            for rel in releases:
+                if rel.get("draft"):
+                    continue
+                tag = rel.get("tag_name", "")
+                version = tag.lstrip("vV")
+                # beta 版本可更新到更新的 beta 或正式版
+                if compare_versions(version, LAUNCHER_VERSION) <= 0:
+                    continue
+                for asset in rel.get("assets", []):
+                    name = asset.get("name", "")
+                    expected = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
+                    if name == expected:
+                        return {
+                            "version": version, "url": asset["browser_download_url"],
+                            "size": asset.get("size", 0), "name": name,
+                            "release_notes": rel.get("body", ""),
+                            "sha256": asset.get("digest", ""),
+                        }
+        except Exception:
+            pass
+
+    # 正式版（或 beta API 失败）：用 /releases/latest（自动跳过 pre-release）
     try:
         ctx = ssl.create_default_context()
         req = urllib.request.Request(
@@ -1208,7 +1141,6 @@ def get_latest_launcher_info() -> dict | None:
         version = tag.lstrip("vV")
         for asset in data.get("assets", []):
             name = asset.get("name", "")
-            # 匹配对应 build_type 的安装包：compressed 匹配无后缀，store 匹配 _store 后缀
             expected = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
             if name == expected:
                 return {
@@ -1219,13 +1151,14 @@ def get_latest_launcher_info() -> dict | None:
                 }
     except Exception:
         pass
-    # API 限流或失败时：用 302 重定向获取版本号，构造对应 build_type 的下载 URL
-    version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
-    if version:
-        name = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
-        url = f"https://github.com/tgcz2011/idiot-launch/releases/download/v{version}/{name}"
-        return {"version": version, "url": url, "size": 0, "name": name,
-                "release_notes": "", "sha256": ""}
+    # API 限流或失败时：用 302 重定向获取版本号（仅正式版）
+    if not current_is_beta:
+        version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
+        if version:
+            name = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
+            url = f"https://github.com/tgcz2011/idiot-launch/releases/download/v{version}/{name}"
+            return {"version": version, "url": url, "size": 0, "name": name,
+                    "release_notes": "", "sha256": ""}
     return None
 
 

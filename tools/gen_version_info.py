@@ -15,7 +15,15 @@ def main():
     file_desc = sys.argv[3] if len(sys.argv) > 3 else "Idiot Launch"
     internal_name = app_name.replace(" ", "")
     parts = version.split(".")
-    vt = f"({parts[0]}, {parts[1]}, {parts[2]}, {parts[3]})"
+    # Windows 文件版本只支持 4 个数字，beta 后缀需去掉（如 "0-beta1" -> "0"）
+    num_parts = []
+    for p in parts[:4]:
+        import re
+        m = re.match(r'(\d+)', p)
+        num_parts.append(m.group(1) if m else "0")
+    while len(num_parts) < 4:
+        num_parts.append("0")
+    vt = f"({num_parts[0]}, {num_parts[1]}, {num_parts[2]}, {num_parts[3]})"
     content = f"""# -*- mode: python ; coding: utf-8 -*-
 VSVersionInfo(
   ffi=FixedFileInfo(

@@ -5,3 +5,5 @@ pyinstaller>=6.0
 pywin32>=306  # 快捷方式创建（win32com），消除 PowerShell 闪窗
 pystray>=0.19  # 系统托盘图标
 Pillow>=10.0  # pystray 依赖，加载托盘图标
+PySide6>=6.9  # Countdown Desktop 依赖（已合并到本项目）
+pywebview>=6.0  # Countdown Desktop 依赖（动态壁纸播放器）

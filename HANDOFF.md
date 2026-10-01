@@ -1,6 +1,6 @@
 # HANDOFF.md — Idiot Launch 交接文档
 
-> 最后更新: 2026-09-24（v1.4.0.0，前后端分离 daemon 常驻 + 多镜像源下载 fallback + Inno Setup 安装包 + 快捷方式自动重建 + 更新状态指示器 + 自定义图标）
+> 最后更新: 2026-10-01（v1.9.0.0-beta1，Countdown Desktop 代码合并进本项目 + Beta 版本命名机制）
 
 ## 一、需求（用户原始要求）
 
@@ -39,6 +39,7 @@
 | **v1.2.0.2** | 同上 | 全面代码审查（d 升）：VBS 替换失败恢复旧版、OpenMutexW 替代 CreateMutexW 消除竞态 |
 | **v1.2.0.3** | 同上 | 自适应文件名（d 升）：VBS 改用 UTF-16 LE BOM 编码支持中文路径，用户可任意改名不影响更新 |
 | **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**| **v1.4.0.1** | 同上 | 快捷方式守护移到 daemon 循环顶部（d 升）：原实现 ensure_shortcuts() 在下载函数之后，下载阻塞期间快捷方式无法恢复；修复后实测删除 D盘+桌面快捷方式 35 秒内自动重建 |
+| **v1.9.0.0-beta1** | 同上 + PySide6/pywebview | **重大架构调整：Countdown Desktop 代码合并进本项目 + Beta 版本机制（a 升）**：①将 CD 的 app/*.py（9个文件）复制到 countdown_app/ 目录，assets 复制到 countdown_app/assets/；②CD 启动方式从独立 exe 改为 `sys.executable -m countdown_app --exam/--settings`，共享同一个 Python 运行时，不再需要独立安装 CD；③移除 CD 安装/更新相关代码（install_from_path/silent_install/ensure_countdown_installed/_migrate_old_countdown_dir 改为空操作，daemon CD 更新检查已注释）；④移除内嵌 CD 安装包（spec 不再 datas 安装包，installer/ 目录下的 exe 不再需要）；⑤CD 的配置文件路径保持不变（%APPDATA%\CountdownDesktop\），命名事件/互斥量名称不变，IL 的 quit_countdown/launch_settings 不需要改；⑥新增 is_beta_version() 函数，生产环境（正式版）用 /releases/latest 自动跳过 beta，beta 版本用 /releases API 找最新 beta/正式版；⑦CI release.yml 中 beta tag 自动标记为 prerelease；⑧版本号支持 beta 后缀（如 1.9.0.0-beta1），gen_version_info.py 处理 beta 后缀（Windows 文件版本只保留数字）；⑨requirements.txt 新增 PySide6>=6.9 + pywebview>=6.0；⑩spec hiddenimports 新增 PySide6 系列 + pywebview 系列 + countdown_app 系列；⑪build.ps1 移除下载 CD 安装包步骤；⑫release.yml 移除下载 CD 安装包步骤，release body 更新为 CD 已合并的描述 |
 | **v1.8.3.3** | 同上 | 新增系统托盘图标+GUI单实例（d升）：①新增 pystray 托盘图标，右键菜单打开窗口/退出，左键点击无操作；②关闭窗口改为最小化到托盘（withdraw），不退出程序；③新增 GUI 单实例互斥量 IdiotLaunch_GUI_Single，多次启动只激活已有窗口（命名事件 IdiotLaunch_ShowWindow）；④托盘退出仅关闭 GUI，daemon 继续后台运行；⑤依赖新增 pystray>=0.19、Pillow>=10.0，spec hiddenimports 加 pystray._win32 等 |
 | **v1.8.3.2** | 同上 | 卸载改为优雅退出（d升）：①新增命名事件 IdiotLaunch_Quit，daemon 用 WaitForSingleObject 替代 time.sleep，收到事件后保存状态并优雅退出；②新增 --quit-daemon 命令行参数（signal_daemon_quit）；③卸载时先 Exec IdiotLaunch.exe --quit-daemon 通知优雅退出，等5秒，未退则 taskkill /F 兜底；④强杀不再是默认行为，只作兜底 |
 | **v1.8.3.1** | 同上 | 新增卸载功能+空闲时间改5分钟（d升）：①Inno Setup Uninstallable=yes，生成 unins000.exe 卸载程序；②卸载时强制结束所有 IdiotLaunch 进程（含 daemon），删除 D盘根目录+公共桌面+用户桌面快捷方式，清理 _internal 目录和 build_type.txt 残留；③保留 CountdownDesktop 目录和 data 数据目录；④CloseApplicationsFilter 增加 CountdownDesktop.exe；⑤空闲自动更新阈值从 10 分钟改为 5 分钟（IDLE_THRESHOLD=300） |

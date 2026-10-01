@@ -16,12 +16,7 @@ from src.core import (
     get_installed_version,
     compare_versions,
     parse_version,
-    EMBEDDED_VERSION,
-    INSTALL_DIR,
-    INSTALL_EXE,
-    EXE_NAME,
     MORNING_READING_URL,
-    INSTALLER_REL,
     has_pending_update,
     load_state,
     save_state,
@@ -47,11 +42,8 @@ from src.core import (
 
 
 def test_constants():
-    assert INSTALL_DIR == r"D:\IdiotLaunch\CountdownDesktop"
-    assert EXE_NAME == "CountdownDesktop.exe"
-    assert INSTALL_EXE == os.path.join(INSTALL_DIR, EXE_NAME)
     assert "morning-reading" in MORNING_READING_URL
-    assert EMBEDDED_VERSION in INSTALLER_REL
+    assert LAUNCHER_VERSION
     print("✓ test_constants passed")
 
 
@@ -71,8 +63,8 @@ def test_version_comparison():
 
 
 def test_resource_path():
-    p = resource_path(INSTALLER_REL)
-    assert p.endswith(INSTALLER_REL) or p.endswith(INSTALLER_REL.replace("/", os.sep))
+    p = resource_path(os.path.join("assets", "icon.ico"))
+    assert "icon.ico" in p
     print(f"✓ test_resource_path passed: {p}")
 
 
@@ -86,14 +78,14 @@ def test_get_installed_version():
     print(f"✓ test_get_installed_version passed: {result}")
 
 
-def test_installer_file_exists():
-    p = resource_path(INSTALLER_REL)
-    exists = os.path.isfile(p)
-    if exists:
-        size = os.path.getsize(p)
-        print(f"✓ test_installer_file_exists passed: {size} bytes")
-    else:
-        print(f"⚠ test_installer_file_exists: 安装包不存在（构建前需先下载）: {p}")
+def test_countdown_app_bundled():
+    """CD 已合并，验证 countdown_app 模块存在。"""
+    import importlib
+    main_mod = importlib.import_module("countdown_app.main")
+    player_mod = importlib.import_module("countdown_app.player")
+    assert hasattr(main_mod, "run")
+    assert hasattr(player_mod, "run")
+    print("✓ test_countdown_app_bundled passed: countdown_app 模块可用")
 
 
 def test_is_running_no_crash():
@@ -123,7 +115,10 @@ def test_launcher_version_constant():
     assert isinstance(LAUNCHER_VERSION, str)
     parts = LAUNCHER_VERSION.split(".")
     assert len(parts) == 4
-    assert all(p.isdigit() for p in parts)
+    # 前3段必须是数字，第4段可以是数字或数字+beta后缀（如 "0-beta1"）
+    import re
+    assert all(p.isdigit() for p in parts[:3])
+    assert re.match(r'^\d+(-\w+)?$', parts[3])
     assert LAUNCHER_MIN_SIZE > 0
     print(f"✓ test_launcher_version_constant passed: LAUNCHER_VERSION={LAUNCHER_VERSION}")
 
@@ -306,18 +301,8 @@ def test_installer_asset_name_pattern():
 
 
 def test_countdown_update_threaded_dev_mode():
-    """v1.5.0.0: Countdown 更新全后台线程化，dev 模式下调度函数安全返回不崩溃。"""
-    from src.core import (
-        _check_and_start_countdown_update,
-        _countdown_download_worker,
-        _countdown_install_worker,
-        _countdown_update_thread,
-    )
-    assert _countdown_update_thread is None  # 初始无线程
-    _check_and_start_countdown_update()  # dev 模式应安全返回（非 frozen 直接 return）
-    assert _countdown_download_worker is not None
-    assert _countdown_install_worker is not None
-    print("✓ test_countdown_update_threaded_dev_mode passed: 调度函数安全返回")
+    """CD 已合并到本项目，不再单独更新。保留测试占位。"""
+    print("✓ test_countdown_update_threaded_dev_mode passed: CD 已合并，无需单独更新")
 
 
 def test_iss_overwrite_install_settings():
@@ -379,7 +364,7 @@ if __name__ == "__main__":
     test_resource_path()
     test_find_installed_no_crash()
     test_get_installed_version()
-    test_installer_file_exists()
+    test_countdown_app_bundled()
     test_is_running_no_crash()
     test_quit_countdown_no_crash()
     test_state_functions()

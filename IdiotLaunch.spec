@@ -1,8 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller 规格文件 — Idiot Launch (v1.7.0.0 onedir 模式)
-打包时将 Countdown Desktop 安装包作为数据文件内嵌。
-构建前请确保 installer/CountdownDesktop_Setup_<EMBEDDED_VERSION>.exe 存在（build.ps1 会自动下载）。
+PyInstaller 规格文件 — Idiot Launch (v1.9.0 onedir 模式)
+Countdown Desktop 已合并到本项目（countdown_app/），不再内嵌安装包。
 
 onedir 模式说明：
 - 产物为 dist/IdiotLaunch/ 目录（IdiotLaunch.exe + _internal/ 子目录 + 内嵌资源）
@@ -13,26 +12,33 @@ onedir 模式说明：
 import os
 import sys
 
-# 从 src/core.py 动态读取 EMBEDDED_VERSION，避免每次升级手动同步
-sys.path.insert(0, os.getcwd())
-from src.core import EMBEDDED_VERSION
-
 block_cipher = None
-
-# 内嵌安装包路径
-INSTALLER_PATH = os.path.join("installer", f"CountdownDesktop_Setup_{EMBEDDED_VERSION}.exe")
 
 a = Analysis(
     ["run.py"],
     pathex=[],
     binaries=[],
     datas=[
-        (INSTALLER_PATH, "installer"),
+        ("countdown_app", "countdown_app"),
         ("assets", "assets"),
     ],
-    hiddenimports=["pythoncom", "win32com.client", "pywintypes",
-                   "pystray._win32", "pystray._util", "six",
-                   "PIL._tkinter_finder"],
+    hiddenimports=[
+        "pythoncom", "win32com.client", "pywintypes",
+        "pystray._win32", "pystray._util", "six",
+        "PIL._tkinter_finder",
+        # PySide6
+        "PySide6", "PySide6.QtCore", "PySide6.QtGui", "PySide6.QtWidgets",
+        "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets",
+        "PySide6.QtNetwork", "PySide6.QtQml", "shiboken6",
+        # pywebview
+        "webview", "webview.platforms.winforms", "webview.platforms.cef",
+        "webview.platforms.qt", "clr", "pythonnet",
+        # countdown_app 模块
+        "countdown_app", "countdown_app.main", "countdown_app.player",
+        "countdown_app.cli", "countdown_app.config", "countdown_app.settings",
+        "countdown_app.update", "countdown_app.version", "countdown_app.win32",
+        "countdown_app.media",
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
