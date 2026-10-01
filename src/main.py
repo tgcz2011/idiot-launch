@@ -846,7 +846,7 @@ class IdiotLaunchApp:
         self.root.after(0, self._show_window)
 
     def _tray_quit(self, icon, item):
-        """托盘菜单：退出（关闭 GUI，daemon 继续后台运行）。"""
+        """托盘菜单：完全退出（GUI + daemon + 早读浏览器）。"""
         try:
             if self._tray_icon:
                 self._tray_icon.stop()
@@ -855,7 +855,25 @@ class IdiotLaunchApp:
         self.root.after(0, self._quit_gui)
 
     def _quit_gui(self):
-        """真正退出 GUI 进程。"""
+        """完全退出：通知 daemon 退出，关闭早读浏览器，然后退出 GUI。"""
+        # 1. 通知 daemon 优雅退出
+        try:
+            from src.core import signal_daemon_quit
+            signal_daemon_quit()
+        except Exception:
+            pass
+
+        # 2. 启动延迟清理脚本：3秒后强制结束所有残留进程（daemon/早读浏览器）
+        try:
+            exe_name = os.path.basename(sys.executable)
+            if getattr(sys, "frozen", False):
+                # 打包后：结束所有 IdiotLaunch.exe 子进程（daemon 和早读浏览器）
+                cleanup_cmd = f'powershell -Command "Start-Sleep -Seconds 3; Get-Process -Name IdiotLaunch -ErrorAction SilentlyContinue | Where-Object {{ $_.Id -ne $PID }} | Stop-Process -Force -ErrorAction SilentlyContinue"'
+                subprocess.Popen(cleanup_cmd, shell=True, creationflags=0x08000000)
+        except Exception:
+            pass
+
+        # 3. 关闭互斥量和事件
         try:
             if self._show_event:
                 ctypes.windll.kernel32.CloseHandle(self._show_event)
@@ -866,6 +884,8 @@ class IdiotLaunchApp:
                 ctypes.windll.kernel32.CloseHandle(self._gui_mutex)
         except Exception:
             pass
+
+        # 4. 退出 GUI
         self.root.destroy()
 
     def _check_pending_update_on_start(self):

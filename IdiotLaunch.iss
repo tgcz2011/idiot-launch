@@ -4,7 +4,7 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.9.0.0-beta6"
+#define MyAppVersion "1.9.0.0-beta7"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 
@@ -85,6 +85,28 @@ begin
   // 自动跳过欢迎页，直接进入安装（保留进度条显示）
   if CurPageID = wpWelcome then
     WizardForm.NextButton.OnClick(WizardForm);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  // 安装前自动关闭所有 IdiotLaunch 相关进程（GUI + daemon + 早读浏览器）
+  // 1. 优雅退出：通过命名事件通知 daemon
+  try
+    Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--quit-daemon', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  except
+  end;
+  // 2. 等待优雅退出（最多 3 秒）
+  Sleep(3000);
+  // 3. 强制结束所有残留进程（包括 GUI、daemon、早读浏览器子进程）
+  try
+    Exec('taskkill', '/F /IM IdiotLaunch.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  except
+  end;
+  // 4. 再等 1 秒确保进程完全退出，文件释放
+  Sleep(1000);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

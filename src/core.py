@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.9.0.0-beta6"
+LAUNCHER_VERSION = "1.9.0.0-beta7"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -1056,29 +1056,22 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 installer = "{installer}"
 installedExe = "{installed_exe}"
-' 1. 优雅关闭所有 IdiotLaunch 进程（taskkill 不带 /F = 发 WM_CLOSE）
+' 1. 先通知 daemon 优雅退出（命名事件）
 On Error Resume Next
-shell.Run "taskkill /IM IdiotLaunch.exe", 0, True
+shell.Run Chr(34) & installedExe & Chr(34) & " --quit-daemon", 0, True
 On Error GoTo 0
-' 2. 等待优雅退出（最多 10 秒）
-For i = 1 To 20
-    WScript.Sleep 500
-    Set wmi = GetObject("{wmi_query}")
-    Set procs = wmi.ExecQuery("SELECT * FROM Win32_Process WHERE Name='IdiotLaunch.exe'")
-    If procs.Count = 0 Then Exit For
-Next
-' 3. 如果还没退出，强制杀（兜底，确保安装时文件不被占用）
-If procs.Count > 0 Then
-    On Error Resume Next
-    shell.Run "taskkill /F /IM IdiotLaunch.exe", 0, True
-    On Error GoTo 0
-    WScript.Sleep 2000
-End If
-' 4. 静默运行安装包（完全无窗口，等待安装完成）
+WScript.Sleep 2000
+' 2. 强制结束所有 IdiotLaunch 进程（含子进程 /T，确保 GUI/daemon/早读浏览器全部退出）
+'    不用优雅退出（WM_CLOSE 会被程序忽略，最小化到托盘），直接强杀
+On Error Resume Next
+shell.Run "taskkill /F /IM IdiotLaunch.exe /T", 0, True
+On Error GoTo 0
+WScript.Sleep 1500
+' 3. 静默运行安装包（完全无窗口，等待安装完成）
 On Error Resume Next
 shell.Run Chr(34) & installer & Chr(34) & " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", 0, True
 On Error GoTo 0
-    ' 5. 验证安装成功，启动新程序（force 时启动 GUI，否则只启动 daemon）
+    ' 4. 验证安装成功，启动新程序（force 时启动 GUI，否则只启动 daemon）
     If fso.FileExists(installedExe) Then
         On Error Resume Next
         If "{force_flag}" = "1" Then
@@ -1088,11 +1081,11 @@ On Error GoTo 0
         End If
         On Error GoTo 0
     End If
-' 6. 清理下载的安装包
+' 5. 清理下载的安装包
 On Error Resume Next
 fso.DeleteFile installer, True
 On Error GoTo 0
-' 7. 自删除
+' 6. 自删除
 On Error Resume Next
 fso.DeleteFile WScript.ScriptFullName, True
 On Error GoTo 0
