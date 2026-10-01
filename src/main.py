@@ -5,6 +5,7 @@ v1.3.0.0: 图标、右上角更新状态指示器、daemon 常驻启动、快捷
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
+import random
 import time
 import sys
 import os
@@ -38,6 +39,8 @@ from src.core import (
     signal_show_window,
     create_show_window_event,
     check_show_window_event,
+    is_morning_logged_in,
+    get_morning_students,
 )
 
 VERSION = LAUNCHER_VERSION
@@ -409,6 +412,134 @@ class UpdateDetailDialog:
         if not messagebox.askyesno("确认更新", f"即将更新到 v{pending_ver}。\n\n更新过程中软件会自动关闭并重启，\n请确保没有正在进行的操作。\n\n是否立即更新？", parent=self.win):
             return
         send_command("apply_launcher_update_now")
+
+
+
+class StudentPickerDialog(tk.Toplevel):
+    """随机抽学生对话框：可自定义抽取人数，显示抽中结果。"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("随机抽学生")
+        self.geometry("420x480")
+        self.configure(bg=BG_COLOR)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._students = []
+        self._loading = False
+
+        self._build_ui()
+        self._load_students()
+
+    def _build_ui(self):
+        # 标题
+        tk.Label(self, text="随机抽学生", font=("Microsoft YaHei UI", 16, "bold"),
+                 bg=BG_COLOR, fg="#1f2937").pack(pady=(16, 8))
+
+        # 抽取人数
+        count_frame = tk.Frame(self, bg=BG_COLOR)
+        count_frame.pack(pady=8)
+        tk.Label(count_frame, text="抽取人数：", font=("Microsoft YaHei UI", 11),
+                 bg=BG_COLOR, fg="#374151").pack(side="left")
+        self.count_var = tk.IntVar(value=1)
+        self.count_spin = tk.Spinbox(count_frame, from_=1, to=50, width=6,
+                                      textvariable=self.count_var,
+                                      font=("Microsoft YaHei UI", 12))
+        self.count_spin.pack(side="left", padx=8)
+
+        # 抽取按钮
+        self.pick_btn = tk.Button(self, text="开始抽取", font=("Microsoft YaHei UI", 13, "bold"),
+                                  bg="#1a73e8", fg="white", activebackground="#1557b0",
+                                  activeforeground="white", relief="flat", cursor="hand2",
+                                  command=self._on_pick, height=2, width=15)
+        self.pick_btn.pack(pady=12)
+
+        # 结果区域
+        result_frame = tk.Frame(self, bg="white", highlightthickness=1,
+                                highlightbackground="#e5e7eb")
+        result_frame.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+
+        # 滚动条
+        self.result_canvas = tk.Canvas(result_frame, bg="white", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(result_frame, orient="vertical", command=self.result_canvas.yview)
+        self.result_inner = tk.Frame(self.result_canvas, bg="white")
+
+        self.result_inner.bind("<Configure>",
+                               lambda e: self.result_canvas.configure(scrollregion=self.result_canvas.bbox("all")))
+        self.result_canvas.create_window((0, 0), window=self.result_inner, anchor="nw")
+        self.result_canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.result_canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+        scrollbar.pack(side="right", fill="y", pady=10)
+
+        # 初始提示
+        self._hint_label = tk.Label(self.result_inner, text="点击「开始抽取」随机抽取学生",
+                                    font=("Microsoft YaHei UI", 11), bg="white", fg="#9ca3af")
+        self._hint_label.pack(pady=30)
+
+        # 学生总数
+        self.count_label = tk.Label(self, text="", font=("Microsoft YaHei UI", 9),
+                                    bg=BG_COLOR, fg="#6b7280")
+        self.count_label.pack(pady=(0, 8))
+
+    def _load_students(self):
+        """后台线程加载学生列表。"""
+        self._loading = True
+        self.pick_btn.config(state="disabled", text="加载中...")
+        self._hint_label.config(text="正在获取学生列表...")
+
+        def worker():
+            students = get_morning_students()
+            self.after(0, lambda: self._on_students_loaded(students))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_students_loaded(self, students):
+        self._students = students
+        self._loading = False
+        if students:
+            self.pick_btn.config(state="normal", text="开始抽取")
+            self._hint_label.config(text=f"共 {len(students)} 名学生，点击开始抽取")
+            self.count_label.config(text=f"班级共 {len(students)} 人")
+            # 更新 spinbox 最大值
+            self.count_spin.config(to=max(1, len(students)))
+        else:
+            self.pick_btn.config(state="disabled", text="无法获取")
+            self._hint_label.config(text="获取学生列表失败，请检查网络或重新登录早读")
+
+    def _on_pick(self):
+        if self._loading or not self._students:
+            return
+        count = min(self.count_var.get(), len(self._students))
+        picked = random.sample(self._students, count)
+
+        # 清空结果
+        for w in self.result_inner.winfo_children():
+            w.destroy()
+
+        # 显示抽中结果
+        tk.Label(self.result_inner, text=f"抽中 {count} 名学生：",
+                 font=("Microsoft YaHei UI", 12, "bold"), bg="white", fg="#1f2937").pack(pady=(10, 8))
+
+        for i, s in enumerate(picked, 1):
+            row = tk.Frame(self.result_inner, bg="white")
+            row.pack(fill="x", padx=15, pady=3)
+            # 序号
+            tk.Label(row, text=f"{i}.", font=("Microsoft YaHei UI", 13, "bold"),
+                     bg="white", fg="#1a73e8", width=4, anchor="e").pack(side="left")
+            # 学号
+            tk.Label(row, text=str(s["student_no"]), font=("Microsoft YaHei UI", 12),
+                     bg="white", fg="#6b7280", width=8, anchor="w").pack(side="left", padx=(8, 0))
+            # 姓名
+            tk.Label(row, text=s["name"], font=("Microsoft YaHei UI", 14, "bold"),
+                     bg="white", fg="#1f2937").pack(side="left", padx=(8, 0))
+
+        # 重新抽取按钮
+        tk.Button(self.result_inner, text="重新抽取", font=("Microsoft YaHei UI", 10),
+                  bg="#f3f4f6", fg="#374151", relief="flat", cursor="hand2",
+                  command=self._on_pick).pack(pady=12)
 
 
 class MorningConfigDialog:
@@ -792,13 +923,20 @@ class IdiotLaunchApp:
         )
         self.btn_stopwatch.grid(row=3, column=1, padx=5, pady=5)
 
-        # 第五行：早读设置（跨两列）
+        # 第五行：早读设置 + 随机抽学生
         self.btn_morning_config = HoverButton(
             btn_frame, "早读设置", "配置早晚读班级和登录",
             BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_morning_config,
-            width=500, height=60,
+            width=240, height=75,
         )
-        self.btn_morning_config.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
+        self.btn_morning_config.grid(row=4, column=0, padx=5, pady=5)
+
+        self.btn_student_picker = HoverButton(
+            btn_frame, "随机抽学生", "需要登录早读",
+            BTN_DISABLED, BTN_DISABLED, self._open_student_picker,
+            width=240, height=75,
+        )
+        self.btn_student_picker.grid(row=4, column=1, padx=5, pady=5)
 
 
 
@@ -971,6 +1109,19 @@ class IdiotLaunchApp:
         else:
             self.btn_kill._draw(BTN_DISABLED, text_color=BTN_DISABLED_TEXT)
 
+        # 更新随机抽学生按钮状态
+        logged_in = is_morning_logged_in()
+        if logged_in:
+            self.btn_student_picker.set_enabled(True)
+            self.btn_student_picker.color = "#f59e0b"
+            self.btn_student_picker.hover_color = "#d97706"
+            self.btn_student_picker.subtext = "随机抽取学生回答问题"
+            self.btn_student_picker._draw("#f59e0b")
+        else:
+            self.btn_student_picker.set_enabled(False)
+            self.btn_student_picker.subtext = "需要登录早读"
+            self.btn_student_picker._draw(BTN_DISABLED, text_color=BTN_DISABLED_TEXT)
+
     def _run_with_loading(self, action_func, success_msg,
                           title="正在处理", subtitle="请稍候..."):
         dialog = [None]
@@ -1055,6 +1206,13 @@ class IdiotLaunchApp:
 
     def on_custom(self):
         launch_custom()
+
+    def _open_student_picker(self):
+        """打开随机抽学生对话框。"""
+        if not is_morning_logged_in():
+            messagebox.showinfo("需要登录", "请先在「早读设置」中登录班级，才能使用随机抽学生功能。")
+            return
+        StudentPickerDialog(self.root)
 
     def on_morning_config(self):
         MorningConfigDialog(self.root)

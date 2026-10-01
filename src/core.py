@@ -11,6 +11,7 @@ import json
 import shutil
 import webbrowser
 import urllib.request
+import urllib.parse
 import ssl
 import ctypes
 import threading
@@ -21,6 +22,7 @@ APP_NAME = "Countdown Desktop"
 # Countdown Desktop 已合并到本项目（countdown_app/），不再需要独立安装
 COUNTDOWN_VERSION = "3.2.5.4"  # 合并时的 CD 版本，随 IL 一起更新
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
+MORNING_API_URL = "https://zztool.free.nf/morning-reading/api.php"
 INSTALL_TIMEOUT = 300
 
 UPDATE_DIR = r"D:\IdiotLaunch\data"
@@ -323,6 +325,88 @@ def quit_countdown() -> bool:
 
 def open_morning_reading() -> None:
     webbrowser.open(MORNING_READING_URL)
+
+
+def _morning_config_paths():
+    """返回早读配置文件路径列表（优先临时配置，再持久配置）。"""
+    persistent = os.path.join(UPDATE_DIR, "morning_config.json")
+    temp = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")),
+                        "idiot_launch_morning_config.json")
+    return [temp, persistent]
+
+
+def load_morning_config():
+    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。"""
+    for path in _morning_config_paths():
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            continue
+    return {}
+
+
+def is_morning_logged_in() -> bool:
+    """检查早读是否已登录（配置文件存在且有年级/班级/密码）。"""
+    cfg = load_morning_config()
+    return bool(cfg.get("grade") and cfg.get("class_number") and cfg.get("password"))
+
+
+def get_morning_token(config: dict) -> str | None:
+    """通过早读 API 获取认证 token。
+    流程：get_seed(identity=record) -> sha256(username:password:seed) -> token
+    """
+    try:
+        grade = config.get("grade")
+        class_number = config.get("class_number")
+        password = config.get("password")
+        if not (grade and class_number and password):
+            return None
+        username = f"{grade}-{class_number}"
+        # 1. 获取种子
+        seed_url = f"{MORNING_API_URL}?action=get_seed&identity=record"
+        req = urllib.request.Request(seed_url)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            seed_data = json.loads(resp.read().decode("utf-8"))
+        if not seed_data.get("success"):
+            return None
+        seed = seed_data["data"]["seed"]
+        # 2. 计算 token
+        token = hashlib.sha256(f"{username}:{password}:{seed}".encode("utf-8")).hexdigest()
+        return token
+    except Exception as e:
+        log_daemon(f"早读 token 获取失败: {e}")
+        return None
+
+
+def get_morning_students(config: dict = None) -> list[dict]:
+    """获取早读班级的学生列表。返回 [{"student_no": 1, "name": "张三"}, ...]"""
+    if config is None:
+        config = load_morning_config()
+    if not is_morning_logged_in():
+        return []
+    token = get_morning_token(config)
+    if not token:
+        return []
+    try:
+        grade = config.get("grade")
+        class_number = config.get("class_number")
+        username = f"{grade}-{class_number}"
+        url = f"{MORNING_API_URL}?action=students&username={urllib.parse.quote(username)}"
+        req = urllib.request.Request(url)
+        req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if not data.get("success"):
+            return []
+        students = data["data"]["students"]
+        # 简化字段，只保留学号和姓名
+        return [{"student_no": s["student_no"], "name": s["name"]} for s in students]
+    except Exception as e:
+        log_daemon(f"早读学生列表获取失败: {e}")
+        return []
+
 
 
 def _ensure_update_dir() -> None:
