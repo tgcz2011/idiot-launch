@@ -45,7 +45,7 @@ Name: "chinesesimp"; MessagesFile: "assets\ChineseSimplified.isl"
 
 [Files]
 ; Flutter 前端产物（整个 Release 目录）
-Source: "flutter_app\build\windows\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "flutter_app\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Python 后端产物
 Source: "dist\backend\*"; DestDir: "{app}\backend"; Flags: ignoreversion recursesubdirs createallsubdirs
 
