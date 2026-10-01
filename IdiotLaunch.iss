@@ -1,22 +1,12 @@
-; IdiotLaunch.iss — Inno Setup 安装脚本
-; 傻瓜启动器安装包：自动安装到 D:\IdiotLaunch，创建 D 盘根目录和桌面快捷方式
-; 打开安装包后自动开始安装（跳过所有向导页），仅显示原生进度条
-; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
+; IdiotLaunch.iss — Inno Setup 安装脚本（Flutter 前端 + Python 后端版）
+; 安装到 D:\IdiotLaunch，Flutter 前端为主入口，后端在 backend\ 子目录
+; 打开安装包后自动开始安装，仅显示原生进度条
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "2.0.0.0-beta2"
+#define MyAppVersion "3.0.0.0-beta1"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
-
-; 压缩级别：默认 lzma2/max（比 ultra 宽松，降低 SmartScreen 误报概率）
-; 可用 /DCOMPRESSION=none 参数构建仅储存版（供测试 SmartScreen 表现）
-
-; 仅储存版输出文件名加 _store 后缀
-#ifdef STOREBUILD
-  #define MyOutputSuffix "_store"
-#else
-  #define MyOutputSuffix ""
-#endif
+#define MyBackendExeName "IdiotLaunchBackend.exe"
 
 [Setup]
 AppId={{B7E3A2D1-4F5A-4C8E-9B2D-1A3F5E7C9D0B}
@@ -33,17 +23,13 @@ DisableReadyPage=yes
 DisableFinishedPage=yes
 DisableStartupPrompt=yes
 OutputDir=dist
-OutputBaseFilename=IdiotLaunch_Setup_{#MyAppVersion}{#MyOutputSuffix}
-#ifdef COMPRESSION
-Compression={#COMPRESSION}
-#else
+OutputBaseFilename=IdiotLaunch_Setup_{#MyAppVersion}
 Compression=lzma2/max
-#endif
 SolidCompression=no
 WizardStyle=modern
 PrivilegesRequired=lowest
 CloseApplications=yes
-CloseApplicationsFilter=IdiotLaunch.exe;CountdownDesktop.exe
+CloseApplicationsFilter=IdiotLaunch.exe;IdiotLaunchBackend.exe;CountdownDesktop.exe
 RestartApplications=yes
 Uninstallable=yes
 UsePreviousAppDir=no
@@ -57,13 +43,14 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Languages]
 Name: "chinesesimp"; MessagesFile: "assets\ChineseSimplified.isl"
 
-
 [Files]
-; onedir 模式：打包整个 dist\IdiotLaunch\ 目录（exe + _internal\ + 内嵌资源）
-Source: "dist\IdiotLaunch\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Flutter 前端产物（整个 Release 目录）
+Source: "flutter_app\build\windows\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Python 后端产物
+Source: "dist\backend\*"; DestDir: "{app}\backend"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-; 桌面快捷方式由 daemon 守护创建（ensure_shortcuts），避免重复
+; 桌面快捷方式由 daemon 守护创建
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
@@ -82,7 +69,6 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
-  // 自动跳过欢迎页，直接进入安装（保留进度条显示）
   if CurPageID = wpWelcome then
     WizardForm.NextButton.OnClick(WizardForm);
 end;
@@ -92,20 +78,21 @@ var
   ResultCode: Integer;
 begin
   Result := '';
-  // 安装前自动关闭所有 IdiotLaunch 相关进程（GUI + daemon + 早读浏览器）
-  // 1. 优雅退出：通过命名事件通知 daemon
+  // 1. 优雅退出：通知后端 daemon
   try
-    Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--quit-daemon', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(ExpandConstant('{app}\backend\{#MyBackendExeName}'), '--quit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   except
   end;
-  // 2. 等待优雅退出（最多 3 秒）
-  Sleep(3000);
-  // 3. 强制结束所有残留进程（包括 GUI、daemon、早读浏览器子进程）
+  Sleep(2000);
+  // 2. 强制结束残留进程（Flutter 前端 + 后端 + 壁纸）
   try
     Exec('taskkill', '/F /IM IdiotLaunch.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   except
   end;
-  // 4. 再等 1 秒确保进程完全退出，文件释放
+  try
+    Exec('taskkill', '/F /IM IdiotLaunchBackend.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  except
+  end;
   Sleep(1000);
 end;
 
@@ -114,12 +101,10 @@ var
   DShortcutPath: String;
   WshShell: Variant;
   Shortcut: Variant;
-  BuildTypeFile: String;
-  BuildTypeContent: String;
 begin
   if CurStep = ssPostInstall then
   begin
-    // 在 D 盘根目录创建快捷方式（流氓软件模式，应用启动后也会自动重建）
+    // D 盘根目录快捷方式
     try
       DShortcutPath := 'D:\傻瓜启动器.lnk';
       WshShell := CreateOleObject('WScript.Shell');
@@ -130,18 +115,6 @@ begin
       Shortcut.Description := '教室倒计时一键启动器';
       Shortcut.Save;
     except
-      // 静默失败，应用启动时会重试
-    end;
-    // 写 build_type 标记：compressed 或 store，供自动更新时选择对应安装包
-    try
-      BuildTypeFile := ExpandConstant('{app}\build_type.txt');
-      #ifdef STOREBUILD
-        BuildTypeContent := 'store';
-      #else
-        BuildTypeContent := 'compressed';
-      #endif
-      SaveStringToFile(BuildTypeFile, BuildTypeContent, False);
-    except
     end;
   end;
 end;
@@ -150,22 +123,24 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
 begin
-  // 卸载前：先优雅通知 daemon 退出，等 5 秒，未退则强杀兜底
   if CurUninstallStep = usUninstall then
   begin
+    // 优雅退出后端
     try
-      // 优雅退出：通过命名事件通知 daemon
-      Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--quit-daemon', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec(ExpandConstant('{app}\backend\{#MyBackendExeName}'), '--quit', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     except
     end;
-    // 等待 daemon 优雅退出（最多 5 秒）
-    Sleep(5000);
+    Sleep(3000);
+    // 强杀兜底
     try
-      // 兜底：如果 daemon 仍在运行，强制结束
       Exec('taskkill', '/F /IM IdiotLaunch.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     except
     end;
-    // 删除 daemon 创建的快捷方式
+    try
+      Exec('taskkill', '/F /IM IdiotLaunchBackend.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    except
+    end;
+    // 删除快捷方式
     try
       DeleteFile('D:\傻瓜启动器.lnk');
       DeleteFile(ExpandConstant('{commondesktop}\傻瓜启动器.lnk'));
@@ -173,12 +148,12 @@ begin
     except
     end;
   end;
-  // 卸载后：清理残留（_internal 目录、build_type.txt）
   if CurUninstallStep = usPostUninstall then
   begin
+    // 清理残留目录
     try
-      DelTree(ExpandConstant('{app}\_internal'), True, True, True);
-      DeleteFile(ExpandConstant('{app}\build_type.txt'));
+      DelTree(ExpandConstant('{app}\backend'), True, True, True);
+      DelTree(ExpandConstant('{app}\data'), True, True, True);
     except
     end;
   end;

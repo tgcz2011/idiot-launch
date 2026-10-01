@@ -1,4 +1,4 @@
-name: Build and Release
+name: Build and Release (Flutter + Python)
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
       version:
         description: '版本号（a.b.c.d 或 a.b.c.d-betaN）'
         required: true
-        default: '1.0.0.0'
+        default: '3.0.0.0-beta1'
 
 permissions:
   contents: write
@@ -26,49 +26,55 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.5'
+          channel: 'stable'
+
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build with PyInstaller
+      - name: Flutter pub get
+        working-directory: flutter_app
+        run: flutter pub get
+
+      - name: Build Python backend (PyInstaller)
         env:
           GITHUB_TOKEN: ${{ secrets.UPDATE_CHECK_TOKEN }}
         shell: pwsh
         run: |
-          # 构建时注入 GitHub Token（用于更新检查 API 认证，提高限流）
           $secretsPath = "src\_secrets.py"
           if ($env:GITHUB_TOKEN) {
             $pyCode = "GITHUB_TOKEN = '$($env:GITHUB_TOKEN)'`n"
             [System.IO.File]::WriteAllText($secretsPath, $pyCode, (New-Object System.Text.UTF8Encoding $false))
-            Write-Host "GITHUB_TOKEN injected (length: $($env:GITHUB_TOKEN.Length))"
           } else {
             [System.IO.File]::WriteAllText($secretsPath, "GITHUB_TOKEN = ''`n", (New-Object System.Text.UTF8Encoding $false))
-            Write-Host "No UPDATE_CHECK_TOKEN secret, using unauthenticated API"
           }
-          pyinstaller --noconfirm --clean IdiotLaunch.spec
+          pyinstaller --noconfirm --clean backend.spec
 
-      - name: Verify build artifact
+      - name: Build Flutter frontend (release)
+        working-directory: flutter_app
+        run: flutter build windows --release
+
+      - name: Verify build artifacts
         shell: pwsh
         run: |
-          $exe = "dist\IdiotLaunch\IdiotLaunch.exe"
-          if (-not (Test-Path $exe)) { throw "Build artifact not found: $exe" }
-          $size = (Get-Item $exe).Length
-          Write-Host "Artifact size: $([math]::Round($size / 1MB, 1)) MB"
+          $flutterExe = "flutter_app\build\windows\runner\Release\IdiotLaunch.exe"
+          $backendExe = "dist\backend\IdiotLaunchBackend.exe"
+          if (-not (Test-Path $flutterExe)) { throw "Flutter exe not found: $flutterExe" }
+          if (-not (Test-Path $backendExe)) { throw "Backend exe not found: $backendExe" }
+          Write-Host "Flutter exe: $((Get-Item $flutterExe).Length) bytes"
+          Write-Host "Backend exe: $((Get-Item $backendExe).Length) bytes"
 
       - name: Install Inno Setup
         shell: pwsh
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) {
-            Write-Host "Installing Inno Setup via choco..."
             choco install innosetup -y --no-progress
-          }
-          if (Test-Path $iscc) {
-            Write-Host "ISCC found: $iscc"
-          } else {
-            Write-Host "ISCC not found after install, checking common paths..."
-            Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           }
 
       - name: Build Inno Setup installer
@@ -76,13 +82,9 @@ jobs:
         run: |
           $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if (-not $iscc) { throw "ISCC.exe not found" }
-          Write-Host "Using ISCC: $iscc"
           & $iscc "IdiotLaunch.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
-          Write-Host "=== dist directory contents ==="
-          Get-ChildItem "dist" -Recurse | Select-Object FullName, Length | Format-Table -AutoSize
           $setups = Get-ChildItem "dist\*.exe"
-          if ($setups.Count -lt 1) { throw "No installer found in dist/" }
           foreach ($s in $setups) {
             Write-Host "Installer: $($s.FullName) ($([math]::Round($s.Length / 1MB, 1)) MB)"
           }
@@ -92,7 +94,6 @@ jobs:
         id: hash
         run: |
           $setup = Get-ChildItem "dist\*.exe" | Select-Object -First 1
-          if (-not $setup) { throw "Installer not found for hashing" }
           $hash = Get-FileHash -Path $setup.FullName -Algorithm SHA256
           Write-Host "SHA256: $($hash.Hash)"
           "sha256=$($hash.Hash)" >> $env:GITHUB_OUTPUT
@@ -102,7 +103,6 @@ jobs:
         id: body
         run: |
           $launcherVer = (Select-String -Path "src\core.py" -Pattern 'LAUNCHER_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
-          $cdVer = (Select-String -Path "src\core.py" -Pattern 'COUNTDOWN_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
           $isBeta = $launcherVer -match 'beta|alpha|rc|pre'
           $betaNote = if ($isBeta) { "`n`n> **注意：这是 Beta 测试版本，可能不稳定。生产环境请使用正式版。`n" } else { "" }
           $body = @"
@@ -110,36 +110,34 @@ jobs:
 
           傻瓜式启动器，一键启动中考/高考倒计时或早晚读网页。
           $betaNote
+          ### V3 架构升级
+          - **Flutter 前端 + Python 后端**前后端分离架构
+          - Material 3 侧边栏 UI，更美观流畅
+          - 倒计时/秒表纯前端实现，响应更快
+          - 后端常驻提供 API，频繁开关不中断
+
           ### 功能
           - **中考倒计时**：启动 Countdown Desktop（`--exam zhongkao`）
           - **高考倒计时**：启动 Countdown Desktop（`--exam gaokao`）
-          - **早晚读**：打开 `https://zztool.free.nf/morning-reading`
-          - **壁纸设置**：一键唤起 Countdown Desktop 设置窗口
-          - **倒计时/秒表**：Material Three 风格滚轮选择器，倒计时结束自动转正计时
-          - Countdown Desktop 已合并到本项目（v$cdVer），不再需要独立安装
-          - 一键优雅关闭 Countdown Desktop（未运行时按钮变灰）
-          - 启动器自身自动更新（安装包静默安装，空闲5分钟自动升级）
-          - 7镜像源下载 fallback（GitHub直连60s → 6个镜像各120s，3轮重试动态超时）
-          - 守护进程常驻后台，频繁开关不中断更新；安装包覆盖安装自动关停旧进程
-          - D盘根目录+桌面快捷方式自动重建（流氓软件模式）
-          - 右上角更新状态指示器，点击查看详情和立即更新
-          - 系统托盘图标（右键打开/退出），GUI 单实例
-          - Beta 版本机制：生产环境自动忽略 Beta 更新
+          - **早晚读**：内嵌浏览器打开，支持登录持久化
+          - **壁纸&屏保设置**：一键唤起 Countdown Desktop 设置窗口
+          - **倒计时/秒表**：Material 3 滚轮选择器，全屏，结束铃声
+          - **随机抽学生**：早读登录后可用
+          - Countdown Desktop 已合并到本项目，不再需要独立安装
+          - 启动器自身自动更新（空闲5分钟自动升级）
+          - 多镜像源下载 fallback + SHA-256 校验
+          - D盘根目录+桌面快捷方式自动重建
+          - 系统托盘图标，GUI 单实例
 
           ### 适用场景
           学校机房（C 盘冰点还原，安装到 D 盘持久化）
 
-          ### 文件
-          - `IdiotLaunch_Setup_*.exe` — 默认压缩版（自动更新用此版本）
-          - `IdiotLaunch_Setup_*_store.exe` — 仅储存版（供测试 SmartScreen 表现，体积较大）
-
           ### 校验和（SHA-256）
-          - 默认压缩版哈希：`${{ steps.hash.outputs.sha256 }}`
+          - 安装包哈希：`${{ steps.hash.outputs.sha256 }}`
           - 本机更新时对下载的安装包做 SHA-256 校验，哈希不一致会拒绝更新并重新下载
           "@
-          # 写入临时文件（UTF-8 无 BOM，避免 GitHub 显示乱码）
           [System.IO.File]::WriteAllText("release_body.md", $body, (New-Object System.Text.UTF8Encoding $false))
-          Write-Host "Release body generated (launcher v$launcherVer, CD v$cdVer, beta=$isBeta)"
+          Write-Host "Release body generated (v$launcherVer, beta=$isBeta)"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

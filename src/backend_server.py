@@ -90,12 +90,24 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/status":
             state = load_state()
+            morning_cfg = load_morning_config()
+            morning_class = ""
+            if morning_cfg.get("grade") and morning_cfg.get("class_number"):
+                morning_class = f"{morning_cfg['grade']}-{morning_cfg['class_number']}"
+            daemon_status = get_daemon_status()
+            pending = state.get("pending_version")
+            downloaded = state.get("downloaded_version")
             self._send_json({
                 "version": LAUNCHER_VERSION,
                 "countdown_running": is_running(),
                 "morning_logged_in": is_morning_logged_in(),
-                "daemon": get_daemon_status(),
-                "pending_update": state.get("pending_version"),
+                "morning_class": morning_class,
+                "daemon_running": daemon_status == "running",
+                "daemon": daemon_status,
+                "pending_update": pending,
+                "has_update": bool(pending) and pending != LAUNCHER_VERSION,
+                "downloading": state.get("downloading", False),
+                "download_progress": state.get("download_progress", 0.0),
             })
 
         elif path == "/api/morning/config":
@@ -113,10 +125,15 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/update/status":
             state = load_state()
+            pending = state.get("pending_version")
             self._send_json({
                 "daemon": get_daemon_status(),
-                "pending_version": state.get("pending_version"),
-                "downloaded": state.get("downloaded_version"),
+                "daemon_running": get_daemon_status() == "running",
+                "pending_version": pending,
+                "downloaded_version": state.get("downloaded_version"),
+                "has_update": bool(pending) and pending != LAUNCHER_VERSION,
+                "downloading": state.get("downloading", False),
+                "download_progress": state.get("download_progress", 0.0),
             })
 
         else:
@@ -145,8 +162,15 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True})
 
         elif path == "/api/morning/login":
-            grade = str(body.get("grade", ""))
-            class_number = str(body.get("class_number", ""))
+            # 支持 identity（如 "2024-1-1"）或 grade+class_number 两种格式
+            identity = str(body.get("identity", "")).strip()
+            if identity and "-" in identity:
+                parts = identity.split("-")
+                grade = parts[0]
+                class_number = "-".join(parts[1:]) if len(parts) > 2 else parts[1]
+            else:
+                grade = str(body.get("grade", ""))
+                class_number = str(body.get("class_number", ""))
             password = str(body.get("password", ""))
             persistent = body.get("persistent", True)
             ok, periods, err = verify_morning_login(grade, class_number, password)

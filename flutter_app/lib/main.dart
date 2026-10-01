@@ -1,22 +1,10 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:window_manager/window_manager.dart';
 import 'api.dart';
 import 'timer_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await windowManager.ensureInitialized();
-  const windowOptions = WindowOptions(
-    size: Size(520, 680),
-    minimumSize: Size(420, 520),
-    center: true,
-    title: '傻瓜启动器',
-  );
-  await windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.show();
-    await windowManager.focus();
-  });
   runApp(const IdiotLaunchApp());
 }
 
@@ -29,12 +17,11 @@ class IdiotLaunchApp extends StatelessWidget {
       title: '傻瓜启动器',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF2F6B4F),
+          seedColor: const Color(0xFF1A73E8),
           brightness: Brightness.light,
         ),
-        scaffoldBackgroundColor: const Color(0xFFF8F9FA),
+        useMaterial3: true,
       ),
       home: const MainPage(),
     );
@@ -49,13 +36,14 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage> {
+  int _selectedIndex = 1; // 默认工具页
   final ApiService _api = ApiService();
-  int _selectedIndex = 0;
-  Map<String, dynamic>? _status;
-  Timer? _pollTimer;
-  bool _countdownRunning = false;
+  Map<String, dynamic> _status = {};
+  Map<String, dynamic> _updateStatus = {};
+  bool _cdRunning = false;
   bool _morningLoggedIn = false;
-  String? _pendingVersion;
+  String _morningClass = '';
+  Timer? _pollTimer;
 
   static const _pages = [
     NavigationRailDestination(
@@ -83,8 +71,8 @@ class _MainPageState extends State<MainPage> {
   @override
   void initState() {
     super.initState();
-    _refreshStatus();
-    _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) => _refreshStatus());
+    _initBackend();
+    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _pollStatus());
   }
 
   @override
@@ -93,44 +81,93 @@ class _MainPageState extends State<MainPage> {
     super.dispose();
   }
 
-  Future<void> _refreshStatus() async {
-    final s = await _api.getStatus();
-    if (s != null && mounted) {
+  Future<void> _initBackend() async {
+    try {
+      await _api.ensureBackend();
+      await _pollStatus();
+    } catch (e) {
+      // 后端启动失败，静默处理
+    }
+  }
+
+  Future<void> _pollStatus() async {
+    try {
+      final s = await _api.getStatus();
+      final u = await _api.getUpdateStatus();
       setState(() {
         _status = s;
-        _countdownRunning = s['countdown_running'] == true;
-        _morningLoggedIn = s['morning_logged_in'] == true;
-        _pendingVersion = s['pending_version'];
+        _updateStatus = u;
+        _cdRunning = s['countdown_running'] ?? false;
+        _morningLoggedIn = s['morning_logged_in'] ?? false;
+        _morningClass = s['morning_class'] ?? '';
       });
+    } catch (_) {}
+  }
+
+  Future<void> _startCountdown(String exam) async {
+    try {
+      await _api.startCountdown(exam);
+      setState(() => _cdRunning = true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已启动${exam == 'zhongkao' ? '中考' : '高考'}倒计时')),
+        );
+      }
+    } catch (e) {
+      _showError('启动失败', e.toString());
     }
+  }
+
+  Future<void> _stopCountdown() async {
+    try {
+      await _api.stopCountdown();
+      setState(() => _cdRunning = false);
+    } catch (e) {
+      _showError('关闭失败', e.toString());
+    }
+  }
+
+  Future<void> _openSettings() async {
+    try {
+      await _api.openCountdownSettings();
+    } catch (e) {
+      _showError('打开设置失败', e.toString());
+    }
+  }
+
+  Future<void> _openMorning() async {
+    try {
+      await _api.openMorningBrowser();
+    } catch (e) {
+      _showError('打开早读失败', e.toString());
+    }
+  }
+
+  void _showError(String title, String msg) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(title),
+        content: Text(msg),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('确定'))],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('傻瓜启动器', style: TextStyle(fontWeight: FontWeight.bold)),
-        centerTitle: false,
-        actions: [
-          _UpdateIndicator(
-            hasUpdate: _pendingVersion != null,
-            pendingVersion: _pendingVersion,
-            onTap: () => _showUpdateDialog(),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
       body: Row(
         children: [
           NavigationRail(
             selectedIndex: _selectedIndex,
             onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-            destinations: _pages,
             labelType: NavigationRailLabelType.all,
             minWidth: 72,
-            backgroundColor: Colors.white,
+            destinations: _pages,
           ),
-          const VerticalDivider(width: 1),
+          const VerticalDivider(thickness: 1, width: 1),
           Expanded(child: _buildPage()),
         ],
       ),
@@ -140,622 +177,309 @@ class _MainPageState extends State<MainPage> {
   Widget _buildPage() {
     switch (_selectedIndex) {
       case 0:
-        return _CountdownPage(
-          api: _api,
-          countdownRunning: _countdownRunning,
-          onAction: _refreshStatus,
-        );
+        return const TimerPage();
       case 1:
-        return _ToolsPage(api: _api, morningLoggedIn: _morningLoggedIn);
+        return _buildToolsPage();
       case 2:
-        return _MorningPage(
-          api: _api,
-          loggedIn: _morningLoggedIn,
-          onChanged: _refreshStatus,
-        );
+        return _buildMorningPage();
       case 3:
-        return _SettingsPage(api: _api, status: _status);
+        return _buildSettingsPage();
       default:
         return const SizedBox.shrink();
     }
   }
 
-  void _showUpdateDialog() {
+  // ========== 工具页 ==========
+  Widget _buildToolsPage() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildUpdateIndicator(),
+          const SizedBox(height: 16),
+          Text('壁纸 & 屏保', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _bigButton(Icons.school, '中考倒计时', Colors.blue, () => _startCountdown('zhongkao')),
+              _bigButton(Icons.school_outlined, '高考倒计时', Colors.purple, () => _startCountdown('gaokao')),
+              _bigButton(Icons.settings, '壁纸&屏保设置', Colors.grey, _openSettings),
+              _bigButton(
+                Icons.stop_circle_outlined,
+                '关闭壁纸',
+                Colors.red,
+                _cdRunning ? _stopCountdown : null,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _bigButton(IconData icon, String label, Color color, VoidCallback? onPressed) {
+    final disabled = onPressed == null;
+    return SizedBox(
+      width: 160,
+      height: 100,
+      child: Material(
+        color: disabled ? Colors.grey[200] : color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(16),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, size: 36, color: disabled ? Colors.grey : color),
+              const SizedBox(height: 8),
+              Text(label, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: disabled ? Colors.grey : Colors.black87)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUpdateIndicator() {
+    final hasUpdate = _updateStatus['has_update'] ?? false;
+    final downloading = _updateStatus['downloading'] ?? false;
+    final progress = (_updateStatus['download_progress'] ?? 0.0) as double;
+    final pending = _updateStatus['pending_version'] ?? '';
+
+    return Card(
+      child: ListTile(
+        leading: SizedBox(
+          width: 28,
+          height: 28,
+          child: CircularProgressIndicator(
+            value: downloading ? progress : null,
+            strokeWidth: 3,
+            color: hasUpdate ? Colors.orange : Colors.green,
+          ),
+        ),
+        title: Text(
+          downloading ? '正在下载更新 $pending...' : (hasUpdate ? '新版本待更新：$pending' : '已是最新版本'),
+          style: const TextStyle(fontSize: 14),
+        ),
+        subtitle: Text(
+          '当前 v${_status['version'] ?? '?'}',
+          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+        ),
+        trailing: hasUpdate && !downloading
+            ? TextButton(onPressed: () => _api.checkUpdate(), child: const Text('立即更新'))
+            : null,
+        onTap: () => _showUpdateDetail(),
+      ),
+    );
+  }
+
+  void _showUpdateDetail() {
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (_) => AlertDialog(
         title: const Text('更新详情'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('当前版本：${_status?['version'] ?? '未知'}'),
-            if (_pendingVersion != null)
-              Text('待更新版本：$_pendingVersion',
-                  style: const TextStyle(color: Colors.green)),
+            Text('当前版本：v${_status['version'] ?? '?'}'),
             const SizedBox(height: 8),
-            Text('守护进程：${(_status?['daemon']?['activity'] ?? '空闲')}'),
+            Text('待更新版本：${_updateStatus['pending_version'] ?? '无'}'),
+            const SizedBox(height: 8),
+            Text('下载进度：${((_updateStatus['download_progress'] ?? 0) * 100).toStringAsFixed(1)}%'),
+            const SizedBox(height: 8),
+            Text('守护进程：${_status['daemon_running'] == true ? '运行中' : '已停止'}'),
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () async {
-              await _api.checkUpdate();
-              if (mounted) Navigator.pop(ctx);
-            },
-            child: const Text('立即检查'),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
+          FilledButton(onPressed: () async { await _api.checkUpdate(); if (mounted) Navigator.pop(context); }, child: const Text('检查更新')),
+        ],
+      ),
+    );
+  }
+
+  // ========== 早读页 ==========
+  Widget _buildMorningPage() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('早晚读', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 16),
+          Card(
+            child: ListTile(
+              leading: Icon(_morningLoggedIn ? Icons.check_circle : Icons.login, color: _morningLoggedIn ? Colors.green : Colors.grey),
+              title: Text(_morningLoggedIn ? '已登录：$_morningClass' : '未登录'),
+              subtitle: Text(_morningLoggedIn ? '可使用随机抽学生等功能' : '登录后可使用完整功能'),
+              trailing: _morningLoggedIn
+                  ? TextButton(onPressed: () async { await _api.morningLogout(); await _pollStatus(); }, child: const Text('退出登录'))
+                  : TextButton(onPressed: _showMorningLogin, child: const Text('登录')),
+            ),
           ),
-          if (_pendingVersion != null)
-            FilledButton(
-              onPressed: () async {
-                await _api.installUpdate();
-                if (mounted) Navigator.pop(ctx);
-              },
-              child: const Text('立即更新'),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _bigButton(Icons.menu_book, '打开早晚读', Colors.teal, _openMorning),
+              _bigButton(
+                Icons.people_alt_outlined,
+                '随机抽学生',
+                Colors.amber,
+                _morningLoggedIn ? _showRandomStudent : null,
+              ),
+            ],
+          ),
+          if (!_morningLoggedIn)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text('随机抽学生需要登录后使用', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
             ),
         ],
       ),
     );
   }
-}
 
-// ---- 更新状态指示器 ----
-class _UpdateIndicator extends StatelessWidget {
-  final bool hasUpdate;
-  final String? pendingVersion;
-  final VoidCallback onTap;
+  void _showMorningLogin() {
+    final idCtrl = TextEditingController();
+    final pwdCtrl = TextEditingController();
+    bool persistent = true;
 
-  const _UpdateIndicator({
-    required this.hasUpdate,
-    required this.pendingVersion,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Container(
-        width: 36,
-        height: 36,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: hasUpdate ? Colors.green : Colors.grey[300],
-        ),
-        child: Icon(
-          hasUpdate ? Icons.system_update : Icons.check_circle_outline,
-          size: 20,
-          color: hasUpdate ? Colors.white : Colors.grey[600],
-        ),
-      ),
-    );
-  }
-}
-
-// ---- 倒计时页面 ----
-class _CountdownPage extends StatelessWidget {
-  final ApiService api;
-  final bool countdownRunning;
-  final VoidCallback onAction;
-
-  const _CountdownPage({
-    required this.api,
-    required this.countdownRunning,
-    required this.onAction,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        _BigButton(
-          icon: Icons.school,
-          label: '中考倒计时',
-          subtitle: '启动中考倒计时壁纸',
-          color: const Color(0xFFE74C3C),
-          onTap: () async {
-            await api.startCountdown('zhongkao');
-            onAction();
-          },
-        ),
-        const SizedBox(height: 14),
-        _BigButton(
-          icon: Icons.school_outlined,
-          label: '高考倒计时',
-          subtitle: '启动高考倒计时壁纸',
-          color: const Color(0xFF3498DB),
-          onTap: () async {
-            await api.startCountdown('gaokao');
-            onAction();
-          },
-        ),
-        const SizedBox(height: 14),
-        _BigButton(
-          icon: Icons.wallpaper,
-          label: '自定义壁纸&屏保',
-          subtitle: '启动用户配置的壁纸',
-          color: const Color(0xFF9B59B6),
-          onTap: () async {
-            await api.startCustomWallpaper();
-            onAction();
-          },
-        ),
-        const SizedBox(height: 14),
-        _BigButton(
-          icon: Icons.stop,
-          label: '关闭倒计时',
-          subtitle: countdownRunning ? '通知壁纸优雅退出' : '当前未运行',
-          color: const Color(0xFF7F8C8D),
-          enabled: countdownRunning,
-          onTap: () async {
-            await api.stopCountdown();
-            onAction();
-          },
-        ),
-        const SizedBox(height: 14),
-        _BigButton(
-          icon: Icons.tune,
-          label: '壁纸&屏保设置',
-          subtitle: '打开 Countdown Desktop 设置',
-          color: const Color(0xFF2F6B4F),
-          onTap: () => api.openSettings(),
-        ),
-      ],
-    );
-  }
-}
-
-class _BigButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String subtitle;
-  final Color color;
-  final VoidCallback onTap;
-  final bool enabled;
-
-  const _BigButton({
-    required this.icon,
-    required this.label,
-    required this.subtitle,
-    required this.color,
-    required this.onTap,
-    this.enabled = true,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: enabled ? 1.0 : 0.45,
-      child: Material(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        elevation: 1,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(16),
-          onTap: enabled ? onTap : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-            child: Row(
-              children: [
-                Container(
-                  width: 52,
-                  height: 52,
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.12),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                  child: Icon(icon, color: color, size: 28),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(label,
-                          style: const TextStyle(
-                              fontSize: 17, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 2),
-                      Text(subtitle,
-                          style: TextStyle(
-                              fontSize: 13, color: Colors.grey[600])),
-                    ],
-                  ),
-                ),
-                Icon(Icons.chevron_right, color: Colors.grey[400]),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---- 工具页面 ----
-class _ToolsPage extends StatelessWidget {
-  final ApiService api;
-  final bool morningLoggedIn;
-
-  const _ToolsPage({required this.api, required this.morningLoggedIn});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        _BigButton(
-          icon: Icons.hourglass_empty,
-          label: '倒计时',
-          subtitle: '可设置时长，结束后铃声提醒',
-          color: const Color(0xFFE67E22),
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const TimerPage()),
-          ),
-        ),
-        const SizedBox(height: 14),
-        _BigButton(
-          icon: Icons.timer,
-          label: '秒表',
-          subtitle: '支持记次、暂停、重置',
-          color: const Color(0xFF1ABC9C),
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const StopwatchPage()),
-          ),
-        ),
-        const SizedBox(height: 14),
-        _BigButton(
-          icon: Icons.people_alt,
-          label: '随机抽学生',
-          subtitle: morningLoggedIn ? '从当前班级随机抽取' : '需要先登录早读',
-          color: const Color(0xFF8E44AD),
-          enabled: morningLoggedIn,
-          onTap: () => _showStudentPicker(context),
-        ),
-      ],
-    );
-  }
-
-  void _showStudentPicker(BuildContext context) {
     showDialog(
       context: context,
-      builder: (ctx) => _StudentPickerDialog(api: api),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('早晚读登录'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(controller: idCtrl, decoration: const InputDecoration(labelText: '班级 ID（如 2024-1-1）')),
+              const SizedBox(height: 12),
+              TextField(controller: pwdCtrl, obscureText: true, decoration: const InputDecoration(labelText: '密码')),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Checkbox(value: persistent, onChanged: (v) => setDialogState(() => persistent = v ?? true)),
+                  const Text('持久登录（重启后保留）'),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text('注意：用户名格式为 年级-班级-序号，密码由管理员提供', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+            FilledButton(
+              onPressed: () async {
+                try {
+                  final ok = await _api.morningLogin(idCtrl.text.trim(), pwdCtrl.text, persistent);
+                  if (ok && ctx.mounted) {
+                    Navigator.pop(ctx);
+                    await _pollStatus();
+                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('登录成功')));
+                  } else {
+                    if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('账号或密码错误')));
+                  }
+                } catch (e) {
+                  if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('登录失败：$e')));
+                }
+              },
+              child: const Text('登录'),
+            ),
+          ],
+        ),
+      ),
     );
   }
-}
 
-class _StudentPickerDialog extends StatefulWidget {
-  final ApiService api;
-  const _StudentPickerDialog({required this.api});
-
-  @override
-  State<_StudentPickerDialog> createState() => _StudentPickerDialogState();
-}
-
-class _StudentPickerDialogState extends State<_StudentPickerDialog> {
-  int _count = 1;
-  List<dynamic>? _students;
-  List<dynamic>? _picked;
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final list = await widget.api.getMorningStudents();
-    if (mounted) {
-      setState(() {
-        _students = list;
-        _loading = false;
-      });
+  void _showRandomStudent() async {
+    try {
+      final students = await _api.getMorningStudents();
+      if (students.isEmpty) {
+        _showError('无法抽学生', '学生列表为空');
+        return;
+      }
+      final countCtrl = TextEditingController(text: '1');
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('随机抽学生'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('共 ${students.length} 名学生'),
+              const SizedBox(height: 12),
+              TextField(controller: countCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: '抽取人数')),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+            FilledButton(
+              onPressed: () {
+                final n = int.tryParse(countCtrl.text) ?? 1;
+                final shuffled = [...students]..shuffle();
+                final picked = shuffled.take(n).toList();
+                Navigator.pop(ctx);
+                showDialog(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: Text('抽到的学生（${picked.length}人）'),
+                    content: Column(mainAxisSize: MainAxisSize.min, children: picked.map((s) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(s, style: const TextStyle(fontSize: 18)))).toList()),
+                    actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('确定'))],
+                  ),
+                );
+              },
+              child: const Text('开始抽取'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      _showError('获取学生列表失败', e.toString());
     }
   }
 
-  void _pick() {
-    if (_students == null || _students!.isEmpty) return;
-    final pool = List<dynamic>.from(_students!);
-    pool.shuffle();
-    setState(() {
-      _picked = pool.take(_count.clamp(1, pool.length)).toList();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('随机抽学生'),
-      content: SizedBox(
-        width: 320,
-        child: _loading
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Row(
-                    children: [
-                      const Text('抽取人数：'),
-                      IconButton(
-                        icon: const Icon(Icons.remove_circle_outline),
-                        onPressed: () =>
-                            setState(() => _count = (_count - 1).clamp(1, 99)),
-                      ),
-                      Text('$_count',
-                          style: const TextStyle(
-                              fontSize: 20, fontWeight: FontWeight.bold)),
-                      IconButton(
-                        icon: const Icon(Icons.add_circle_outline),
-                        onPressed: () =>
-                            setState(() => _count = (_count + 1).clamp(1, 99)),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  if (_picked != null)
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.green.withOpacity(0.08),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Column(
-                        children: _picked!
-                            .map((s) => Padding(
-                                  padding:
-                                      const EdgeInsets.symmetric(vertical: 4),
-                                  child: Text(
-                                    '${s['student_no']}号 ${s['name']}',
-                                    style: const TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.w600),
-                                  ),
-                                ))
-                            .toList(),
-                      ),
-                    ),
-                ],
-              ),
-      ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
-        FilledButton(onPressed: _pick, child: const Text('抽取')),
-      ],
-    );
-  }
-}
-
-// ---- 早读页面 ----
-class _MorningPage extends StatefulWidget {
-  final ApiService api;
-  final bool loggedIn;
-  final VoidCallback onChanged;
-
-  const _MorningPage({
-    required this.api,
-    required this.loggedIn,
-    required this.onChanged,
-  });
-
-  @override
-  State<_MorningPage> createState() => _MorningPageState();
-}
-
-class _MorningPageState extends State<_MorningPage> {
-  final _gradeCtrl = TextEditingController(text: '9');
-  final _classCtrl = TextEditingController(text: '1');
-  final _passCtrl = TextEditingController();
-  bool _persistent = true;
-  bool _loggingIn = false;
-  String? _loginError;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        _BigButton(
-          icon: Icons.menu_book,
-          label: '打开早晚读',
-          subtitle: '内嵌浏览器打开早读网页',
-          color: const Color(0xFF2F6B4F),
-          onTap: () => widget.api.openMorning(),
-        ),
-        const SizedBox(height: 24),
-        if (!widget.loggedIn) ...[
-          const Text('班级登录',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 12),
-          const Text(
-            '注意：先选年级，再填班级号（初中 01-14，高中 01-11）；初始密码 admin+班号（一班=admin01），密码可在教师管理界面修改。',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _gradeCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '年级',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: TextField(
-                  controller: _classCtrl,
-                  decoration: const InputDecoration(
-                    labelText: '班级号',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _passCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: '密码',
-              border: OutlineInputBorder(),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Checkbox(
-                value: _persistent,
-                onChanged: (v) => setState(() => _persistent = v ?? true),
-              ),
-              const Text('持久登录（重启后保留）'),
-            ],
-          ),
-          if (_loginError != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: Text(_loginError!,
-                  style: const TextStyle(color: Colors.red, fontSize: 13)),
-            ),
-          FilledButton(
-            onPressed: _loggingIn ? null : _doLogin,
-            child: Text(_loggingIn ? '登录中...' : '登录'),
-          ),
-        ] else ...[
+  // ========== 设置页 ==========
+  Widget _buildSettingsPage() {
+    return Padding(
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('设置', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 16),
           Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('已登录',
-                      style: TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 8),
-                  FutureBuilder<Map<String, dynamic>?>(
-                    future: widget.api.getMorningConfig(),
-                    builder: (context, snap) {
-                      final cfg = snap.data;
-                      return Text(
-                        '班级：${cfg?['grade'] ?? '-'}-${cfg?['class_number'] ?? '-'}\n'
-                        '持久登录：${cfg?['persistent'] == true ? '是' : '否'}',
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    icon: const Icon(Icons.logout),
-                    label: const Text('退出登录'),
-                    onPressed: () async {
-                      await widget.api.logoutMorning();
-                      widget.onChanged();
-                    },
-                  ),
-                ],
-              ),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.info_outline),
+                  title: const Text('关于'),
+                  subtitle: Text('傻瓜启动器 v${_status['version'] ?? '?'}\nFlutter 前端 + Python 后端'),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.update),
+                  title: const Text('检查更新'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async { await _api.checkUpdate(); await _pollStatus(); },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.code),
+                  title: const Text('开源许可证'),
+                  subtitle: const Text('MIT License · 使用 Countdown Desktop\n鸣谢：豆包 AI 辅助开发'),
+                ),
+              ],
             ),
           ),
         ],
-      ],
-    );
-  }
-
-  Future<void> _doLogin() async {
-    setState(() {
-      _loggingIn = true;
-      _loginError = null;
-    });
-    final r = await widget.api.loginMorning(
-      _gradeCtrl.text.trim(),
-      _classCtrl.text.trim(),
-      _passCtrl.text,
-      _persistent,
-    );
-    if (!mounted) return;
-    setState(() => _loggingIn = false);
-    if (r?['success'] == true) {
-      widget.onChanged();
-    } else {
-      setState(() => _loginError = r?['error'] ?? '登录失败');
-    }
-  }
-}
-
-// ---- 设置页面 ----
-class _SettingsPage extends StatelessWidget {
-  final ApiService api;
-  final Map<String, dynamic>? status;
-
-  const _SettingsPage({required this.api, required this.status});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('关于',
-                    style: TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Text('版本：${status?['version'] ?? '未知'}'),
-                const Text('傻瓜启动器 — 专为学校电脑设计'),
-                const Text('内嵌 Countdown Desktop（特供版）'),
-                const Text('开源许可证：GPL-3.0'),
-                const Text('作者：陈彦均 + 豆包 AI'),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('更新',
-                    style: TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Text('守护进程：${status?['daemon']?['activity'] ?? '空闲'}'),
-                if (status?['pending_version'] != null)
-                  Text('待更新：${status?['pending_version']}',
-                      style: const TextStyle(color: Colors.green)),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    OutlinedButton(
-                      onPressed: () => api.checkUpdate(),
-                      child: const Text('检查更新'),
-                    ),
-                    const SizedBox(width: 12),
-                    if (status?['pending_version'] != null)
-                      FilledButton(
-                        onPressed: () => api.installUpdate(),
-                        child: const Text('立即更新'),
-                      ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
