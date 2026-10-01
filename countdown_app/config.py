@@ -43,8 +43,14 @@ DEFAULTS = {
 
 
 def config_dir() -> str:
-    d = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
-                     "CountdownDesktop")
+    # 优先使用环境变量指定的路径（IL 传入 D 盘路径，规避冰点还原）
+    # 否则回退到 %APPDATA%\CountdownDesktop（独立运行时）
+    env_path = os.environ.get("COUNTDOWN_CONFIG_DIR")
+    if env_path:
+        d = env_path
+    else:
+        d = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")),
+                         "CountdownDesktop")
     os.makedirs(d, exist_ok=True)
     return d
 

@@ -95,7 +95,7 @@ jobs:
           $isBeta = $launcherVer -match 'beta|alpha|rc|pre'
           $betaNote = if ($isBeta) { "`n`n> **注意：这是 Beta 测试版本，可能不稳定。生产环境请使用正式版。`n" } else { "" }
           $body = @"
-          ## Idiot Launch `${{ github.ref_name }}`
+          ## Idiot Launch ${{ github.ref_name }}
 
           傻瓜式启动器，一键启动中考/高考倒计时或早晚读网页。
           $betaNote
@@ -126,8 +126,8 @@ jobs:
           - 默认压缩版哈希：`${{ steps.hash.outputs.sha256 }}`
           - 本机更新时对下载的安装包做 SHA-256 校验，哈希不一致会拒绝更新并重新下载
           "@
-          # 写入临时文件，避免多行字符串传递问题
-          $body | Out-File -FilePath release_body.md -Encoding utf8
+          # 写入临时文件（UTF-8 无 BOM，避免 GitHub 显示乱码）
+          [System.IO.File]::WriteAllText("release_body.md", $body, (New-Object System.Text.UTF8Encoding $false))
           Write-Host "Release body generated (launcher v$launcherVer, CD v$cdVer, beta=$isBeta)"
 
       - name: Create Release

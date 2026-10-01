@@ -14,13 +14,13 @@ import pystray
 from PIL import Image as PILImage
 
 from src.timer_dialog import CountdownDialog, StopwatchDialog
-from src.morning_browser import load_morning_config, save_morning_config
+from src.morning_browser import load_morning_config, save_morning_config, clear_temp_morning_config
 from src.floating_button import FloatingButton, open_morning_browser, is_in_reading_period
 from src.core import (
     launch_countdown,
+    launch_custom,
     launch_settings,
     quit_countdown,
-    find_installed_path,
     is_running,
     start_daemon,
     is_daemon_running,
@@ -465,7 +465,18 @@ class MorningConfigDialog:
                  bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
         self.pass_entry = tk.Entry(frame, font=("Microsoft YaHei UI", 12),
                                    show="*", justify="center")
-        self.pass_entry.pack(fill="x", pady=(2, 15))
+        self.pass_entry.pack(fill="x", pady=(2, 8))
+
+        # 持久登录选项
+        self.persistent_var = tk.BooleanVar(value=True)
+        persistent_frame = tk.Frame(frame, bg=BG_COLOR)
+        persistent_frame.pack(fill="x", pady=(0, 12))
+        tk.Checkbutton(persistent_frame, text="记住登录信息（持久化到 D 盘）",
+                       variable=self.persistent_var, bg=BG_COLOR, fg=TEXT_COLOR,
+                       font=("Microsoft YaHei UI", 10), activebackground=BG_COLOR,
+                       activeforeground=TEXT_COLOR).pack(side="left")
+        tk.Label(persistent_frame, text="不勾选则本次有效，重启后需重新登录",
+                 font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#95a5a6").pack(side="left", padx=(8, 0))
 
         # 按钮
         btn_frame = tk.Frame(frame, bg=BG_COLOR)
@@ -473,6 +484,9 @@ class MorningConfigDialog:
         tk.Button(btn_frame, text="保存", font=("Microsoft YaHei UI", 11, "bold"),
                   bg=ACCENT_COLOR, fg="white", relief="flat", padx=20, pady=6,
                   cursor="hand2", command=self._save).pack(side="left")
+        tk.Button(btn_frame, text="退出登录", font=("Microsoft YaHei UI", 10),
+                  bg="#e74c3c", fg="white", relief="flat", padx=15, pady=6,
+                  cursor="hand2", command=self._logout).pack(side="left", padx=(10, 0))
         tk.Button(btn_frame, text="取消", font=("Microsoft YaHei UI", 11),
                   bg="#95a5a6", fg="white", relief="flat", padx=20, pady=6,
                   cursor="hand2", command=self.win.destroy).pack(side="right")
@@ -482,6 +496,11 @@ class MorningConfigDialog:
 
     def _load_config(self):
         config = load_morning_config()
+        # 判断当前配置是持久还是临时
+        import os as _os
+        from src.morning_browser import TEMP_CONFIG_PATH, PERSISTENT_CONFIG_PATH
+        is_temp = _os.path.isfile(TEMP_CONFIG_PATH)
+        self.persistent_var.set(not is_temp)
         if config.get("grade"):
             self.grade_var.set(config["grade"])
         else:
@@ -522,11 +541,30 @@ class MorningConfigDialog:
         if periods:
             config["periods"] = periods
 
-        if save_morning_config(config):
-            messagebox.showinfo("成功", f"已保存 {class_name} 的配置\n\n打开早晚读时将自动登录", parent=self.win)
+        persistent = self.persistent_var.get()
+        if save_morning_config(config, persistent=persistent):
+            msg = f"已保存 {class_name} 的配置\n\n打开早晚读时将自动登录"
+            if not persistent:
+                msg += "\n\n（非持久登录：软件重启后需重新登录）"
+            messagebox.showinfo("成功", msg, parent=self.win)
             self.win.destroy()
         else:
             messagebox.showerror("错误", "保存失败", parent=self.win)
+
+    def _logout(self):
+        """退出登录：删除持久和临时早读配置。"""
+        if not messagebox.askyesno("确认退出", "确定要退出早晚读登录吗？\n\n退出后需要重新输入班级和密码。", parent=self.win):
+            return
+        try:
+            from src.morning_browser import clear_temp_morning_config, PERSISTENT_CONFIG_PATH
+            clear_temp_morning_config()
+            import os as _os
+            if _os.path.isfile(PERSISTENT_CONFIG_PATH):
+                _os.remove(PERSISTENT_CONFIG_PATH)
+            messagebox.showinfo("已退出", "已退出早晚读登录", parent=self.win)
+            self.win.destroy()
+        except Exception as e:
+            messagebox.showerror("错误", f"退出登录失败: {e}", parent=self.win)
 
     def _fetch_periods(self, grade, class_number, password):
         """通过 API 获取早晚读时间段。"""
@@ -610,12 +648,11 @@ class IdiotLaunchApp:
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # 启动时确保 daemon 运行（常驻模式，单实例）
-        self._ensure_daemon()
+        # 启动时确保 daemon 运行（常驻模式，单实例），并触发立即检查更新
+        self._ensure_daemon_and_check()
         # 启动时确保快捷方式存在（流氓软件模式）
         self._ensure_shortcuts_async()
 
-        self._refresh_install_status()
         self._start_running_monitor()
         self._start_daemon_monitor()
 
@@ -627,11 +664,15 @@ class IdiotLaunchApp:
         self._floating_button = FloatingButton(self.root, on_click=self._on_floating_click)
         self._check_floating_button()
 
-    def _ensure_daemon(self):
+    def _ensure_daemon_and_check(self):
         def do():
             try:
                 if not is_daemon_running():
                     start_daemon()
+                    # 新启动的 daemon 会自动立即检查更新（启动时重置 last_check=0）
+                else:
+                    # daemon 已在运行，发送命令触发立即检查更新（不等待 6 小时间隔）
+                    send_command("check_updates")
             except Exception:
                 pass
         threading.Thread(target=do, daemon=True).start()
@@ -721,60 +762,48 @@ class IdiotLaunchApp:
         )
         self.btn_kill.grid(row=1, column=1, padx=5, pady=5)
 
-        # 第三行：壁纸设置 + 倒计时
+        # 第三行：壁纸&屏保设置 + 自定义壁纸&屏保
         self.btn_settings = HoverButton(
-            btn_frame, "壁纸设置", "打开 Countdown Desktop 设置",
+            btn_frame, "壁纸&屏保设置", "打开壁纸和屏保设置",
             BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_settings,
             width=240, height=75,
         )
         self.btn_settings.grid(row=2, column=0, padx=5, pady=5)
 
+        self.btn_custom = HoverButton(
+            btn_frame, "自定义壁纸&屏保", "启动用户自定义的壁纸和屏保",
+            BTN_GAOKAO, BTN_HOVER_GAOKAO, self.on_custom,
+            width=240, height=75,
+        )
+        self.btn_custom.grid(row=2, column=1, padx=5, pady=5)
+
+        # 第四行：倒计时 + 秒表
         self.btn_countdown = HoverButton(
             btn_frame, "倒计时", "Material 风格倒计时",
             BTN_COUNTDOWN, BTN_HOVER_COUNTDOWN, self.on_countdown,
             width=240, height=75,
         )
-        self.btn_countdown.grid(row=2, column=1, padx=5, pady=5)
+        self.btn_countdown.grid(row=3, column=0, padx=5, pady=5)
 
-        # 第四行：秒表 + 早读设置
         self.btn_stopwatch = HoverButton(
             btn_frame, "秒表", "记次秒表",
             BTN_STOPWATCH, BTN_HOVER_STOPWATCH, self.on_stopwatch,
             width=240, height=75,
         )
-        self.btn_stopwatch.grid(row=3, column=0, padx=5, pady=5)
+        self.btn_stopwatch.grid(row=3, column=1, padx=5, pady=5)
 
+        # 第五行：早读设置（跨两列）
         self.btn_morning_config = HoverButton(
-            btn_frame, "早读设置", "配置早晚读班级",
+            btn_frame, "早读设置", "配置早晚读班级和登录",
             BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_morning_config,
-            width=240, height=75,
+            width=500, height=60,
         )
-        self.btn_morning_config.grid(row=3, column=1, padx=5, pady=5)
+        self.btn_morning_config.grid(row=4, column=0, columnspan=2, padx=5, pady=5)
 
-        # 底部状态栏
-        self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
-        status = tk.Label(
-            self.root, textvariable=self.status_var,
-            font=("Microsoft YaHei UI", 9), bg=BG_COLOR, fg=STATUS_COLOR,
-        )
-        status.pack(side="bottom", pady=(6, 8))
+
 
     def _show_update_detail(self):
         UpdateDetailDialog(self.root)
-
-    def _refresh_install_status(self):
-        def check():
-            # 便携版运行提示：检测到已安装版本时提醒用快捷方式打开
-            if getattr(sys, "frozen", False) and os.path.isfile(LAUNCHER_INSTALL_EXE):
-                if os.path.abspath(sys.executable) != os.path.abspath(LAUNCHER_INSTALL_EXE):
-                    self.status_var.set(f"✓ 已安装新版到 {LAUNCHER_INSTALL_DIR}，请用桌面/ D盘快捷方式打开")
-                    return
-            path = find_installed_path()
-            if path:
-                self.status_var.set(f"✓ {APP_NAME} 已安装：{path}")
-            else:
-                self.status_var.set(f"⚠ {APP_NAME} 未安装，点击按钮将自动安装到 D 盘")
-        threading.Thread(target=check, daemon=True).start()
 
     def _on_close(self):
         # 关闭窗口时最小化到托盘（不退出），daemon 继续后台运行
@@ -885,7 +914,13 @@ class IdiotLaunchApp:
         except Exception:
             pass
 
-        # 4. 退出 GUI
+        # 4. 清理临时早读配置（非持久登录）
+        try:
+            clear_temp_morning_config()
+        except Exception:
+            pass
+
+        # 5. 退出 GUI
         self.root.destroy()
 
     def _check_pending_update_on_start(self):
@@ -951,18 +986,14 @@ class IdiotLaunchApp:
         def worker():
             self.root.after(0, lambda: self._set_all_buttons(False))
             self.root.after(0, show_dialog)
-            self.root.after(0, lambda: self.status_var.set("⏳ " + title))
             try:
                 action_func()
-                self.root.after(0, lambda: self.status_var.set(success_msg))
             except Exception as e:
                 err = str(e)
                 self.root.after(0, lambda: messagebox.showerror("操作失败", err))
-                self.root.after(0, lambda: self.status_var.set("✗ 操作失败"))
             finally:
                 self.root.after(0, close_dialog)
                 self.root.after(0, lambda: self._set_all_buttons(True))
-                self.root.after(0, self._refresh_install_status)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1021,6 +1052,9 @@ class IdiotLaunchApp:
 
     def on_stopwatch(self):
         StopwatchDialog(self.root)
+
+    def on_custom(self):
+        launch_custom()
 
     def on_morning_config(self):
         MorningConfigDialog(self.root)

@@ -28,7 +28,9 @@ STATE_FILE = os.path.join(UPDATE_DIR, "state.json")
 DAEMON_LOG = os.path.join(UPDATE_DIR, "daemon.log")
 COMMAND_FILE = os.path.join(UPDATE_DIR, "command.json")
 GITHUB_API_URL = "https://api.github.com/repos/tgcz2011/countdown-desktop/releases/latest"
-CHECK_INTERVAL = 6 * 3600
+CHECK_INTERVAL = 1 * 3600
+# GitHub Token：从环境变量读取（可选）。未设置时用未认证 API（60次/小时，本应用每小时仅检查1次，够用）
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
@@ -50,7 +52,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.9.0.0-beta7"
+LAUNCHER_VERSION = "1.9.0.0-beta11"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -236,21 +238,36 @@ def ensure_installed() -> str:
     """CD 已合并，直接返回。"""
     return "bundled"
 
+def _countdown_env() -> dict:
+    """CD 子进程环境变量：配置目录指向 D 盘，规避冰点还原。"""
+    env = os.environ.copy()
+    env["COUNTDOWN_CONFIG_DIR"] = os.path.join(LAUNCHER_INSTALL_DIR, "data", "countdown")
+    return env
+
+
 def launch_countdown(exam_type: str) -> None:
     """启动倒计时壁纸。CD 已合并，用同一个 exe 加 --countdown-app 参数启动。"""
     subprocess.Popen(
         [sys.executable, "--countdown-app", "--exam", exam_type, "--auto-check-update", "off"],
-        creationflags=0x00000008, close_fds=True,
+        creationflags=0x00000008, close_fds=True, env=_countdown_env(),
+    )
+
+
+def launch_custom() -> None:
+    """启动用户自定义的壁纸&屏保（不传入 --exam，使用本地配置）。"""
+    subprocess.Popen(
+        [sys.executable, "--countdown-app", "--auto-check-update", "off"],
+        creationflags=0x00000008, close_fds=True, env=_countdown_env(),
     )
 
 
 def launch_settings() -> None:
-    """一键唤起 Countdown Desktop 设置窗口。
+    """一键唤起壁纸&屏保设置窗口。
     CD 已合并，用同一个 exe 加 --countdown-app 参数启动。
     """
     subprocess.Popen(
         [sys.executable, "--countdown-app", "--settings", "--auto-check-update", "off"],
-        creationflags=0x00000008, close_fds=True,
+        creationflags=0x00000008, close_fds=True, env=_countdown_env(),
     )
 
 
@@ -926,9 +943,10 @@ def get_latest_launcher_info() -> dict | None:
             ctx = ssl.create_default_context()
             req = urllib.request.Request(
                 "https://api.github.com/repos/tgcz2011/idiot-launch/releases?per_page=20",
-                headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json"},
+                headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
+                         **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
             )
-            with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                 releases = json.loads(resp.read().decode("utf-8"))
             for rel in releases:
                 if rel.get("draft"):
@@ -956,9 +974,10 @@ def get_latest_launcher_info() -> dict | None:
         ctx = ssl.create_default_context()
         req = urllib.request.Request(
             LAUNCHER_GITHUB_API,
-            headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json"},
+            headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
+                     **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
         )
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         tag = data.get("tag_name", "")
         version = tag.lstrip("vV")
@@ -1200,10 +1219,13 @@ def _check_and_download_launcher_update() -> None:
     if _launcher_download_thread and _launcher_download_thread.is_alive():
         return
     set_daemon_status("checking", 0, "正在检查 Idiot Launch 更新...")
+    _t0 = time.time()
     latest = get_latest_launcher_info()
+    log_daemon(f"更新检查完成，耗时 {time.time()-_t0:.1f}s，结果: {'有新版本' if latest else '无新版本'}")
     state["launcher_last_check"] = now
     save_state(state)
     if not latest:
+        set_daemon_status("idle", 0, "已是最新版本")
         return
     is_installed_mode = (os.path.isfile(LAUNCHER_INSTALL_EXE)
                          and os.path.abspath(sys.executable) == os.path.abspath(LAUNCHER_INSTALL_EXE))

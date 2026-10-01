@@ -18,30 +18,48 @@ from PySide6.QtGui import QIcon
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
 
 # 配置文件路径
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           "data", "morning_config.json")
+PERSISTENT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                      "data", "morning_config.json")
+TEMP_CONFIG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")),
+                                "idiot_launch_morning_config.json")
 
 
 def load_morning_config():
-    """加载早读班级配置。"""
-    try:
-        if os.path.isfile(CONFIG_PATH):
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
+    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。"""
+    for path in (TEMP_CONFIG_PATH, PERSISTENT_CONFIG_PATH):
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            continue
     return {}
 
 
-def save_morning_config(config):
-    """保存早读班级配置。"""
+def save_morning_config(config, persistent=True):
+    """保存早读班级配置。persistent=False 时写入临时文件，IL 重启后自动消失。"""
+    path = PERSISTENT_CONFIG_PATH if persistent else TEMP_CONFIG_PATH
     try:
-        os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(config, f, ensure_ascii=False, indent=2)
+        if persistent and os.path.isfile(TEMP_CONFIG_PATH):
+            try:
+                os.remove(TEMP_CONFIG_PATH)
+            except Exception:
+                pass
         return True
     except Exception:
         return False
+
+
+def clear_temp_morning_config():
+    """删除临时早读配置（IL 退出时调用）。"""
+    try:
+        if os.path.isfile(TEMP_CONFIG_PATH):
+            os.remove(TEMP_CONFIG_PATH)
+    except Exception:
+        pass
 
 
 class MorningBrowserWindow(QMainWindow):

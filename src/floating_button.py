@@ -11,20 +11,7 @@ import os
 import subprocess
 import sys
 
-# 配置文件路径
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           "data", "morning_config.json")
-
-
-def load_morning_config():
-    """加载早读班级配置。"""
-    try:
-        if os.path.isfile(CONFIG_PATH):
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return {}
+from src.morning_browser import load_morning_config, PERSISTENT_CONFIG_PATH, TEMP_CONFIG_PATH
 
 
 def is_in_reading_period(config):
