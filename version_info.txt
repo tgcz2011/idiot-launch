@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 8, 3, 2),
-    prodvers=(1, 8, 3, 2),
+    filevers=(1, 8, 3, 3),
+    prodvers=(1, 8, 3, 3),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -17,12 +17,12 @@ VSVersionInfo(
         u'080404B0',
         [StringStruct(u'CompanyName', u'tgcz2011'),
         StringStruct(u'FileDescription', u'Idiot Launch'),
-        StringStruct(u'FileVersion', u'1.8.3.2'),
+        StringStruct(u'FileVersion', u'1.8.3.3'),
         StringStruct(u'InternalName', u'IdiotLaunch'),
         StringStruct(u'LegalCopyright', u'Copyright (C) 2026 tgcz2011'),
         StringStruct(u'OriginalFilename', u'IdiotLaunch.exe'),
         StringStruct(u'ProductName', u'Idiot Launch'),
-        StringStruct(u'ProductVersion', u'1.8.3.2')])
+        StringStruct(u'ProductVersion', u'1.8.3.3')])
       ]),
     VarFileInfo([VarStruct(u'Translation', [0x0804, 0x04B0])])
   ]

@@ -8,6 +8,10 @@ import threading
 import time
 import sys
 import os
+import ctypes
+
+import pystray
+from PIL import Image as PILImage
 
 from src.timer_dialog import CountdownDialog, StopwatchDialog
 from src.core import (
@@ -31,6 +35,10 @@ from src.core import (
     LAUNCHER_VERSION,
     LAUNCHER_INSTALL_EXE,
     LAUNCHER_INSTALL_DIR,
+    acquire_gui_mutex,
+    signal_show_window,
+    create_show_window_event,
+    check_show_window_event,
 )
 
 VERSION = LAUNCHER_VERSION
@@ -421,11 +429,15 @@ class UpdateDetailDialog:
 
 
 class IdiotLaunchApp:
-    def __init__(self):
+    def __init__(self, gui_mutex=None):
         self.root = tk.Tk()
         self.root.title("傻瓜启动器 v" + VERSION)
         self.root.configure(bg=BG_COLOR)
         self.root.resizable(False, False)
+        self._gui_mutex = gui_mutex
+        self._show_event = create_show_window_event()
+        self._tray_icon = None
+        self._tray_thread = None
 
         # 设置窗口图标
         try:
@@ -458,6 +470,11 @@ class IdiotLaunchApp:
         self._start_running_monitor()
         self._start_daemon_monitor()
         self._check_pending_update_on_start()
+
+        # 创建系统托盘图标（单独线程）
+        self._create_tray_icon()
+        # 轮询显示窗口事件（其他实例请求显示时激活窗口）
+        self._poll_show_event()
 
     def _ensure_daemon(self):
         def do():
@@ -583,10 +600,79 @@ class IdiotLaunchApp:
         threading.Thread(target=check, daemon=True).start()
 
     def _on_close(self):
-        # daemon 已常驻，关闭窗口时不需要再启动（但作为安全网再确认一次）
+        # 关闭窗口时最小化到托盘（不退出），daemon 继续后台运行
+        self._hide_to_tray()
+
+    def _hide_to_tray(self):
+        """隐藏窗口到托盘。"""
         try:
-            if not is_daemon_running():
-                start_daemon()
+            self.root.withdraw()
+        except Exception:
+            pass
+
+    def _show_window(self):
+        """从托盘显示窗口并激活。"""
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def _poll_show_event(self):
+        """轮询显示窗口事件（其他实例请求显示时激活窗口）。"""
+        try:
+            if check_show_window_event(self._show_event):
+                self._show_window()
+        except Exception:
+            pass
+        self.root.after(200, self._poll_show_event)
+
+    def _create_tray_icon(self):
+        """创建系统托盘图标（在单独线程中运行）。"""
+        try:
+            icon_path = resource_path(os.path.join("assets", "icon.ico"))
+            image = PILImage.open(icon_path)
+            menu = pystray.Menu(
+                pystray.MenuItem("打开窗口", self._tray_show_window, default=False),
+                pystray.MenuItem("退出", self._tray_quit),
+            )
+            self._tray_icon = pystray.Icon(
+                "idiot_launch",
+                image,
+                "傻瓜启动器",
+                menu,
+            )
+            # pystray.run() 阻塞，放在单独线程
+            self._tray_thread = threading.Thread(target=self._tray_icon.run, daemon=True)
+            self._tray_thread.start()
+        except Exception as e:
+            # 托盘创建失败不影响主程序
+            pass
+
+    def _tray_show_window(self, icon, item):
+        """托盘菜单：打开窗口。"""
+        self.root.after(0, self._show_window)
+
+    def _tray_quit(self, icon, item):
+        """托盘菜单：退出（关闭 GUI，daemon 继续后台运行）。"""
+        try:
+            if self._tray_icon:
+                self._tray_icon.stop()
+        except Exception:
+            pass
+        self.root.after(0, self._quit_gui)
+
+    def _quit_gui(self):
+        """真正退出 GUI 进程。"""
+        try:
+            if self._show_event:
+                ctypes.windll.kernel32.CloseHandle(self._show_event)
+        except Exception:
+            pass
+        try:
+            if self._gui_mutex:
+                ctypes.windll.kernel32.CloseHandle(self._gui_mutex)
         except Exception:
             pass
         self.root.destroy()
@@ -757,7 +843,12 @@ class IdiotLaunchApp:
 
 
 def main():
-    app = IdiotLaunchApp()
+    # 单实例检查：如果已有 GUI 在运行，通知它显示窗口，然后退出
+    mutex = acquire_gui_mutex()
+    if mutex is None:
+        signal_show_window()
+        sys.exit(0)
+    app = IdiotLaunchApp(gui_mutex=mutex)
     app.run()
 
 

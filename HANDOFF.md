@@ -39,6 +39,7 @@
 | **v1.2.0.2** | 同上 | 全面代码审查（d 升）：VBS 替换失败恢复旧版、OpenMutexW 替代 CreateMutexW 消除竞态 |
 | **v1.2.0.3** | 同上 | 自适应文件名（d 升）：VBS 改用 UTF-16 LE BOM 编码支持中文路径，用户可任意改名不影响更新 |
 | **v1.3.0.0** | 同上 + Inno Setup | **前后端分离 + 安装包 + 多源下载 + 快捷方式 + 更新指示器（b 升，大改）**| **v1.4.0.1** | 同上 | 快捷方式守护移到 daemon 循环顶部（d 升）：原实现 ensure_shortcuts() 在下载函数之后，下载阻塞期间快捷方式无法恢复；修复后实测删除 D盘+桌面快捷方式 35 秒内自动重建 |
+| **v1.8.3.3** | 同上 | 新增系统托盘图标+GUI单实例（d升）：①新增 pystray 托盘图标，右键菜单打开窗口/退出，左键点击无操作；②关闭窗口改为最小化到托盘（withdraw），不退出程序；③新增 GUI 单实例互斥量 IdiotLaunch_GUI_Single，多次启动只激活已有窗口（命名事件 IdiotLaunch_ShowWindow）；④托盘退出仅关闭 GUI，daemon 继续后台运行；⑤依赖新增 pystray>=0.19、Pillow>=10.0，spec hiddenimports 加 pystray._win32 等 |
 | **v1.8.3.2** | 同上 | 卸载改为优雅退出（d升）：①新增命名事件 IdiotLaunch_Quit，daemon 用 WaitForSingleObject 替代 time.sleep，收到事件后保存状态并优雅退出；②新增 --quit-daemon 命令行参数（signal_daemon_quit）；③卸载时先 Exec IdiotLaunch.exe --quit-daemon 通知优雅退出，等5秒，未退则 taskkill /F 兜底；④强杀不再是默认行为，只作兜底 |
 | **v1.8.3.1** | 同上 | 新增卸载功能+空闲时间改5分钟（d升）：①Inno Setup Uninstallable=yes，生成 unins000.exe 卸载程序；②卸载时强制结束所有 IdiotLaunch 进程（含 daemon），删除 D盘根目录+公共桌面+用户桌面快捷方式，清理 _internal 目录和 build_type.txt 残留；③保留 CountdownDesktop 目录和 data 数据目录；④CloseApplicationsFilter 增加 CountdownDesktop.exe；⑤空闲自动更新阈值从 10 分钟改为 5 分钟（IDLE_THRESHOLD=300） |
 | **v1.8.3.0** | 同上 | 新增倒计时+秒表（b升）：①Material Three风格滚轮时间选择器（Canvas绘制，鼠标滚轮/拖动切换，平滑动画）；②倒计时对话框：小时分钟选择、快捷预设（5/10/30分钟/1小时）、开始/暂停/重置、剩余1/5时间数字变红、结束播放三声提示音、结束后自动进入正计时；③秒表对话框：毫秒精度、开始/暂停/记次/重置、记次记录列表（记次时间+总时间、交替背景色、自动滚动到底部）；④主界面新增橙色"倒计时"和青色"秒表"按钮，7按钮2列网格布局，窗口高度增至520；⑤新增 src/timer_dialog.py 模块 |

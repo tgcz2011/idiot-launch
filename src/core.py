@@ -36,6 +36,8 @@ DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
 DAEMON_QUIT_EVENT = "IdiotLaunch_Quit"  # 命名事件：收到后 daemon 优雅退出
+GUI_SINGLE_MUTEX = "IdiotLaunch_GUI_Single"  # GUI 单实例互斥量
+GUI_SHOW_EVENT = "IdiotLaunch_ShowWindow"  # 命名事件：请求已有 GUI 实例显示窗口
 IDLE_THRESHOLD = 300  # 5 分钟无操作视为空闲，此时可静默自我更新
 
 # (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像；
@@ -51,7 +53,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.3.2"
+LAUNCHER_VERSION = "1.8.3.3"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -671,6 +673,60 @@ def _wait_quit_or_sleep(quit_event, ms: int) -> bool:
         return result == WAIT_OBJECT_0
     except Exception:
         time.sleep(ms / 1000.0)
+        return False
+
+
+def acquire_gui_mutex():
+    """GUI 单实例：获取互斥量。成功返回 handle，已存在返回 None。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        handle = kernel32.CreateMutexW(None, False, GUI_SINGLE_MUTEX)
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            if handle:
+                kernel32.CloseHandle(handle)
+            return None
+        return handle
+    except Exception:
+        return None
+
+
+def signal_show_window() -> bool:
+    """通知已有 GUI 实例显示窗口。成功返回 True。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenEventW.restype = ctypes.c_void_p
+        EVENT_MODIFY_STATE = 0x0002
+        handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, GUI_SHOW_EVENT)
+        if not handle:
+            return False
+        kernel32.SetEvent(handle)
+        kernel32.CloseHandle(handle)
+        return True
+    except Exception:
+        return False
+
+
+def create_show_window_event():
+    """GUI 实例创建显示窗口事件（自动重置）。返回 handle 或 None。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateEventW.restype = ctypes.c_void_p
+        handle = kernel32.CreateEventW(None, False, False, GUI_SHOW_EVENT)
+        return handle if handle else None
+    except Exception:
+        return None
+
+
+def check_show_window_event(event_handle) -> bool:
+    """非阻塞检查显示窗口事件是否被触发。返回 True=需要显示窗口。"""
+    if not event_handle:
+        return False
+    try:
+        WAIT_OBJECT_0 = 0
+        result = ctypes.windll.kernel32.WaitForSingleObject(event_handle, 0)
+        return result == WAIT_OBJECT_0
+    except Exception:
         return False
 
 
