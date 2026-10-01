@@ -1,5 +1,6 @@
 """Idiot Launch 入口脚本。
-无参数 = GUI 模式；--daemon = 后台更新守护进程（无窗口）；--quit-daemon = 通知 daemon 优雅退出。
+无参数 = GUI 模式；--daemon = 后台更新守护进程（无窗口）；--quit-daemon = 通知 daemon 优雅退出；
+--countdown-app = 运行 Countdown Desktop（已合并到本项目，共享 Python 运行时）。
 """
 import sys
 import os
@@ -14,6 +15,16 @@ if __name__ == "__main__":
         from src.core import signal_daemon_quit
         ok = signal_daemon_quit()
         sys.exit(0 if ok else 1)
+    elif "--countdown-app" in sys.argv:
+        # 运行 Countdown Desktop（已合并），移除 --countdown-app 标记后传给 CD
+        sys.argv = [a for a in sys.argv if a != "--countdown-app"]
+        # 如果第一个参数是 player，则运行播放器子进程
+        if len(sys.argv) > 1 and sys.argv[1] == "player":
+            mode = sys.argv[2] if len(sys.argv) > 2 else "wallpaper"
+            from countdown_app.player import run
+            sys.exit(run(mode))
+        from countdown_app.main import run
+        sys.exit(run())
     else:
         # 启动前检查 Idiot Launch 自我更新（仅 frozen 模式）。
         # 如果有待更新，此函数会生成 VBS 替换器并 sys.exit，不会返回。

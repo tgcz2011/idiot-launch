@@ -23,8 +23,6 @@ from src.core import (
     is_running,
     start_daemon,
     is_daemon_running,
-    install_pending_if_idle,
-    has_pending_update,
     ensure_shortcuts,
     get_daemon_status,
     load_state,
@@ -192,8 +190,7 @@ class UpdateIndicator(tk.Canvas):
         }
         # 有已下载待应用的更新 → 绿色满环
         state = load_state()
-        if (state.get("pending_installer") and state.get("download_complete")) or \
-           state.get("pending_launcher_path"):
+        if state.get("pending_launcher_path"):
             if (self.current_color, self.current_progress) != (INDICATOR_UPDATE_READY, 100):
                 self._draw_ring(INDICATOR_UPDATE_READY, 100, "↑")
             return
@@ -334,45 +331,12 @@ class UpdateDetailDialog:
                 "waiting": "等待倒计时退出",
                 "updating": "静默自我更新中",
                 "starting": "启动中",
-                "stopped": "已停止",
+                "stopped": "正在重启",
             }
             act = activity_map.get(daemon.get("activity", "idle"), daemon.get("activity", "未知"))
             lines.append(f"  状态: {act}")
         else:
-            lines.append("  状态: 未运行（关闭窗口后自动启动）")
-
-        lines.append("")
-        lines.append("【Countdown Desktop】")
-        local_ver = "未知"
-        try:
-            from src.core import get_installed_version
-            v = get_installed_version()
-            if v:
-                local_ver = v
-        except Exception:
-            pass
-        lines.append(f"  当前版本: {local_ver}")
-        # 优先从 cd_download 读取待更新状态（下载中/已下载）
-        cd_dl = state.get("cd_download")
-        if cd_dl and cd_dl.get("version"):
-            cd_ver = cd_dl.get("version", "?")
-            cd_status = cd_dl.get("status", "")
-            cd_prog = cd_dl.get("progress", 0)
-            if cd_status == "downloading":
-                lines.append(f"  待更新版本: v{cd_ver}（正在下载 {cd_prog}%）")
-            elif cd_status == "complete":
-                lines.append(f"  待更新版本: v{cd_ver}（已下载，等待倒计时退出后安装）")
-            elif cd_status == "failed":
-                lines.append(f"  待更新版本: v{cd_ver}（下载失败，稍后重试）")
-            else:
-                lines.append(f"  待更新版本: v{cd_ver}")
-            if cd_dl.get("release_notes"):
-                notes = cd_dl["release_notes"][:150]
-                lines.append(f"  更新日志: {notes}")
-        elif state.get("pending_installer") and state.get("download_complete"):
-            lines.append(f"  待安装版本: v{state.get('pending_version', '?')}（已下载）")
-        else:
-            lines.append("  待更新: 无")
+            lines.append("  状态: 正在启动")
 
         lines.append("")
         lines.append("【Idiot Launch】")
@@ -386,7 +350,7 @@ class UpdateDetailDialog:
             if il_status == "downloading":
                 lines.append(f"  待更新版本: v{il_ver}（正在下载 {il_prog}%）")
             elif il_status == "complete":
-                lines.append(f"  待更新版本: v{il_ver}（已下载，电脑空闲 10 分钟后静默更新）")
+                lines.append(f"  待更新版本: v{il_ver}（已下载，电脑空闲 5 分钟后静默更新）")
             elif il_status == "failed":
                 lines.append(f"  待更新版本: v{il_ver}（下载失败，稍后重试）")
             else:
@@ -469,7 +433,6 @@ class IdiotLaunchApp:
         self._refresh_install_status()
         self._start_running_monitor()
         self._start_daemon_monitor()
-        self._check_pending_update_on_start()
 
         # 创建系统托盘图标（单独线程）
         self._create_tray_icon()
@@ -678,30 +641,8 @@ class IdiotLaunchApp:
         self.root.destroy()
 
     def _check_pending_update_on_start(self):
-        def check():
-            if has_pending_update() and not is_running():
-                dialog = [None]
-
-                def show():
-                    dialog[0] = ProgressDialog(
-                        self.root,
-                        "正在更新 Countdown Desktop",
-                        "检测到新版本，正在静默安装...",
-                    )
-
-                def close():
-                    if dialog[0]:
-                        dialog[0].close()
-
-                self.root.after(0, show)
-                self.root.after(0, lambda: self.status_var.set("⏳ 正在应用待安装的更新..."))
-                ok = install_pending_if_idle()
-                self.root.after(0, close)
-                if ok:
-                    self.root.after(0, lambda: self.status_var.set("✓ Countdown Desktop 已更新到最新版"))
-                else:
-                    self.root.after(0, self._refresh_install_status)
-        threading.Thread(target=check, daemon=True).start()
+        # CD 已合并到本项目，不再单独更新，此方法保留为空操作
+        pass
 
     def _start_running_monitor(self):
         def monitor():

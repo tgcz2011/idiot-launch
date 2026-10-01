@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.9.0.0-beta2"
+LAUNCHER_VERSION = "1.9.0.0-beta3"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -237,19 +237,19 @@ def ensure_installed() -> str:
     return "bundled"
 
 def launch_countdown(exam_type: str) -> None:
-    """启动倒计时壁纸。CD 已合并，用同一个 Python 解释器启动。"""
+    """启动倒计时壁纸。CD 已合并，用同一个 exe 加 --countdown-app 参数启动。"""
     subprocess.Popen(
-        [sys.executable, "-m", "countdown_app", "--exam", exam_type, "--auto-check-update", "off"],
+        [sys.executable, "--countdown-app", "--exam", exam_type, "--auto-check-update", "off"],
         creationflags=0x00000008, close_fds=True,
     )
 
 
 def launch_settings() -> None:
     """一键唤起 Countdown Desktop 设置窗口。
-    CD 已合并，用同一个 Python 解释器启动。
+    CD 已合并，用同一个 exe 加 --countdown-app 参数启动。
     """
     subprocess.Popen(
-        [sys.executable, "-m", "countdown_app", "--settings", "--auto-check-update", "off"],
+        [sys.executable, "--countdown-app", "--settings", "--auto-check-update", "off"],
         creationflags=0x00000008, close_fds=True,
     )
 
@@ -687,191 +687,9 @@ def _handle_daemon_command(cmd: dict) -> None:
 
 # Countdown Desktop 更新后台线程（单实例）：下载/等待退出/安装全部在线程内执行，
 # daemon 主循环（快捷方式守护、命令响应、Idiot Launch 更新）永不被下载或等待阻塞。
-_countdown_update_thread = None
-_countdown_download_lock = threading.Lock()
 
 
-def _countdown_install_worker(installer_path: str, version: str) -> None:
-    """后台线程：等待 Countdown Desktop 退出（最多 30 分钟）→ 超时则强制关闭 → 静默安装 → 按之前状态重启 CD。"""
-    # 记录更新前 CD 的运行状态和考试类型，用于安装后恢复
-    was_running = is_running()
-    previous_exam = None
-    if was_running:
-        try:
-            cfg_path = os.path.join(os.environ.get("APPDATA", ""), "CountdownDesktop", "config.json")
-            if os.path.isfile(cfg_path):
-                with open(cfg_path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                previous_exam = cfg.get("exam_type")
-        except Exception:
-            pass
-    deadline = time.time() + 30 * 60  # 30 分钟超时
-    while time.time() < deadline:
-        if not is_running():
-            break
-        set_daemon_status("waiting", 0, f"等待 Countdown Desktop 退出以安装 v{version}")
-        time.sleep(10)
-    # 超时后强制关闭（先优雅退出事件，再 taskkill /F 兜底）
-    if is_running():
-        log_daemon(f"等待超时（30分钟），强制关闭 Countdown Desktop 以更新到 v{version}")
-        set_daemon_status("installing", 10, "倒计时运行中，强制关闭以更新...")
-        try:
-            quit_countdown()  # 发命名事件优雅退出
-        except Exception:
-            pass
-        time.sleep(10)
-        if is_running():
-            try:
-                subprocess.run(["taskkill", "/F", "/IM", "python.exe"],
-                               capture_output=True, timeout=10,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-            except Exception:
-                pass
-            time.sleep(3)
-    set_daemon_status("installing", 50, f"正在安装 Countdown Desktop v{version}...")
-    try:
-        ok = install_from_path(installer_path)
-        if not ok:
-            set_daemon_status("idle", 0, "安装失败，稍后重试")
-            return
-    except Exception as e:
-        set_daemon_status("idle", 0, f"安装异常: {e}")
-        log_daemon(f"Countdown 安装异常: {e}")
-        return
-    state = load_state()
-    state.pop("pending_installer", None)
-    state.pop("pending_version", None)
-    state["download_complete"] = False
-    state.pop("cd_download", None)
-    save_state(state)
-    try:
-        os.remove(installer_path)
-    except OSError:
-        pass
-    # 安装后恢复：如果之前 CD 在运行，按之前的考试类型重启
-    if was_running:
-        try:
-            path = find_installed_path()
-            if path:
-                args = [path, "--auto-check-update", "off"]
-                if previous_exam and previous_exam in ("zhongkao", "gaokao"):
-                    args.extend(["--exam", previous_exam])
-                subprocess.Popen(args, creationflags=0x00000008, close_fds=True)
-                log_daemon(f"Countdown Desktop v{version} 已更新并恢复运行（exam={previous_exam}）")
-        except Exception as e:
-            log_daemon(f"更新后恢复 Countdown Desktop 失败: {e}")
-    set_daemon_status("idle", 0, f"✓ Countdown Desktop 已更新到 v{version}")
-    log_daemon(f"Countdown Desktop 已更新到 v{version}")
-
-
-def _countdown_download_worker(latest: dict) -> None:
-    """后台线程：下载 Countdown Desktop 安装包 → SHA-256 校验 → 写入 pending → 等待退出并安装。"""
-    installer_name = latest.get("name", f"CountdownDesktop_Setup_{latest['version']}.exe")
-    dest = os.path.join(UPDATE_DIR, installer_name)
-    # 立即标记为待更新（下载中）
-    try:
-        _st = load_state()
-        _st["cd_download"] = {"version": latest["version"], "progress": 0, "status": "downloading",
-                              "installer": dest, "release_notes": latest.get("release_notes", "")}
-        save_state(_st)
-    except Exception:
-        pass
-    if not (os.path.isfile(dest) and latest.get("size", 0) > 0
-            and os.path.getsize(dest) == latest["size"]
-            and verify_sha256(dest, latest.get("sha256", ""))):
-        # 已存在但校验失败：删除后重新下载
-        if os.path.isfile(dest):
-            log_daemon(f"已存在的安装包哈希校验失败，删除后重新下载: {os.path.basename(dest)}")
-            try:
-                os.remove(dest)
-            except OSError:
-                pass
-        ok = download_installer(latest["url"], dest, tag="cd")
-        if not ok:
-            try:
-                _st = load_state()
-                _st["cd_download"] = {"version": latest["version"], "progress": 0, "status": "failed"}
-                save_state(_st)
-            except Exception:
-                pass
-            set_daemon_status("idle", 0, "更新下载失败，6 小时后重试")
-            return
-    # SHA-256 校验：对不上就删除并拒绝更新
-    if not verify_sha256(dest, latest.get("sha256", "")):
-        log_daemon(f"SHA-256 校验失败，删除安装包并拒绝更新: {os.path.basename(dest)}")
-        set_daemon_status("idle", 0, "更新包校验失败，已拒绝更新，将重新下载")
-        try:
-            os.remove(dest)
-        except OSError:
-            pass
-        return
-    state = load_state()
-    state["pending_installer"] = dest
-    state["pending_version"] = latest["version"]
-    state["download_complete"] = True
-    state["release_notes"] = latest.get("release_notes", "")
-    state["cd_download"] = {"version": latest["version"], "progress": 100, "status": "complete",
-                            "installer": dest, "release_notes": latest.get("release_notes", "")}
-    save_state(state)
-    set_daemon_status("idle", 0, f"已下载 v{latest['version']}，等待倒计时退出后安装")
-    _countdown_install_worker(dest, latest["version"])
-
-
-            # CD 已合并，不再单独更新：def _check_and_start_countdown_update() -> None:
-    """主循环调度：Countdown 更新全部后台执行（下载→等待→安装），主循环快速返回。"""
-    global _countdown_update_thread
-    if not getattr(sys, "frozen", False):
-        return
-    state = load_state()
-    pending = state.get("pending_installer")
-    pending_ver = state.get("pending_version")
-    if pending and pending_ver and os.path.isfile(pending):
-        local_ver = get_installed_version()
-        if local_ver and compare_versions(local_ver, pending_ver) >= 0:
-            state.pop("pending_installer", None)
-            state.pop("pending_version", None)
-            state["download_complete"] = False
-            state.pop("cd_download", None)  # 同步清除下载状态，避免详情框误显示
-            save_state(state)
-            log_daemon(f"本地已更新到 {local_ver}，清除待安装的 v{pending_ver}")
-            return
-        with _countdown_download_lock:
-            if _countdown_update_thread and _countdown_update_thread.is_alive():
-                return
-            _countdown_update_thread = threading.Thread(
-                target=_countdown_install_worker, args=(pending, pending_ver),
-                daemon=True, name="countdown-install")
-            _countdown_update_thread.start()
-        return
-    last_check = state.get("last_check", 0)
-    if time.time() - last_check < CHECK_INTERVAL:
-        return
-    if _countdown_update_thread and _countdown_update_thread.is_alive():
-        return
-    set_daemon_status("checking", 0, "正在检查 Countdown Desktop 更新...")
-    latest = get_latest_version_info()
-    state["last_check"] = time.time()
-    save_state(state)
-    if not latest:
-        set_daemon_status("idle", 0, "更新检查失败，稍后重试")
-        return
-    local_ver = get_installed_version()
-    if local_ver and compare_versions(local_ver, latest["version"]) >= 0:
-        set_daemon_status("idle", 0, "已是最新版本")
-        # 清除可能残留的 cd_download
-        if state.get("cd_download"):
-            state.pop("cd_download", None)
-            save_state(state)
-        return
-    log_daemon(f"发现新版本 {latest['version']}（本地 {local_ver}），后台线程下载")
-    with _countdown_download_lock:
-        if _countdown_update_thread and _countdown_update_thread.is_alive():
-            return
-        _countdown_update_thread = threading.Thread(
-            target=_countdown_download_worker, args=(latest,),
-            daemon=True, name="countdown-download")
-        _countdown_update_thread.start()
-
+# Countdown Desktop 已合并到本项目，不再单独更新
 
 def daemon_run() -> int:
     mutex = _acquire_daemon_mutex()
@@ -903,7 +721,7 @@ def daemon_run() -> int:
                 return 0
             _check_and_download_launcher_update()
             # Countdown Desktop 更新（后台线程：下载/等待退出/安装 都不阻塞主循环）
-            _check_and_start_countdown_update()
+            # CD 已合并，不再单独更新：_check_and_start_countdown_update()
             # 不覆盖后台正在进行的下载/安装/等待状态
             st = load_state().get("daemon", {}).get("activity", "")
             if st not in ("downloading", "updating", "installing", "waiting", "checking"):

@@ -78,8 +78,8 @@ def _asset_path(name: str) -> str:
 
 def _spawn_cmd(mode: str) -> list:
     from . import cli
-    # 合并到 IL 后，用同一个 Python 解释器启动播放器子进程
-    base = [sys.executable, "-m", "countdown_app.player", mode]
+    # 合并到 IL 后，用同一个 exe 加 --countdown-app player 启动播放器子进程
+    base = [sys.executable, "--countdown-app", "player", mode]
     # 把本次启动的 CLI 覆盖透传给播放器，保证壁纸/屏保用同一覆盖配置
     return base + cli.serialize(_CLI_OVERRIDES)
 

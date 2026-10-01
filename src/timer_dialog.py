@@ -8,7 +8,6 @@ import tkinter as tk
 from tkinter import ttk
 import time
 import math
-import threading
 
 # Material Three 配色
 M3_BACKGROUND = "#FEF7FF"
@@ -24,35 +23,30 @@ M3_TERTIARY = "#7D5260"
 
 
 class WheelPicker(tk.Canvas):
-    """Material Three 风格滚轮选择器。
-    显示上下渐隐的数字，鼠标滚轮或拖动切换，平滑动画。
-    """
-    ITEM_HEIGHT = 56  # 每个数字的高度
-    VISIBLE_COUNT = 5  # 可见数字数量（上2+当前+下2）
+    """Material Three 风格滚轮选择器。"""
+    ITEM_HEIGHT = 56
+    VISIBLE_COUNT = 5
 
-    def __init__(self, parent, values, width=100, height=200,
-                 on_change=None, **kwargs):
+    def __init__(self, parent, values, width=100, height=180, on_change=None, **kwargs):
         super().__init__(parent, width=width, height=height,
                          bg=M3_SURFACE, highlightthickness=0, **kwargs)
         self.values = values
         self.on_change = on_change
         self._index = 0
-        self._offset = 0.0  # 动画偏移量（像素）
+        self._offset = 0.0
         self._target_offset = 0.0
         self._animating = False
         self._drag_start_y = None
         self._drag_start_offset = 0
         self._center_y = height // 2
 
-        # 绑定事件
         self.bind("<MouseWheel>", self._on_mousewheel)
-        self.bind("<Button-4>", lambda e: self._scroll(-1))  # Linux
-        self.bind("<Button-5>", lambda e: self._scroll(1))   # Linux
+        self.bind("<Button-4>", lambda e: self._scroll(-1))
+        self.bind("<Button-5>", lambda e: self._scroll(1))
         self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<B1-Motion>", self._on_drag)
         self.bind("<ButtonRelease-1>", self._on_release)
         self.bind("<Configure>", self._on_configure)
-
         self._draw()
 
     def _on_configure(self, event):
@@ -61,16 +55,6 @@ class WheelPicker(tk.Canvas):
 
     def get(self):
         return self.values[self._index]
-
-    def set(self, value):
-        if value in self.values:
-            self._index = self.values.index(value)
-            self._offset = 0
-            self._target_offset = 0
-            self._draw()
-
-    def get_index(self):
-        return self._index
 
     def set_index(self, idx):
         self._index = max(0, min(len(self.values) - 1, idx))
@@ -138,18 +122,15 @@ class WheelPicker(tk.Canvas):
     def _draw(self):
         self.delete("all")
         w = self.winfo_width() or 100
-        h = self.winfo_height() or 200
+        h = self.winfo_height() or 180
         self._center_y = h // 2
 
-        # 绘制选中区域背景（圆角矩形效果）
         pad_x = 8
         self.create_rectangle(
             pad_x, self._center_y - self.ITEM_HEIGHT // 2,
             w - pad_x, self._center_y + self.ITEM_HEIGHT // 2,
             fill=M3_SURFACE_VARIANT, outline="",
         )
-
-        # 绘制上下分割线
         self.create_line(
             pad_x + 4, self._center_y - self.ITEM_HEIGHT // 2,
             w - pad_x - 4, self._center_y - self.ITEM_HEIGHT // 2,
@@ -161,14 +142,12 @@ class WheelPicker(tk.Canvas):
             fill=M3_OUTLINE, width=1,
         )
 
-        # 绘制数字
         half = self.VISIBLE_COUNT // 2
         for i in range(-half, half + 1):
             idx = self._index + i
             if idx < 0 or idx >= len(self.values):
                 continue
             y = self._center_y + i * self.ITEM_HEIGHT + self._offset
-            # 距离中心越远，字体越小、越透明
             dist = abs(i)
             if dist == 0:
                 font_size = 32
@@ -180,15 +159,23 @@ class WheelPicker(tk.Canvas):
                 font_size = 16
                 color = "#9B959E"
             text = str(self.values[idx]).zfill(2)
-            self.create_text(
-                w // 2, y, text=text,
-                font=("Roboto", font_size, "bold"),
-                fill=color,
-            )
+            self.create_text(w // 2, y, text=text,
+                             font=("Roboto", font_size, "bold"), fill=color)
+
+
+def _format_time(seconds, with_ms=False):
+    """统一格式：始终显示 HH:MM:SS，可选毫秒。"""
+    h = int(seconds) // 3600
+    m = (int(seconds) % 3600) // 60
+    s = int(seconds) % 60
+    if with_ms:
+        ms = int((seconds - int(seconds)) * 100)
+        return f"{h:02d}:{m:02d}:{s:02d}.{ms:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}"
 
 
 class CountdownDialog:
-    """倒计时对话框：Material Three 风格，结束转正计时，1/5 变红，结束声音。"""
+    """倒计时对话框：紧凑布局，结束转正计时，1/5变红，结束声音。"""
 
     def __init__(self, parent):
         self.parent = parent
@@ -196,19 +183,18 @@ class CountdownDialog:
         self.win.title("倒计时")
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
-        self.win.geometry("380x480")
+        self.win.geometry("360x400")
 
-        # 状态
         self._running = False
         self._paused = False
         self._total_seconds = 0
         self._remaining = 0
-        self._count_up = False  # 结束后正计时
+        self._count_up = False
         self._count_up_seconds = 0
         self._start_time = 0
         self._pause_elapsed = 0
         self._timer_id = None
-        self._red_threshold = 0  # 剩余时间小于此值变红
+        self._red_threshold = 0
 
         self._build_ui()
         self._center_window()
@@ -217,37 +203,17 @@ class CountdownDialog:
         self.win.update_idletasks()
         w = self.win.winfo_width()
         h = self.win.winfo_height()
-        sw = self.win.winfo_screenwidth()
-        sh = self.win.winfo_screenheight()
-        x = (sw - w) // 2
-        y = (sh - h) // 2
+        x = (self.win.winfo_screenwidth() - w) // 2
+        y = (self.win.winfo_screenheight() - h) // 2
         self.win.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
-        # 标题栏
-        title_bar = tk.Frame(self.win, bg=M3_PRIMARY, height=48)
-        title_bar.pack(fill="x", side="top")
-        title_bar.pack_propagate(False)
-        tk.Label(
-            title_bar, text="倒计时", font=("Microsoft YaHei UI", 16, "bold"),
-            bg=M3_PRIMARY, fg=M3_ON_PRIMARY,
-        ).pack(side="left", padx=16)
-        tk.Label(
-            title_bar, text="×", font=("Arial", 20, "bold"),
-            bg=M3_PRIMARY, fg=M3_ON_PRIMARY, cursor="hand2",
-        ).pack(side="right", padx=16)
-        # 绑定关闭
-        for widget in title_bar.winfo_children():
-            if widget.cget("text") == "×":
-                widget.bind("<Button-1>", lambda e: self._close())
-
-        # 内容区
-        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=24, pady=16)
+        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=20, pady=16)
         content.pack(fill="both", expand=True)
 
-        # 选择器区域（未开始时显示）
+        # 选择器区域
         self.picker_frame = tk.Frame(content, bg=M3_BACKGROUND)
-        self.picker_frame.pack(fill="x", pady=(0, 16))
+        self.picker_frame.pack(fill="x")
 
         picker_container = tk.Frame(self.picker_frame, bg=M3_SURFACE,
                                     highlightthickness=1,
@@ -255,130 +221,113 @@ class CountdownDialog:
         picker_container.pack()
 
         row = tk.Frame(picker_container, bg=M3_SURFACE)
-        row.pack(padx=8, pady=8)
+        row.pack(padx=6, pady=6)
 
-        self.hour_picker = WheelPicker(row, list(range(24)), width=90, height=180)
-        self.hour_picker.pack(side="left", padx=(4, 2))
+        self.hour_picker = WheelPicker(row, list(range(24)), width=80, height=160)
+        self.hour_picker.pack(side="left", padx=(2, 1))
 
-        colon = tk.Label(row, text=":", font=("Roboto", 36, "bold"),
-                         bg=M3_SURFACE, fg=M3_ON_SURFACE_VARIANT)
-        colon.pack(side="left", padx=2)
+        tk.Label(row, text=":", font=("Roboto", 32, "bold"),
+                 bg=M3_SURFACE, fg=M3_ON_SURFACE_VARIANT).pack(side="left", padx=1)
 
-        self.min_picker = WheelPicker(row, list(range(60)), width=90, height=180)
-        self.min_picker.pack(side="left", padx=(2, 4))
+        self.min_picker = WheelPicker(row, list(range(60)), width=80, height=160)
+        self.min_picker.pack(side="left", padx=(1, 2))
 
         # 快捷选择
         quick_frame = tk.Frame(self.picker_frame, bg=M3_BACKGROUND)
         quick_frame.pack(fill="x", pady=(8, 0))
         for text, mins in [("5分钟", 5), ("10分钟", 10), ("30分钟", 30), ("1小时", 60)]:
-            btn = tk.Label(
-                quick_frame, text=text, font=("Microsoft YaHei UI", 9),
-                bg=M3_SURFACE_VARIANT, fg=M3_ON_SURFACE_VARIANT,
-                padx=10, pady=4, cursor="hand2",
-            )
-            btn.pack(side="left", padx=3)
+            btn = tk.Label(quick_frame, text=text, font=("Microsoft YaHei UI", 9),
+                           bg=M3_SURFACE_VARIANT, fg=M3_ON_SURFACE_VARIANT,
+                           padx=8, pady=3, cursor="hand2")
+            btn.pack(side="left", padx=2)
             btn.bind("<Button-1>", lambda e, m=mins: self._quick_set(m))
 
-        # 显示区域（运行时显示）
+        # 显示区域（运行时）
         self.display_frame = tk.Frame(content, bg=M3_BACKGROUND)
-        # 不 pack，运行时才显示
 
         self.time_label = tk.Label(
             self.display_frame, text="00:00:00",
-            font=("Roboto", 56, "bold"),
+            font=("Roboto", 52, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE,
         )
-        self.time_label.pack(pady=(20, 8))
+        self.time_label.pack(pady=(8, 12))
 
-        self.mode_label = tk.Label(
-            self.display_frame, text="倒计时中",
-            font=("Microsoft YaHei UI", 12),
-            bg=M3_BACKGROUND, fg=M3_ON_SURFACE_VARIANT,
-        )
-        self.mode_label.pack()
-
-        # 按钮区域
-        btn_frame = tk.Frame(content, bg=M3_BACKGROUND)
-        btn_frame.pack(side="bottom", fill="x", pady=(16, 0))
-
-        self.start_btn = self._make_button(
-            btn_frame, "开始", M3_PRIMARY, M3_ON_PRIMARY, self._start,
-        )
-        self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        # 按钮区域：暂停/继续 在时间下方，重置在右侧
+        btn_row = tk.Frame(self.display_frame, bg=M3_BACKGROUND)
+        btn_row.pack(fill="x")
 
         self.pause_btn = self._make_button(
-            btn_frame, "暂停", M3_TERTIARY, M3_ON_PRIMARY, self._pause,
+            btn_row, "暂停", M3_TERTIARY, M3_ON_PRIMARY, self._toggle_pause,
         )
-        # 不默认显示
+        self.pause_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
 
         self.reset_btn = self._make_button(
-            btn_frame, "重置", M3_SURFACE_VARIANT, M3_ON_SURFACE_VARIANT,
-            self._reset,
+            btn_row, "重置", M3_SURFACE_VARIANT, M3_ON_SURFACE_VARIANT, self._reset,
         )
         self.reset_btn.pack(side="right", expand=True, fill="x", padx=(6, 0))
 
-    def _make_button(self, parent, text, bg, fg, cmd):
-        btn = tk.Label(
-            parent, text=text, font=("Microsoft YaHei UI", 13, "bold"),
-            bg=bg, fg=fg, padx=20, pady=12, cursor="hand2",
+        # 底部开始按钮（选择器模式）
+        self.start_btn = self._make_button(
+            content, "开始倒计时", M3_PRIMARY, M3_ON_PRIMARY, self._start,
         )
+        self.start_btn.pack(side="bottom", fill="x", pady=(12, 0))
+
+    def _make_button(self, parent, text, bg, fg, cmd):
+        btn = tk.Label(parent, text=text, font=("Microsoft YaHei UI", 13, "bold"),
+                       bg=bg, fg=fg, padx=16, pady=10, cursor="hand2")
         btn.bind("<Button-1>", lambda e: cmd())
         btn.bind("<Enter>", lambda e: btn.configure(bg=self._lighten(bg)))
         btn.bind("<Leave>", lambda e: btn.configure(bg=bg))
         return btn
 
     def _lighten(self, color):
-        # 简单的颜色变亮
         r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-        r = min(255, r + 30)
-        g = min(255, g + 30)
-        b = min(255, b + 30)
-        return f"#{r:02x}{g:02x}{b:02x}"
+        return f"#{min(255,r+30):02x}{min(255,g+30):02x}{min(255,b+30):02x}"
 
     def _quick_set(self, minutes):
-        h = minutes // 60
-        m = minutes % 60
-        self.hour_picker.set_index(h)
-        self.min_picker.set_index(m)
+        self.hour_picker.set_index(minutes // 60)
+        self.min_picker.set_index(minutes % 60)
 
     def _start(self):
-        if self._running and not self._paused:
+        if self._running:
             return
-        if not self._running:
-            # 新开始
-            h = self.hour_picker.get()
-            m = self.min_picker.get()
-            self._total_seconds = h * 3600 + m * 60
-            if self._total_seconds == 0:
-                return
-            self._remaining = self._total_seconds
-            self._red_threshold = self._total_seconds // 5
-            self._count_up = False
-            self._count_up_seconds = 0
-            self._start_time = time.time()
-            self._pause_elapsed = 0
-            # 切换显示
-            self.picker_frame.pack_forget()
-            self.display_frame.pack(fill="x", pady=(10, 0))
-            self.start_btn.pack_forget()
-            self.pause_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
-        else:
-            # 从暂停恢复
-            self._start_time = time.time() - self._pause_elapsed
+        h = self.hour_picker.get()
+        m = self.min_picker.get()
+        self._total_seconds = h * 3600 + m * 60
+        if self._total_seconds == 0:
+            return
+        self._remaining = self._total_seconds
+        self._red_threshold = self._total_seconds // 5
+        self._count_up = False
+        self._count_up_seconds = 0
+        self._start_time = time.time()
+        self._pause_elapsed = 0
         self._running = True
         self._paused = False
+
+        self.picker_frame.pack_forget()
+        self.start_btn.pack_forget()
+        self.display_frame.pack(fill="x", pady=(4, 0))
+        self.pause_btn.configure(text="暂停")
         self._tick()
 
-    def _pause(self):
-        if not self._running or self._paused:
+    def _toggle_pause(self):
+        if not self._running:
             return
-        self._paused = True
-        self._pause_elapsed = time.time() - self._start_time
-        if self._timer_id:
-            self.win.after_cancel(self._timer_id)
-            self._timer_id = None
-        self.pause_btn.configure(text="继续")
-        self.mode_label.configure(text="已暂停")
+        if self._paused:
+            # 继续
+            self._start_time = time.time() - self._pause_elapsed
+            self._paused = False
+            self.pause_btn.configure(text="暂停")
+            self._tick()
+        else:
+            # 暂停
+            self._paused = True
+            self._pause_elapsed = time.time() - self._start_time
+            if self._timer_id:
+                self.win.after_cancel(self._timer_id)
+                self._timer_id = None
+            self.pause_btn.configure(text="继续")
 
     def _reset(self):
         self._running = False
@@ -390,12 +339,9 @@ class CountdownDialog:
         self._count_up = False
         self._count_up_seconds = 0
         self.time_label.configure(text="00:00:00", fg=M3_ON_SURFACE)
-        self.mode_label.configure(text="倒计时中")
-        self.pause_btn.configure(text="暂停")
         self.display_frame.pack_forget()
-        self.picker_frame.pack(fill="x", pady=(0, 16))
-        self.pause_btn.pack_forget()
-        self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
+        self.picker_frame.pack(fill="x")
+        self.start_btn.pack(side="bottom", fill="x", pady=(12, 0))
 
     def _tick(self):
         if not self._running or self._paused:
@@ -403,8 +349,7 @@ class CountdownDialog:
         elapsed = time.time() - self._start_time
         if not self._count_up:
             self._remaining = max(0, self._total_seconds - int(elapsed))
-            self._update_display(self._remaining)
-            # 1/5 变红
+            self.time_label.configure(text=_format_time(self._remaining))
             if self._remaining <= self._red_threshold:
                 self.time_label.configure(fg=M3_ERROR)
             else:
@@ -413,43 +358,26 @@ class CountdownDialog:
                 self._on_finish()
         else:
             self._count_up_seconds = int(elapsed) - self._total_seconds
-            self._update_display(self._count_up_seconds, count_up=True)
+            self.time_label.configure(text=_format_time(self._count_up_seconds))
         self._timer_id = self.win.after(200, self._tick)
 
-    def _update_display(self, seconds, count_up=False):
-        h = seconds // 3600
-        m = (seconds % 3600) // 60
-        s = seconds % 60
-        text = f"{h:02d}:{m:02d}:{s:02d}"
-        self.time_label.configure(text=text)
-        if count_up:
-            self.mode_label.configure(text="正计时中（已超时）")
-
     def _on_finish(self):
-        # 播放声音
         self._play_alarm()
         self._count_up = True
-        self.mode_label.configure(text="时间到！正计时中")
         self.time_label.configure(fg=M3_ERROR)
 
     def _play_alarm(self):
         try:
             import winsound
-            # 播放三声提示音
             for _ in range(3):
                 winsound.Beep(880, 300)
                 time.sleep(0.1)
         except Exception:
             pass
 
-    def _close(self):
-        if self._timer_id:
-            self.win.after_cancel(self._timer_id)
-        self.win.destroy()
-
 
 class StopwatchDialog:
-    """秒表对话框：Material Three 风格，支持记次。"""
+    """秒表对话框：支持暂停/继续、记次、可滚动列表。"""
 
     def __init__(self, parent):
         self.parent = parent
@@ -457,13 +385,13 @@ class StopwatchDialog:
         self.win.title("秒表")
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
-        self.win.geometry("380x520")
+        self.win.geometry("360x480")
 
         self._running = False
         self._paused = False
         self._start_time = 0
         self._elapsed = 0
-        self._laps = []
+        self._laps = []  # [(lap_time, total_time), ...]
         self._timer_id = None
 
         self._build_ui()
@@ -473,46 +401,28 @@ class StopwatchDialog:
         self.win.update_idletasks()
         w = self.win.winfo_width()
         h = self.win.winfo_height()
-        sw = self.win.winfo_screenwidth()
-        sh = self.win.winfo_screenheight()
-        x = (sw - w) // 2
-        y = (sh - h) // 2
+        x = (self.win.winfo_screenwidth() - w) // 2
+        y = (self.win.winfo_screenheight() - h) // 2
         self.win.geometry(f"+{x}+{y}")
 
     def _build_ui(self):
-        # 标题栏
-        title_bar = tk.Frame(self.win, bg=M3_PRIMARY, height=48)
-        title_bar.pack(fill="x", side="top")
-        title_bar.pack_propagate(False)
-        tk.Label(
-            title_bar, text="秒表", font=("Microsoft YaHei UI", 16, "bold"),
-            bg=M3_PRIMARY, fg=M3_ON_PRIMARY,
-        ).pack(side="left", padx=16)
-        close_lbl = tk.Label(
-            title_bar, text="×", font=("Arial", 20, "bold"),
-            bg=M3_PRIMARY, fg=M3_ON_PRIMARY, cursor="hand2",
-        )
-        close_lbl.pack(side="right", padx=16)
-        close_lbl.bind("<Button-1>", lambda e: self._close())
-
-        # 内容区
-        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=24, pady=16)
+        content = tk.Frame(self.win, bg=M3_BACKGROUND, padx=20, pady=16)
         content.pack(fill="both", expand=True)
 
         # 时间显示
         self.time_label = tk.Label(
             content, text="00:00:00.00",
-            font=("Roboto", 44, "bold"),
+            font=("Roboto", 40, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE,
         )
-        self.time_label.pack(pady=(16, 8))
+        self.time_label.pack(pady=(8, 12))
 
         # 按钮区域
         btn_frame = tk.Frame(content, bg=M3_BACKGROUND)
-        btn_frame.pack(fill="x", pady=(8, 12))
+        btn_frame.pack(fill="x", pady=(0, 12))
 
         self.start_btn = self._make_button(
-            btn_frame, "开始", M3_PRIMARY, M3_ON_PRIMARY, self._start,
+            btn_frame, "开始", M3_PRIMARY, M3_ON_PRIMARY, self._toggle_start_pause,
         )
         self.start_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
 
@@ -521,17 +431,15 @@ class StopwatchDialog:
         )
 
         self.reset_btn = self._make_button(
-            btn_frame, "重置", M3_SURFACE_VARIANT, M3_ON_SURFACE_VARIANT,
-            self._reset,
+            btn_frame, "重置", M3_SURFACE_VARIANT, M3_ON_SURFACE_VARIANT, self._reset,
         )
-        self.reset_btn.pack(side="right", expand=True, fill="x", padx=(6, 0))
 
         # 记次列表
         list_label = tk.Label(
             content, text="记次记录", font=("Microsoft YaHei UI", 11, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE_VARIANT, anchor="w",
         )
-        list_label.pack(fill="x", pady=(8, 4))
+        list_label.pack(fill="x", pady=(4, 4))
 
         list_container = tk.Frame(content, bg=M3_SURFACE, highlightthickness=1,
                                   highlightbackground=M3_OUTLINE)
@@ -550,32 +458,29 @@ class StopwatchDialog:
                  bg=M3_SURFACE_VARIANT, fg=M3_ON_SURFACE_VARIANT,
                  width=12).pack(side="left", padx=4, pady=6)
 
-        # 可滚动的记次列表
-        self.lap_list_frame = tk.Frame(list_container, bg=M3_SURFACE)
-        self.lap_list_frame.pack(fill="both", expand=True)
-
-        self.lap_canvas = tk.Canvas(self.lap_list_frame, bg=M3_SURFACE,
-                                    highlightthickness=0)
-        self.lap_scroll = ttk.Scrollbar(self.lap_list_frame, orient="vertical",
+        # 可滚动列表
+        self.lap_canvas = tk.Canvas(list_container, bg=M3_SURFACE, highlightthickness=0)
+        self.lap_scroll = ttk.Scrollbar(list_container, orient="vertical",
                                         command=self.lap_canvas.yview)
         self.lap_inner = tk.Frame(self.lap_canvas, bg=M3_SURFACE)
 
-        self.lap_inner.bind(
-            "<Configure>",
-            lambda e: self.lap_canvas.configure(
-                scrollregion=self.lap_canvas.bbox("all")
-            ),
-        )
+        self.lap_inner.bind("<Configure>", lambda e: self.lap_canvas.configure(
+            scrollregion=self.lap_canvas.bbox("all")))
         self.lap_canvas.create_window((0, 0), window=self.lap_inner, anchor="nw")
         self.lap_canvas.configure(yscrollcommand=self.lap_scroll.set)
         self.lap_canvas.pack(side="left", fill="both", expand=True)
         self.lap_scroll.pack(side="right", fill="y")
 
+        # 绑定鼠标滚轮
+        self.lap_canvas.bind("<MouseWheel>", self._on_mousewheel)
+        self.lap_inner.bind("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        self.lap_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
     def _make_button(self, parent, text, bg, fg, cmd):
-        btn = tk.Label(
-            parent, text=text, font=("Microsoft YaHei UI", 13, "bold"),
-            bg=bg, fg=fg, padx=20, pady=12, cursor="hand2",
-        )
+        btn = tk.Label(parent, text=text, font=("Microsoft YaHei UI", 13, "bold"),
+                       bg=bg, fg=fg, padx=16, pady=10, cursor="hand2")
         btn.bind("<Button-1>", lambda e: cmd())
         btn.bind("<Enter>", lambda e: btn.configure(bg=self._lighten(bg)))
         btn.bind("<Leave>", lambda e: btn.configure(bg=bg))
@@ -583,63 +488,59 @@ class StopwatchDialog:
 
     def _lighten(self, color):
         r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
-        r = min(255, r + 30)
-        g = min(255, g + 30)
-        b = min(255, b + 30)
-        return f"#{r:02x}{g:02x}{b:02x}"
+        return f"#{min(255,r+30):02x}{min(255,g+30):02x}{min(255,b+30):02x}"
 
-    def _start(self):
-        if self._running and not self._paused:
-            return
+    def _toggle_start_pause(self):
         if not self._running:
+            # 开始
             self._start_time = time.time()
             self._elapsed = 0
+            self._running = True
+            self._paused = False
             self.start_btn.configure(text="暂停")
             self.lap_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
             self.reset_btn.pack_forget()
+            self._tick()
+        elif not self._paused:
+            # 暂停
+            self._paused = True
+            self._elapsed = time.time() - self._start_time
+            if self._timer_id:
+                self.win.after_cancel(self._timer_id)
+                self._timer_id = None
+            self.start_btn.configure(text="继续")
+            self.lap_btn.pack_forget()
+            self.reset_btn.pack(side="right", expand=True, fill="x", padx=(6, 0))
         else:
+            # 继续
             self._start_time = time.time() - self._elapsed
+            self._paused = False
             self.start_btn.configure(text="暂停")
-        self._running = True
-        self._paused = False
-        self._tick()
-
-    def _pause(self):
-        if not self._running or self._paused:
-            return
-        self._paused = True
-        self._elapsed = time.time() - self._start_time
-        if self._timer_id:
-            self.win.after_cancel(self._timer_id)
-            self._timer_id = None
-        self.start_btn.configure(text="继续")
-        self.lap_btn.pack_forget()
-        self.reset_btn.pack(side="right", expand=True, fill="x", padx=(6, 0))
+            self.reset_btn.pack_forget()
+            self.lap_btn.pack(side="left", expand=True, fill="x", padx=(0, 6))
+            self._tick()
 
     def _lap(self):
         if not self._running or self._paused:
             return
         total = time.time() - self._start_time
-        lap_time = total - sum(l[1] for l in self._laps)
+        # 修复：用 l[0]（lap_time）求和，而不是 l[1]（total）
+        prev_total = sum(l[0] for l in self._laps)
+        lap_time = total - prev_total
         self._laps.append((lap_time, total))
         self._add_lap_row(len(self._laps), lap_time, total)
 
     def _add_lap_row(self, num, lap_time, total):
         row = tk.Frame(self.lap_inner, bg=M3_SURFACE)
         row.pack(fill="x")
-        # 交替背景色
-        if num % 2 == 0:
-            row.configure(bg="#F5F2F8")
-            bg = "#F5F2F8"
-        else:
-            bg = M3_SURFACE
+        bg = "#F5F2F8" if num % 2 == 0 else M3_SURFACE
+        row.configure(bg=bg)
         tk.Label(row, text=str(num), font=("Roboto", 10),
                  bg=bg, fg=M3_ON_SURFACE_VARIANT, width=4).pack(side="left", padx=4, pady=4)
-        tk.Label(row, text=self._format_time(lap_time), font=("Roboto", 10),
+        tk.Label(row, text=_format_time(lap_time), font=("Roboto", 10),
                  bg=bg, fg=M3_ON_SURFACE, width=12).pack(side="left", padx=4, pady=4)
-        tk.Label(row, text=self._format_time(total), font=("Roboto", 10),
+        tk.Label(row, text=_format_time(total), font=("Roboto", 10),
                  bg=bg, fg=M3_ON_SURFACE_VARIANT, width=12).pack(side="left", padx=4, pady=4)
-        # 滚动到底部
         self.lap_canvas.yview_moveto(1.0)
 
     def _reset(self):
@@ -653,7 +554,7 @@ class StopwatchDialog:
         self.time_label.configure(text="00:00:00.00")
         self.start_btn.configure(text="开始")
         self.lap_btn.pack_forget()
-        # 清空记次列表
+        self.reset_btn.pack_forget()
         for widget in self.lap_inner.winfo_children():
             widget.destroy()
 
@@ -661,19 +562,5 @@ class StopwatchDialog:
         if not self._running or self._paused:
             return
         self._elapsed = time.time() - self._start_time
-        self.time_label.configure(text=self._format_time(self._elapsed, with_ms=True))
+        self.time_label.configure(text=_format_time(self._elapsed, with_ms=True))
         self._timer_id = self.win.after(30, self._tick)
-
-    def _format_time(self, seconds, with_ms=False):
-        h = int(seconds) // 3600
-        m = (int(seconds) % 3600) // 60
-        s = int(seconds) % 60
-        if with_ms:
-            ms = int((seconds - int(seconds)) * 100)
-            return f"{h:02d}:{m:02d}:{s:02d}.{ms:02d}"
-        return f"{h:02d}:{m:02d}:{s:02d}"
-
-    def _close(self):
-        if self._timer_id:
-            self.win.after_cancel(self._timer_id)
-        self.win.destroy()
