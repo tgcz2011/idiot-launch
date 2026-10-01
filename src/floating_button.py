@@ -14,6 +14,15 @@ import sys
 from src.morning_browser import load_morning_config, PERSISTENT_CONFIG_PATH, TEMP_CONFIG_PATH
 
 
+def resource_path(relative: str) -> str:
+    """定位资源文件（开发态 / PyInstaller onedir）。"""
+    import sys as _sys
+    base = getattr(_sys, "_MEIPASS", None)
+    if base:
+        return os.path.join(base, relative)
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), relative)
+
+
 def is_in_reading_period(config):
     """判断当前是否在早读/晚读时间段内。"""
     periods = config.get("periods", {})
@@ -52,7 +61,7 @@ def _parse_time(time_str):
 
 
 class FloatingButton:
-    """早读悬浮按钮。"""
+    """早读悬浮按钮：仅显示应用图标（手指点击图案）。"""
 
     def __init__(self, root, on_click=None):
         self.root = root
@@ -62,52 +71,61 @@ class FloatingButton:
         self._drag_start_x = 0
         self._drag_start_y = 0
         self._check_interval = 30000  # 30秒检查一次时间段
+        self._icon = None
+
+    def _load_icon(self):
+        """加载悬浮球图标 PNG（应用图标，透明底）。"""
+        if self._icon is not None:
+            return self._icon
+        for name in ("floating_icon.png", "floating_icon_64.png", "icon_source.png"):
+            path = resource_path(os.path.join("assets", name))
+            if os.path.isfile(path):
+                try:
+                    self._icon = tk.PhotoImage(file=path)
+                    return self._icon
+                except Exception:
+                    continue
+        return None
 
     def _create_window(self):
-        """创建悬浮按钮窗口。"""
+        """创建悬浮按钮窗口：圆形图标，无文字。"""
         self.win = tk.Toplevel(self.root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="#2F6B4F")
 
-        # 按钮内容
-        frame = tk.Frame(self.win, bg="#2F6B4F", padx=16, pady=10)
-        frame.pack()
+        # 圆形容器（Canvas 画圆 + 图标）
+        size = 56
+        canvas = tk.Canvas(self.win, width=size, height=size,
+                           bg="#2F6B4F", highlightthickness=0)
+        canvas.pack()
+        canvas.create_oval(2, 2, size - 2, size - 2, fill="#2F6B4F", outline="")
 
-        tk.Label(frame, text="📖", font=("Segoe UI Emoji", 20),
-                 bg="#2F6B4F", fg="white").pack()
-        tk.Label(frame, text="早晚读", font=("Microsoft YaHei UI", 11, "bold"),
-                 bg="#2F6B4F", fg="white").pack(pady=(2, 0))
-
-        # 圆角效果（用 Canvas 画）
-        self.win.update_idletasks()
-        w = self.win.winfo_width()
-        h = self.win.winfo_height()
+        icon = self._load_icon()
+        if icon:
+            canvas.create_image(size // 2, size // 2, image=icon)
 
         # 默认位置：屏幕右上角
         sw = self.win.winfo_screenwidth()
-        x = sw - w - 20
+        x = sw - size - 24
         y = 80
-        self.win.geometry(f"+{x}+{y}")
+        self.win.geometry(f"{size}x{size}+{x}+{y}")
 
         # 点击事件
-        frame.bind("<Button-1>", self._on_click)
-        for child in frame.winfo_children():
-            child.bind("<Button-1>", self._on_click)
+        canvas.bind("<Button-1>", self._on_click)
 
-        # 拖动
-        frame.bind("<ButtonPress-3>", self._start_drag)  # 右键拖动
-        frame.bind("<B3-Motion>", self._on_drag)
-        for child in frame.winfo_children():
-            child.bind("<ButtonPress-3>", self._start_drag)
-            child.bind("<B3-Motion>", self._on_drag)
+        # 右键拖动
+        canvas.bind("<ButtonPress-3>", self._start_drag)
+        canvas.bind("<B3-Motion>", self._on_drag)
 
-        # hover 效果
-        frame.bind("<Enter>", lambda e: frame.configure(bg="#3a8a65"))
-        frame.bind("<Leave>", lambda e: frame.configure(bg="#2F6B4F"))
-        for child in frame.winfo_children():
-            child.bind("<Enter>", lambda e: frame.configure(bg="#3a8a65"))
-            child.bind("<Leave>", lambda e: frame.configure(bg="#2F6B4F"))
+        # hover 效果（圆变色）
+        canvas.bind("<Enter>", lambda e: self._set_canvas_color(canvas, "#3a8a65"))
+        canvas.bind("<Leave>", lambda e: self._set_canvas_color(canvas, "#2F6B4F"))
+        self._canvas = canvas
+
+    def _set_canvas_color(self, canvas, color):
+        canvas.itemconfigure(1, fill=color)
+        canvas.configure(bg=color)
 
     def _on_click(self, event):
         """点击按钮。"""
@@ -117,7 +135,7 @@ class FloatingButton:
     def _start_drag(self, event):
         """开始拖动（右键）。"""
         self._drag_start_x = event.x_root - self.win.winfo_x()
-        self._drag_start_y = event.y_root - self.win.y()
+        self._drag_start_y = event.y_root - self.win.winfo_y()
 
     def _on_drag(self, event):
         """拖动中。"""
@@ -162,13 +180,11 @@ class FloatingButton:
 
 
 def open_morning_browser(config=None):
-    """打开早读浏览器窗口（独立进程）。"""
+    """打开早读浏览器窗口（独立进程）。
+    已登录（配置含年级/班级/密码）则自动登录；未登录则直接打开网页首页。
+    """
     if config is None:
         config = load_morning_config()
-
-    # 检查是否已配置班级
-    if not config.get("grade") or not config.get("class_number"):
-        return False
 
     # 启动独立进程
     run_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run.py")

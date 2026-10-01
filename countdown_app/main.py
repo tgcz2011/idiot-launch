@@ -236,7 +236,10 @@ class App:
         self._theme_filter = _ThemeChangeFilter(self)
         self.qapp.installNativeEventFilter(self._theme_filter)
 
-        if self.cfg["wallpaper"]["enabled"]:
+        if self.cfg["wallpaper"]["enabled"] and not _CLI_OVERRIDES.get("settings"):
+            # 设置模式（--settings）下不自动启动壁纸：只唤起设置窗口，
+            # 避免"打开设置 → 本来没开的壁纸也启动"的意外行为。
+            # 更新/切换考试后需要壁纸自动重启的场景走 apply_overrides_and_restart。
             self.start_wallpaper()
         # --settings：启动后自动弹出设置窗口（供外部启动器一键唤起）
         if _CLI_OVERRIDES.get("settings"):

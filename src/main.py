@@ -41,6 +41,7 @@ from src.core import (
     check_show_window_event,
     is_morning_logged_in,
     get_morning_students,
+    verify_morning_login,
 )
 
 VERSION = LAUNCHER_VERSION
@@ -431,25 +432,25 @@ class MorningConfigDialog:
         self.win.transient(parent)
         self.win.grab_set()
 
-        w, h = 380, 320
+        w, h = 380, 470
         sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
         x = (sw - w) // 2
         y = (sh - h) // 2
         self.win.geometry(f"{w}x{h}+{x}+{y}")
 
-        frame = tk.Frame(self.win, bg=BG_COLOR, padx=25, pady=20)
+        frame = tk.Frame(self.win, bg=BG_COLOR, padx=25, pady=18)
         frame.pack(fill="both", expand=True)
 
         tk.Label(frame, text="早晚读设置", font=("Microsoft YaHei UI", 16, "bold"),
-                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w", pady=(0, 15))
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w", pady=(0, 12))
 
         # 年级
         tk.Label(frame, text="年级", font=("Microsoft YaHei UI", 10),
                  bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
         self.grade_var = tk.StringVar()
         grade_frame = tk.Frame(frame, bg=BG_COLOR)
-        grade_frame.pack(fill="x", pady=(2, 10))
+        grade_frame.pack(fill="x", pady=(2, 8))
         for grade_val, grade_name in self.GRADES:
             rb = tk.Radiobutton(grade_frame, text=grade_name, variable=self.grade_var,
                                 value=grade_val, bg=BG_COLOR, fg=TEXT_COLOR,
@@ -461,7 +462,7 @@ class MorningConfigDialog:
                  bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
         self.class_entry = tk.Entry(frame, font=("Microsoft YaHei UI", 12),
                                     justify="center")
-        self.class_entry.pack(fill="x", pady=(2, 10))
+        self.class_entry.pack(fill="x", pady=(2, 8))
 
         # 密码
         tk.Label(frame, text="班级密码", font=("Microsoft YaHei UI", 10),
@@ -470,10 +471,22 @@ class MorningConfigDialog:
                                    show="*", justify="center")
         self.pass_entry.pack(fill="x", pady=(2, 8))
 
+        # 注意事项（从早读网页登录页搬来，防止老师不知道填什么）
+        tip_box = tk.Frame(frame, bg="#fff7ed", highlightthickness=1,
+                           highlightbackground="#fdba74")
+        tip_box.pack(fill="x", pady=(0, 10))
+        tk.Label(tip_box, text="注意事项", font=("Microsoft YaHei UI", 9, "bold"),
+                 bg="#fff7ed", fg="#c2410c", anchor="w").pack(fill="x", padx=10, pady=(6, 0))
+        tk.Label(tip_box, text="· 先选年级，再填班级号：初中 01-14，高中 01-11\n"
+                 "· 初始密码：admin + 班级号（一班 = admin01）\n"
+                 "· 密码可在教师管理界面修改",
+                 font=("Microsoft YaHei UI", 9), bg="#fff7ed", fg="#9a3412",
+                 justify="left", anchor="w").pack(fill="x", padx=10, pady=(2, 6))
+
         # 持久登录选项
         self.persistent_var = tk.BooleanVar(value=True)
         persistent_frame = tk.Frame(frame, bg=BG_COLOR)
-        persistent_frame.pack(fill="x", pady=(0, 12))
+        persistent_frame.pack(fill="x", pady=(0, 10))
         tk.Checkbutton(persistent_frame, text="记住登录信息（持久化到 D 盘）",
                        variable=self.persistent_var, bg=BG_COLOR, fg=TEXT_COLOR,
                        font=("Microsoft YaHei UI", 10), activebackground=BG_COLOR,
@@ -484,9 +497,10 @@ class MorningConfigDialog:
         # 按钮
         btn_frame = tk.Frame(frame, bg=BG_COLOR)
         btn_frame.pack(fill="x")
-        tk.Button(btn_frame, text="保存", font=("Microsoft YaHei UI", 11, "bold"),
+        self.login_btn = tk.Button(btn_frame, text="登录", font=("Microsoft YaHei UI", 11, "bold"),
                   bg=ACCENT_COLOR, fg="white", relief="flat", padx=20, pady=6,
-                  cursor="hand2", command=self._save).pack(side="left")
+                  cursor="hand2", command=self._login)
+        self.login_btn.pack(side="left")
         tk.Button(btn_frame, text="退出登录", font=("Microsoft YaHei UI", 10),
                   bg="#e74c3c", fg="white", relief="flat", padx=15, pady=6,
                   cursor="hand2", command=self._logout).pack(side="left", padx=(10, 0))
@@ -513,7 +527,7 @@ class MorningConfigDialog:
         if config.get("password"):
             self.pass_entry.insert(0, config["password"])
 
-    def _save(self):
+    def _login(self):
         grade = self.grade_var.get()
         class_number = self.class_entry.get().strip()
         password = self.pass_entry.get().strip()
@@ -528,31 +542,47 @@ class MorningConfigDialog:
             messagebox.showwarning("提示", "班级号必须是数字", parent=self.win)
             return
 
-        # 年级名称
+        # 先通过 API 校验账号密码有效性，成功后才保存到本地
+        self.login_btn.config(state="disabled", text="验证中...")
+        result = {"done": False}
+
+        def worker():
+            ok, periods, err = verify_morning_login(grade, class_number, password)
+            result["ok"], result["periods"], result["err"] = ok, periods, err
+            result["done"] = True
+            self.win.after(0, lambda: self._on_login_result(
+                result["ok"], result["periods"], result["err"],
+                grade, class_number, password))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_login_result(self, ok, periods, err, grade, class_number, password):
+        self.login_btn.config(state="normal", text="登录")
+        if not ok:
+            messagebox.showerror("登录失败", err or "校验失败，请稍后重试", parent=self.win)
+            return
+
+        # 校验通过，保存配置
         grade_name = dict(self.GRADES).get(grade, "")
         class_name = f"{grade_name}{class_number}班"
-
         config = {
             "grade": grade,
             "class_number": class_number,
             "password": password,
             "class_name": class_name,
         }
-
-        # 尝试通过 API 获取时间段
-        periods = self._fetch_periods(grade, class_number, password)
         if periods:
             config["periods"] = periods
 
         persistent = self.persistent_var.get()
         if save_morning_config(config, persistent=persistent):
-            msg = f"已保存 {class_name} 的配置\n\n打开早晚读时将自动登录"
+            msg = f"登录成功！{class_name}\n\n打开早晚读时将自动登录"
             if not persistent:
                 msg += "\n\n（非持久登录：软件重启后需重新登录）"
             messagebox.showinfo("成功", msg, parent=self.win)
             self.win.destroy()
         else:
-            messagebox.showerror("错误", "保存失败", parent=self.win)
+            messagebox.showerror("错误", "保存配置失败", parent=self.win)
 
     def _logout(self):
         """退出登录：删除持久和临时早读配置。"""
@@ -1051,10 +1081,8 @@ class IdiotLaunchApp:
         self.root.after(200, self._poll_show_event)
 
     def _on_floating_click(self):
-        """悬浮按钮点击：打开早读浏览器。"""
-        config = load_morning_config()
-        if config.get("grade") and config.get("class_number"):
-            open_morning_browser(config)
+        """悬浮按钮点击：打开早读浏览器（未登录则进入首页）。"""
+        open_morning_browser()
 
     def _check_floating_button(self):
         """定期检查是否需要显示悬浮按钮。"""
@@ -1256,9 +1284,9 @@ class IdiotLaunchApp:
     def on_reading(self):
         self._run_with_loading(
             open_morning_reading,
-            "✓ 早晚读网页已在浏览器中打开",
+            "✓ 早晚读窗口已打开",
             title="正在打开早晚读",
-            subtitle="正在调用默认浏览器...",
+            subtitle="正在启动内嵌浏览器...",
         )
 
     def on_kill(self):

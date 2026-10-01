@@ -277,51 +277,18 @@ class SettingsDialog(QDialog):
         layout.setContentsMargins(16, 16, 16, 16)
 
         from . import version
-        from .update import REPO_PAGE
 
         grp = QGroupBox("关于")
         form = QFormLayout(grp)
-        for label, value in (("程序", "Countdown Desktop"),
+        for label, value in (("程序", "Countdown Desktop（傻瓜启动器特供版）"),
                              ("版本", "v%s" % version.VERSION),
                              ("功能", "动态壁纸 + 屏幕保护（网页/视频/图片/动图）"),
-                             ("渲染", "pywebview + WebView2（Chromium）")):
+                             ("渲染", "pywebview + WebView2（Chromium）"),
+                             ("更新", "已由傻瓜启动器统一管理，此处不提供更新")):
             text = QLabel(value)
             text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             form.addRow(label, text)
-        link_repo = QLabel('<a href="%s">GitHub 仓库（tgcz2011/countdown-desktop）</a>'
-                           % REPO_PAGE)
-        link_repo.setOpenExternalLinks(True)
-        form.addRow("源码", link_repo)
-        link_issue = QLabel('<a href="%s/issues">反馈问题 / 提交建议</a>' % REPO_PAGE)
-        link_issue.setOpenExternalLinks(True)
-        form.addRow("反馈", link_issue)
         layout.addWidget(grp)
-
-        # ---- 检查更新 ----
-        grp_upd = QGroupBox("更新")
-        v_upd = QVBoxLayout(grp_upd)
-        self.lbl_update = QLabel("点击「检查更新」查询 GitHub 最新版本")
-        self.lbl_update.setWordWrap(True)
-        v_upd.addWidget(self.lbl_update)
-        row_upd = QHBoxLayout()
-        self.btn_check_update = QPushButton("检查更新")
-        self.btn_check_update.clicked.connect(self._on_check_update)
-        row_upd.addWidget(self.btn_check_update)
-        self.btn_update_now = QPushButton("一键更新")
-        self.btn_update_now.setEnabled(False)
-        self.btn_update_now.clicked.connect(self._on_update_now)
-        row_upd.addWidget(self.btn_update_now)
-        self.btn_open_release = QPushButton("打开发布页")
-        self.btn_open_release.clicked.connect(self._on_open_release)
-        row_upd.addWidget(self.btn_open_release)
-        row_upd.addStretch()
-        v_upd.addLayout(row_upd)
-        self.chk_auto_update = QCheckBox("启动时自动检查更新（仅提示，不自动下载）")
-        self.chk_auto_update.setChecked(
-            bool(self.app.cfg.get("auto_check_update", True)))
-        self.chk_auto_update.toggled.connect(self._on_auto_update_toggled)
-        v_upd.addWidget(self.chk_auto_update)
-        layout.addWidget(grp_upd)
 
         # ---- 开源许可与鸣谢 ----
         grp_lic = QGroupBox("开源许可与鸣谢")
@@ -341,17 +308,6 @@ class SettingsDialog(QDialog):
         link_lively.setOpenExternalLinks(True)
         v_lic.addWidget(link_lively)
         layout.addWidget(grp_lic)
-
-        # 更新检查器（随对话框销毁）
-        from .update import UpdateChecker
-        self.updater = UpdateChecker(self)
-        self.updater.checkFinished.connect(self._on_check_finished)
-        self.updater.downloadProgress.connect(self._on_download_progress)
-        self.updater.downloadFinished.connect(self._on_download_finished)
-        self._update_installer_path = ""
-        if self.chk_auto_update.isChecked():
-            self.updater.check()
-            self.lbl_update.setText("正在检查更新…")
 
         layout.addStretch()
         return page

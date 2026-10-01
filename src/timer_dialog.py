@@ -7,6 +7,10 @@ Material Three 风格的计时器对话框。
 import tkinter as tk
 from tkinter import ttk
 import time
+import os
+import sys
+
+from src.core import resource_path
 
 # Material Three 配色
 M3_BACKGROUND = "#FEF7FF"
@@ -22,9 +26,9 @@ M3_TERTIARY = "#7D5260"
 
 
 class _CustomTitleBar:
-    """自定义标题栏：紫色背景 + 标题 + × 按钮，支持拖动。"""
+    """自定义标题栏：紫色背景 + 标题 + 全屏/× 按钮，支持拖动。"""
 
-    def __init__(self, parent, title, on_close):
+    def __init__(self, parent, title, on_close, on_fullscreen=None):
         self.parent = parent
         self.on_close = on_close
         self._drag_start_x = 0
@@ -49,12 +53,25 @@ class _CustomTitleBar:
         close_btn.bind("<Enter>", lambda e: close_btn.configure(bg="#7C5DBD"))
         close_btn.bind("<Leave>", lambda e: close_btn.configure(bg=M3_PRIMARY))
 
+        if on_fullscreen:
+            fs_btn = tk.Label(
+                self.bar, text="⛶", font=("Arial", 16, "bold"),
+                bg=M3_PRIMARY, fg=M3_ON_PRIMARY, cursor="hand2",
+                padx=12, pady=0,
+            )
+            fs_btn.pack(side="right")
+            fs_btn.bind("<Button-1>", lambda e: on_fullscreen())
+            fs_btn.bind("<Enter>", lambda e: fs_btn.configure(bg="#7C5DBD"))
+            fs_btn.bind("<Leave>", lambda e: fs_btn.configure(bg=M3_PRIMARY))
+
         # 拖动
         for widget in (self.bar,) + tuple(self.bar.winfo_children()):
             widget.bind("<ButtonPress-1>", self._start_drag)
             widget.bind("<B1-Motion>", self._on_drag)
-        # × 按钮不触发拖动
+        # × / 全屏按钮不触发拖动
         close_btn.bind("<ButtonPress-1>", lambda e: on_close())
+        if on_fullscreen:
+            fs_btn.bind("<ButtonPress-1>", lambda e: on_fullscreen())
 
     def _start_drag(self, event):
         self._drag_start_x = event.x_root - self.parent.winfo_x()
@@ -218,7 +235,7 @@ def _format_time(seconds, with_ms=False):
 
 
 class CountdownDialog:
-    """倒计时对话框：自定义标题栏，紧凑布局。"""
+    """倒计时对话框：自定义标题栏，紧凑布局，支持全屏。"""
 
     def __init__(self, parent):
         self.parent = parent
@@ -227,7 +244,7 @@ class CountdownDialog:
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
         self.win.overrideredirect(True)  # 去掉原生标题栏
-        self.win.geometry("360x350")
+        self.win.geometry("360x300")
 
         self._running = False
         self._paused = False
@@ -239,9 +256,11 @@ class CountdownDialog:
         self._pause_elapsed = 0
         self._timer_id = None
         self._red_threshold = 0
+        self._fullscreen = False
+        self._normal_geom = "360x300"
 
         # 自定义标题栏
-        self.title_bar = _CustomTitleBar(self.win, "倒计时", self._close)
+        self.title_bar = _CustomTitleBar(self.win, "倒计时", self._close, self._toggle_fullscreen)
 
         self._build_ui()
         self._center_window()
@@ -355,6 +374,9 @@ class CountdownDialog:
         self.start_btn.pack_forget()
         self.display_frame.pack(fill="x", pady=(4, 0))
         self.pause_btn.configure(text="暂停")
+        # 紧凑：运行时缩小窗口，去掉底部空白
+        if not self._fullscreen:
+            self.win.geometry("360x212")
         self._tick()
 
     def _toggle_pause(self):
@@ -386,6 +408,8 @@ class CountdownDialog:
         self.display_frame.pack_forget()
         self.picker_frame.pack(fill="x")
         self.start_btn.pack(side="bottom", fill="x", pady=(8, 0))
+        if not self._fullscreen:
+            self.win.geometry(self._normal_geom)
 
     def _tick(self):
         if not self._running or self._paused:
@@ -411,13 +435,51 @@ class CountdownDialog:
         self.time_label.configure(fg=M3_ERROR)
 
     def _play_alarm(self):
+        """播放倒计时结束铃声（assets/alarm.wav）。"""
         try:
             import winsound
-            for _ in range(3):
-                winsound.Beep(880, 300)
-                time.sleep(0.1)
+            path = resource_path(os.path.join("assets", "alarm.wav"))
+            if os.path.isfile(path):
+                winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            else:
+                for _ in range(3):
+                    winsound.Beep(880, 300)
+                    time.sleep(0.1)
         except Exception:
             pass
+
+    def _toggle_fullscreen(self):
+        if self._fullscreen:
+            self._exit_fullscreen()
+        else:
+            self._enter_fullscreen()
+
+    def _enter_fullscreen(self):
+        if self._fullscreen:
+            return
+        self._fullscreen = True
+        self._normal_geom = self.win.geometry()
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        self.win.geometry(f"{sw}x{sh}+0+0")
+        self.win.attributes("-topmost", True)
+        self.time_label.configure(font=("Roboto", 140, "bold"), pady=30)
+        for btn in (self.pause_btn, self.reset_btn, self.start_btn):
+            btn.configure(font=("Microsoft YaHei UI", 20, "bold"), pady=20)
+        self.win.bind("<Escape>", lambda e: self._toggle_fullscreen())
+
+    def _exit_fullscreen(self):
+        if not self._fullscreen:
+            return
+        self._fullscreen = False
+        self.win.geometry(self._normal_geom)
+        self.win.attributes("-topmost", False)
+        self.time_label.configure(font=("Roboto", 52, "bold"), pady=8)
+        for btn in (self.pause_btn, self.reset_btn, self.start_btn):
+            btn.configure(font=("Microsoft YaHei UI", 13, "bold"), pady=10)
+        self.win.unbind("<Escape>")
+        if self._running and not self._paused:
+            self.win.geometry("360x212")
 
     def _close(self):
         if self._timer_id:
@@ -426,7 +488,7 @@ class CountdownDialog:
 
 
 class StopwatchDialog:
-    """秒表对话框：自定义标题栏，支持记次。"""
+    """秒表对话框：自定义标题栏，支持记次，支持全屏。"""
 
     def __init__(self, parent):
         self.parent = parent
@@ -435,7 +497,7 @@ class StopwatchDialog:
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
         self.win.overrideredirect(True)
-        self.win.geometry("360x460")
+        self.win.geometry("360x420")
 
         self._running = False
         self._paused = False
@@ -443,8 +505,10 @@ class StopwatchDialog:
         self._elapsed = 0
         self._laps = []
         self._timer_id = None
+        self._fullscreen = False
+        self._normal_geom = "360x420"
 
-        self.title_bar = _CustomTitleBar(self.win, "秒表", self._close)
+        self.title_bar = _CustomTitleBar(self.win, "秒表", self._close, self._toggle_fullscreen)
 
         self._build_ui()
         self._center_window()
@@ -607,6 +671,37 @@ class StopwatchDialog:
         self._elapsed = time.time() - self._start_time
         self.time_label.configure(text=_format_time(self._elapsed, with_ms=True))
         self._timer_id = self.win.after(30, self._tick)
+
+    def _toggle_fullscreen(self):
+        if self._fullscreen:
+            self._exit_fullscreen()
+        else:
+            self._enter_fullscreen()
+
+    def _enter_fullscreen(self):
+        if self._fullscreen:
+            return
+        self._fullscreen = True
+        self._normal_geom = self.win.geometry()
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        self.win.geometry(f"{sw}x{sh}+0+0")
+        self.win.attributes("-topmost", True)
+        self.time_label.configure(font=("Roboto", 120, "bold"), pady=30)
+        for btn in (self.start_btn, self.lap_btn, self.reset_btn):
+            btn.configure(font=("Microsoft YaHei UI", 20, "bold"), pady=20)
+        self.win.bind("<Escape>", lambda e: self._toggle_fullscreen())
+
+    def _exit_fullscreen(self):
+        if not self._fullscreen:
+            return
+        self._fullscreen = False
+        self.win.geometry(self._normal_geom)
+        self.win.attributes("-topmost", False)
+        self.time_label.configure(font=("Roboto", 40, "bold"), pady=8)
+        for btn in (self.start_btn, self.lap_btn, self.reset_btn):
+            btn.configure(font=("Microsoft YaHei UI", 13, "bold"), pady=10)
+        self.win.unbind("<Escape>")
 
     def _close(self):
         if self._timer_id:
