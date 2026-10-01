@@ -14,10 +14,11 @@ import pystray
 from PIL import Image as PILImage
 
 from src.timer_dialog import CountdownDialog, StopwatchDialog
+from src.morning_browser import load_morning_config, save_morning_config
+from src.floating_button import FloatingButton, open_morning_browser, is_in_reading_period
 from src.core import (
     launch_countdown,
     launch_settings,
-    open_morning_reading,
     quit_countdown,
     find_installed_path,
     is_running,
@@ -408,6 +409,169 @@ class UpdateDetailDialog:
         if not messagebox.askyesno("确认更新", f"即将更新到 v{pending_ver}。\n\n更新过程中软件会自动关闭并重启，\n请确保没有正在进行的操作。\n\n是否立即更新？", parent=self.win):
             return
         send_command("apply_launcher_update_now")
+
+
+class MorningConfigDialog:
+    """早读班级配置对话框。"""
+
+    GRADES = [
+        ("7", "初一"), ("8", "初二"), ("9", "初三"),
+        ("10", "高一"), ("11", "高二"), ("12", "高三"),
+    ]
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.win = tk.Toplevel(parent)
+        self.win.title("早晚读设置")
+        self.win.configure(bg=BG_COLOR)
+        self.win.resizable(False, False)
+        self.win.transient(parent)
+        self.win.grab_set()
+
+        w, h = 380, 320
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+        frame = tk.Frame(self.win, bg=BG_COLOR, padx=25, pady=20)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(frame, text="早晚读设置", font=("Microsoft YaHei UI", 16, "bold"),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w", pady=(0, 15))
+
+        # 年级
+        tk.Label(frame, text="年级", font=("Microsoft YaHei UI", 10),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+        self.grade_var = tk.StringVar()
+        grade_frame = tk.Frame(frame, bg=BG_COLOR)
+        grade_frame.pack(fill="x", pady=(2, 10))
+        for grade_val, grade_name in self.GRADES:
+            rb = tk.Radiobutton(grade_frame, text=grade_name, variable=self.grade_var,
+                                value=grade_val, bg=BG_COLOR, fg=TEXT_COLOR,
+                                font=("Microsoft YaHei UI", 10))
+            rb.pack(side="left", padx=3)
+
+        # 班级号
+        tk.Label(frame, text="班级号", font=("Microsoft YaHei UI", 10),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+        self.class_entry = tk.Entry(frame, font=("Microsoft YaHei UI", 12),
+                                    justify="center")
+        self.class_entry.pack(fill="x", pady=(2, 10))
+
+        # 密码
+        tk.Label(frame, text="班级密码", font=("Microsoft YaHei UI", 10),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+        self.pass_entry = tk.Entry(frame, font=("Microsoft YaHei UI", 12),
+                                   show="*", justify="center")
+        self.pass_entry.pack(fill="x", pady=(2, 15))
+
+        # 按钮
+        btn_frame = tk.Frame(frame, bg=BG_COLOR)
+        btn_frame.pack(fill="x")
+        tk.Button(btn_frame, text="保存", font=("Microsoft YaHei UI", 11, "bold"),
+                  bg=ACCENT_COLOR, fg="white", relief="flat", padx=20, pady=6,
+                  cursor="hand2", command=self._save).pack(side="left")
+        tk.Button(btn_frame, text="取消", font=("Microsoft YaHei UI", 11),
+                  bg="#95a5a6", fg="white", relief="flat", padx=20, pady=6,
+                  cursor="hand2", command=self.win.destroy).pack(side="right")
+
+        # 加载已有配置
+        self._load_config()
+
+    def _load_config(self):
+        config = load_morning_config()
+        if config.get("grade"):
+            self.grade_var.set(config["grade"])
+        else:
+            self.grade_var.set("9")
+        if config.get("class_number"):
+            self.class_entry.insert(0, str(config["class_number"]).zfill(2))
+        if config.get("password"):
+            self.pass_entry.insert(0, config["password"])
+
+    def _save(self):
+        grade = self.grade_var.get()
+        class_number = self.class_entry.get().strip()
+        password = self.pass_entry.get().strip()
+
+        if not class_number or not password:
+            messagebox.showwarning("提示", "请填写班级号和密码", parent=self.win)
+            return
+
+        try:
+            class_number = int(class_number)
+        except ValueError:
+            messagebox.showwarning("提示", "班级号必须是数字", parent=self.win)
+            return
+
+        # 年级名称
+        grade_name = dict(self.GRADES).get(grade, "")
+        class_name = f"{grade_name}{class_number}班"
+
+        config = {
+            "grade": grade,
+            "class_number": class_number,
+            "password": password,
+            "class_name": class_name,
+        }
+
+        # 尝试通过 API 获取时间段
+        periods = self._fetch_periods(grade, class_number, password)
+        if periods:
+            config["periods"] = periods
+
+        if save_morning_config(config):
+            messagebox.showinfo("成功", f"已保存 {class_name} 的配置\n\n打开早晚读时将自动登录", parent=self.win)
+            self.win.destroy()
+        else:
+            messagebox.showerror("错误", "保存失败", parent=self.win)
+
+    def _fetch_periods(self, grade, class_number, password):
+        """通过 API 获取早晚读时间段。"""
+        try:
+            import urllib.request
+            import json
+            import hashlib
+
+            base_url = "https://zztool.free.nf/morning-reading/api.php"
+
+            # 1. 获取种子
+            seed_url = f"{base_url}?action=get_seed&identity=record"
+            with urllib.request.urlopen(seed_url, timeout=10) as resp:
+                seed_data = json.loads(resp.read().decode("utf-8"))
+                seed = seed_data.get("data", {}).get("seed", "")
+
+            if not seed:
+                return None
+
+            # 2. 计算 token
+            username = f"{grade}-{class_number}"
+            token_str = f"{username}:{password}:{seed}"
+            token = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+
+            # 3. 获取 status
+            status_url = f"{base_url}?action=status&username={username}"
+            req = urllib.request.Request(status_url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status_data = json.loads(resp.read().decode("utf-8"))
+                period_text = status_data.get("data", {}).get("period_text", "")
+
+            # 解析时间段文本："早读：06:20-07:00，晚读：17:45-18:15"
+            periods = {}
+            if "早读" in period_text:
+                morning_part = period_text.split("早读：")[1].split("，")[0]
+                start, end = morning_part.split("-")
+                periods["morning"] = {"start": start.strip(), "end": end.strip()}
+            if "晚读" in period_text:
+                evening_part = period_text.split("晚读：")[1]
+                start, end = evening_part.split("-")
+                periods["evening"] = {"start": start.strip(), "end": end.strip()}
+
+            return periods if periods else None
+        except Exception:
+            return None
         messagebox.showinfo("正在更新", f"正在更新到 v{pending_ver}...\n\n软件将自动关闭并重启，请稍候。", parent=self.win)
         self.win.destroy()
         self.parent.destroy()
@@ -459,6 +623,9 @@ class IdiotLaunchApp:
         self._create_tray_icon()
         # 轮询显示窗口事件（其他实例请求显示时激活窗口）
         self._poll_show_event()
+        # 早读悬浮按钮
+        self._floating_button = FloatingButton(self.root, on_click=self._on_floating_click)
+        self._check_floating_button()
 
     def _ensure_daemon(self):
         def do():
@@ -569,13 +736,20 @@ class IdiotLaunchApp:
         )
         self.btn_countdown.grid(row=2, column=1, padx=5, pady=5)
 
-        # 第四行：秒表（跨两列）
+        # 第四行：秒表 + 早读设置
         self.btn_stopwatch = HoverButton(
             btn_frame, "秒表", "记次秒表",
             BTN_STOPWATCH, BTN_HOVER_STOPWATCH, self.on_stopwatch,
-            width=500, height=75,
+            width=240, height=75,
         )
-        self.btn_stopwatch.grid(row=3, column=0, columnspan=2, padx=5, pady=5)
+        self.btn_stopwatch.grid(row=3, column=0, padx=5, pady=5)
+
+        self.btn_morning_config = HoverButton(
+            btn_frame, "早读设置", "配置早晚读班级",
+            BTN_SETTINGS, BTN_HOVER_SETTINGS, self.on_morning_config,
+            width=240, height=75,
+        )
+        self.btn_morning_config.grid(row=3, column=1, padx=5, pady=5)
 
         # 底部状态栏
         self.status_var = tk.StringVar(value="正在检测 Countdown Desktop...")
@@ -630,6 +804,20 @@ class IdiotLaunchApp:
         except Exception:
             pass
         self.root.after(200, self._poll_show_event)
+
+    def _on_floating_click(self):
+        """悬浮按钮点击：打开早读浏览器。"""
+        config = load_morning_config()
+        if config.get("grade") and config.get("class_number"):
+            open_morning_browser(config)
+
+    def _check_floating_button(self):
+        """定期检查是否需要显示悬浮按钮。"""
+        try:
+            self._floating_button.update_visibility()
+        except Exception:
+            pass
+        self.root.after(30000, self._check_floating_button)
 
     def _create_tray_icon(self):
         """创建系统托盘图标（在单独线程中运行）。"""
@@ -813,6 +1001,9 @@ class IdiotLaunchApp:
 
     def on_stopwatch(self):
         StopwatchDialog(self.root)
+
+    def on_morning_config(self):
+        MorningConfigDialog(self.root)
 
     def _do_quit(self):
         ok = quit_countdown()

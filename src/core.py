@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.9.0.0-beta5"
+LAUNCHER_VERSION = "1.9.0.0-beta6"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -709,34 +709,39 @@ def daemon_run() -> int:
         pass
     try:
         while True:
-            state = load_state()
-            # 快捷方式守护（流氓软件模式）：每 30 秒检查一次 D 盘根目录 + 桌面，缺失即重建
-            # 必须在任何阻塞操作（如下载）之前执行，否则下载期间快捷方式不会恢复
-            ensure_shortcuts()
-            cmd = poll_command()
-            if cmd:
-                _handle_daemon_command(cmd)
-            # 空闲时静默自我更新（5 分钟无操作）
-            if apply_launcher_update_idle():
-                return 0
-            _check_and_download_launcher_update()
-            # Countdown Desktop 更新（后台线程：下载/等待退出/安装 都不阻塞主循环）
-            # CD 已合并，不再单独更新：_check_and_start_countdown_update()
-            # 不覆盖后台正在进行的下载/安装/等待状态
-            st = load_state().get("daemon", {}).get("activity", "")
-            if st not in ("downloading", "updating", "installing", "waiting", "checking"):
-                set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
-            # 30 秒休眠，分成 6 次 5 秒，期间可响应退出事件和命令
-            for _ in range(6):
-                if _wait_quit_or_sleep(quit_event, 5000):
-                    log_daemon("收到退出事件，daemon 优雅退出")
-                    return 0
+            try:
+                state = load_state()
+                # 快捷方式守护（流氓软件模式）：每 30 秒检查一次 D 盘根目录 + 桌面，缺失即重建
+                # 必须在任何阻塞操作（如下载）之前执行，否则下载期间快捷方式不会恢复
+                ensure_shortcuts()
                 cmd = poll_command()
                 if cmd:
                     _handle_daemon_command(cmd)
-                    st = load_state().get("daemon", {}).get("activity", "")
-                    if st not in ("downloading", "updating", "installing", "waiting", "checking"):
-                        set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
+                # 空闲时静默自我更新（5 分钟无操作）
+                if apply_launcher_update_idle():
+                    return 0
+                _check_and_download_launcher_update()
+                # Countdown Desktop 更新（后台线程：下载/等待退出/安装 都不阻塞主循环）
+                # CD 已合并，不再单独更新：_check_and_start_countdown_update()
+                # 不覆盖后台正在进行的下载/安装/等待状态
+                st = load_state().get("daemon", {}).get("activity", "")
+                if st not in ("downloading", "updating", "installing", "waiting", "checking"):
+                    set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
+                # 30 秒休眠，分成 6 次 5 秒，期间可响应退出事件和命令
+                for _ in range(6):
+                    if _wait_quit_or_sleep(quit_event, 5000):
+                        log_daemon("收到退出事件，daemon 优雅退出")
+                        return 0
+                    cmd = poll_command()
+                    if cmd:
+                        _handle_daemon_command(cmd)
+                        st = load_state().get("daemon", {}).get("activity", "")
+                        if st not in ("downloading", "updating", "installing", "waiting", "checking"):
+                            set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
+            except Exception as e:
+                log_daemon(f"daemon 主循环异常: {type(e).__name__}: {e}")
+                set_daemon_status("idle", 0, f"守护进程异常恢复: {type(e).__name__}")
+                time.sleep(5)
     except KeyboardInterrupt:
         pass
     finally:

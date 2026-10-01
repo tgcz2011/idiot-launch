@@ -1,6 +1,7 @@
 """Idiot Launch 入口脚本。
 无参数 = GUI 模式；--daemon = 后台更新守护进程（无窗口）；--quit-daemon = 通知 daemon 优雅退出；
---countdown-app = 运行 Countdown Desktop（已合并到本项目，共享 Python 运行时）。
+--countdown-app = 运行 Countdown Desktop（已合并到本项目，共享 Python 运行时）；
+--morning-browser = 运行早读内嵌浏览器（独立进程）。
 """
 import sys
 import os
@@ -25,6 +26,10 @@ if __name__ == "__main__":
             sys.exit(run(mode))
         from countdown_app.main import run
         sys.exit(run())
+    elif "--morning-browser" in sys.argv:
+        # 运行早读内嵌浏览器
+        from src.morning_browser import main
+        main()
     else:
         # 启动前检查 Idiot Launch 自我更新（仅 frozen 模式）。
         # 如果有待更新，此函数会生成 VBS 替换器并 sys.exit，不会返回。
