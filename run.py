@@ -1,5 +1,6 @@
 """Idiot Launch 入口脚本。
-无参数 = GUI 模式；--daemon = 后台更新守护进程（无窗口）；--quit-daemon = 通知 daemon 优雅退出；
+无参数 = GUI 模式；--server = 后端 HTTP API 服务器（Flutter 前端模式）；
+--daemon = 后台更新守护进程（无窗口）；--quit-daemon = 通知 daemon 优雅退出；
 --countdown-app = 运行 Countdown Desktop（已合并到本项目，共享 Python 运行时）；
 --morning-browser = 运行早读内嵌浏览器（独立进程）。
 """
@@ -9,7 +10,10 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 if __name__ == "__main__":
-    if "--daemon" in sys.argv:
+    if "--server" in sys.argv:
+        from src.backend_server import main as backend_main
+        backend_main()
+    elif "--daemon" in sys.argv:
         from src.core import daemon_run
         sys.exit(daemon_run())
     elif "--quit-daemon" in sys.argv:
