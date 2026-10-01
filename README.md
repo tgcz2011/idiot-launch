@@ -166,29 +166,40 @@ python -m venv .venv
 
 发布：推送 tag `v<版本>`，GitHub Actions 自动构建并创建 Release（同时上传两个文件）。
 
-## 项目结构
+## 项目结构（V3：Flutter 前端 + Python 后端）
 
 ```
 idiot-launch/
-├── run.py                  入口（无参=GUI，--daemon=后台守护进程）
-├── src/
-│   ├── __init__.py
-│   ├── core.py             核心逻辑：安装/启动/退出/自动更新/daemon/快捷方式/多源下载
-│   └── main.py             GUI（tkinter，四大按钮 + 更新指示器 + 状态栏）
-├── assets/
-│   ├── icon.ico            应用图标（多尺寸）
-│   └── icon_source.png     图标源图
-├── installer/              Countdown Desktop 安装包（构建时下载，不入库）
-├── tools/                  辅助脚本（单元测试 test_core.py 等）
-├── build.ps1               本地一键构建
-├── IdiotLaunch.spec        PyInstaller 规格（内嵌安装包+图标+版本元数据，noUPX）
-├── IdiotLaunch.iss         Inno Setup 安装脚本（自动安装到 D 盘，原生进度条）
-├── version_info.txt        PE 版本元数据
-├── requirements.txt        依赖（仅 pyinstaller）
-├── .github/workflows/release.yml   tag→构建→Release
+├── flutter_app/            Flutter 前端（Material 3 + NavigationRail）
+│   ├── lib/
+│   │   ├── main.dart       主界面（侧边栏导航 + 更新指示器 + 对话框）
+│   │   ├── api.dart        API 封装（自动读端口/启后端/HTTP 调用）
+│   │   └── timer_page.dart 倒计时/秒表（CupertinoPicker + 全屏 + 铃声）
+│   ├── pubspec.yaml        依赖（http/window_manager/audioplayers）
+│   └── windows/            Windows 平台配置（BINARY_NAME=IdiotLaunch）
+├── src/                    Python 后端
+│   ├── backend_server.py   HTTP API 服务器（127.0.0.1:随机端口 + daemon 后台线程）
+│   ├── core.py             核心逻辑：启动/退出/自动更新/daemon/快捷方式/多源下载
+│   ├── morning_api_client.py  早读 API（AES-128 自动过 InfinityFree JS challenge）
+│   ├── morning_browser.py  早读内嵌浏览器（PySide6/pywebview，独立进程）
+│   └── floating_button.py  早读悬浮球（tkinter，独立进程）
+├── countdown_app/          Countdown Desktop 源码（已合并，共享 Python 运行时）
+├── run.py                  入口（--server=后端API，--daemon=守护，--countdown-app=CD，--morning-browser=早读）
+├── assets/                 图标/铃声等资源
+├── backend.spec            PyInstaller 后端打包规格（onedir，console=False）
+├── IdiotLaunch.iss         Inno Setup 安装脚本（Flutter 产物→{app}，后端→{app}\backend）
+├── requirements.txt        Python 依赖（PySide6/pywebview/pyinstaller/pystray 等）
+├── .github/workflows/release.yml   tag→Flutter build + PyInstaller + Inno Setup→Release
 ├── README.md / HANDOFF.md  文档（每次更新强制同步）
 └── LICENSE                 GPL-3.0
 ```
+
+### 前后端通信
+
+- 后端启动时写入端口文件 `D:\IdiotLaunch\data\backend_port`
+- Flutter 前端读取端口文件，通过 `http://127.0.0.1:<port>/api/*` 调用后端
+- 后端未运行时，前端自动启动 `IdiotLaunchBackend.exe --server`
+- 后端常驻后台，频繁开关前端不中断更新/守护进程
 
 ## 版本号规则
 

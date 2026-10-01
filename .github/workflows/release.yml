@@ -62,7 +62,7 @@ jobs:
       - name: Verify build artifacts
         shell: pwsh
         run: |
-          $flutterExe = "flutter_app\build\windows\runner\Release\IdiotLaunch.exe"
+          $flutterExe = "flutter_app\build\windows\x64\runner\Release\IdiotLaunch.exe"
           $backendExe = "dist\backend\IdiotLaunchBackend.exe"
           if (-not (Test-Path $flutterExe)) { throw "Flutter exe not found: $flutterExe" }
           if (-not (Test-Path $backendExe)) { throw "Backend exe not found: $backendExe" }
