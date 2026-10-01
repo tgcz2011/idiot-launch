@@ -4,7 +4,7 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.9.0.0-beta4"
+#define MyAppVersion "1.9.0.0-beta5"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 

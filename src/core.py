@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.9.0.0-beta4"
+LAUNCHER_VERSION = "1.9.0.0-beta5"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024

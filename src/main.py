@@ -293,7 +293,7 @@ class UpdateDetailDialog:
         self.win.transient(parent)
         self.win.grab_set()
 
-        w, h = 420, 380
+        w, h = 420, 470
         sw = self.win.winfo_screenwidth()
         sh = self.win.winfo_screenheight()
         x = (sw - w) // 2
@@ -306,7 +306,7 @@ class UpdateDetailDialog:
         tk.Label(frame, text="更新状态", font=("Microsoft YaHei UI", 16, "bold"),
                  bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
 
-        self.info_text = tk.Text(frame, width=46, height=14, font=("Microsoft YaHei UI", 9),
+        self.info_text = tk.Text(frame, width=46, height=19, font=("Microsoft YaHei UI", 9),
                                  bg="#ffffff", fg=TEXT_COLOR, wrap="word",
                                  relief="flat", padx=10, pady=10)
         self.info_text.pack(pady=(10, 10), fill="both", expand=True)
@@ -374,6 +374,15 @@ class UpdateDetailDialog:
             lines.append(f"  待更新版本: v{state.get('pending_launcher_version', '?')}（已下载）")
         else:
             lines.append("  待更新: 无")
+
+        lines.append("")
+        lines.append("【关于】")
+        lines.append(f"  版本: v{VERSION}")
+        lines.append(f"  内嵌 Countdown Desktop: v{COUNTDOWN_VERSION}")
+        lines.append("  开源许可证: MIT License")
+        lines.append("  作者: tgcz2011")
+        lines.append("  鸣谢: 豆包 AI 辅助开发")
+        lines.append("  GitHub: github.com/tgcz2011/idiot-launch")
 
         self.info_text.config(state="normal")
         self.info_text.delete("1.0", "end")
@@ -574,13 +583,7 @@ class IdiotLaunchApp:
             self.root, textvariable=self.status_var,
             font=("Microsoft YaHei UI", 9), bg=BG_COLOR, fg=STATUS_COLOR,
         )
-        status.pack(side="bottom", pady=(6, 2))
-
-        version_label = tk.Label(
-            self.root, text=f"v{VERSION}  |  已合并 Countdown Desktop v{COUNTDOWN_VERSION}",
-            font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
-        )
-        version_label.pack(side="bottom", pady=(0, 6))
+        status.pack(side="bottom", pady=(6, 8))
 
     def _show_update_detail(self):
         UpdateDetailDialog(self.root)

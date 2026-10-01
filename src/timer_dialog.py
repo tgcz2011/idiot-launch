@@ -227,7 +227,7 @@ class CountdownDialog:
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
         self.win.overrideredirect(True)  # 去掉原生标题栏
-        self.win.geometry("360x420")
+        self.win.geometry("360x350")
 
         self._running = False
         self._paused = False
@@ -297,7 +297,7 @@ class CountdownDialog:
             font=("Roboto", 52, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE,
         )
-        self.time_label.pack(pady=(6, 12))
+        self.time_label.pack(pady=(4, 8))
 
         btn_row = tk.Frame(self.display_frame, bg=M3_BACKGROUND)
         btn_row.pack(fill="x")
@@ -316,7 +316,7 @@ class CountdownDialog:
         self.start_btn = self._make_button(
             content, "开始倒计时", M3_PRIMARY, M3_ON_PRIMARY, self._start,
         )
-        self.start_btn.pack(side="bottom", fill="x", pady=(10, 0))
+        self.start_btn.pack(side="bottom", fill="x", pady=(8, 0))
 
     def _make_button(self, parent, text, bg, fg, cmd):
         btn = tk.Label(parent, text=text, font=("Microsoft YaHei UI", 13, "bold"),
@@ -385,7 +385,7 @@ class CountdownDialog:
         self.time_label.configure(text="00:00:00", fg=M3_ON_SURFACE)
         self.display_frame.pack_forget()
         self.picker_frame.pack(fill="x")
-        self.start_btn.pack(side="bottom", fill="x", pady=(10, 0))
+        self.start_btn.pack(side="bottom", fill="x", pady=(8, 0))
 
     def _tick(self):
         if not self._running or self._paused:
@@ -435,7 +435,7 @@ class StopwatchDialog:
         self.win.configure(bg=M3_BACKGROUND)
         self.win.resizable(False, False)
         self.win.overrideredirect(True)
-        self.win.geometry("360x500")
+        self.win.geometry("360x460")
 
         self._running = False
         self._paused = False
@@ -466,10 +466,10 @@ class StopwatchDialog:
             font=("Roboto", 40, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE,
         )
-        self.time_label.pack(pady=(6, 12))
+        self.time_label.pack(pady=(4, 8))
 
         btn_frame = tk.Frame(content, bg=M3_BACKGROUND)
-        btn_frame.pack(fill="x", pady=(0, 10))
+        btn_frame.pack(fill="x", pady=(0, 8))
 
         self.start_btn = self._make_button(
             btn_frame, "开始", M3_PRIMARY, M3_ON_PRIMARY, self._toggle_start_pause,
@@ -489,7 +489,7 @@ class StopwatchDialog:
             content, text="记次记录", font=("Microsoft YaHei UI", 11, "bold"),
             bg=M3_BACKGROUND, fg=M3_ON_SURFACE_VARIANT, anchor="w",
         )
-        list_label.pack(fill="x", pady=(4, 4))
+        list_label.pack(fill="x", pady=(2, 4))
 
         list_container = tk.Frame(content, bg=M3_SURFACE, highlightthickness=1,
                                   highlightbackground=M3_OUTLINE)
