@@ -30,7 +30,7 @@ from src.core import (
     load_state,
     send_command,
     resource_path,
-    EMBEDDED_VERSION,
+    COUNTDOWN_VERSION,
     APP_NAME,
     LAUNCHER_VERSION,
     LAUNCHER_INSTALL_EXE,
@@ -577,7 +577,7 @@ class IdiotLaunchApp:
         status.pack(side="bottom", pady=(6, 2))
 
         version_label = tk.Label(
-            self.root, text=f"v{VERSION}  |  内嵌 Countdown Desktop v{EMBEDDED_VERSION}",
+            self.root, text=f"v{VERSION}  |  已合并 Countdown Desktop v{COUNTDOWN_VERSION}",
             font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#bdc3c7",
         )
         version_label.pack(side="bottom", pady=(0, 6))
