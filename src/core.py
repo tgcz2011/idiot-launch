@@ -58,7 +58,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "2.0.0.0-beta1"
+LAUNCHER_VERSION = "2.0.0.0-beta2"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -358,61 +358,37 @@ def is_morning_logged_in() -> bool:
 
 
 def get_morning_token(config: dict) -> str | None:
-    """通过早读 API 获取认证 token。
-    流程：get_seed(identity=record) -> sha256(username:password:seed) -> token
-    """
+    """通过早读 API 客户端获取认证 token（自动过 InfinityFree JS challenge + 缓存）。"""
     try:
+        from src.morning_api_client import ApiClient
         grade = config.get("grade")
         class_number = config.get("class_number")
         password = config.get("password")
         if not (grade and class_number and password):
             return None
+        client = ApiClient()
         username = f"{grade}-{class_number}"
-        # 1. 获取种子
-        seed_url = f"{MORNING_API_URL}?action=get_seed&identity=record"
-        req = urllib.request.Request(seed_url)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            seed_data = json.loads(resp.read().decode("utf-8"))
-        if not seed_data.get("success"):
-            return None
-        seed = seed_data["data"]["seed"]
-        # 2. 计算 token
-        token = hashlib.sha256(f"{username}:{password}:{seed}".encode("utf-8")).hexdigest()
-        return token
+        return client._cached_token("record", username, password)
     except Exception as e:
         log_daemon(f"早读 token 获取失败: {e}")
         return None
 
 
 def verify_morning_login(grade, class_number, password):
-    """校验早读班级账号密码是否有效。
+    """校验早读班级账号密码是否有效（用 morning_api_client 自动过 InfinityFree challenge）。
 
-    流程：get_seed -> sha256(username:password:seed) -> Bearer token ->
-    请求 action=status 验证身份。返回 (ok, periods, error_msg)。
+    返回 (ok, periods, error_msg)。
     """
     try:
+        from src.morning_api_client import ApiClient
+        client = ApiClient()
         username = f"{grade}-{class_number}"
-        # 1. 获取种子
-        seed_url = f"{MORNING_API_URL}?action=get_seed&identity=record"
-        req = urllib.request.Request(seed_url)
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            seed_data = json.loads(resp.read().decode("utf-8"))
-        if not seed_data.get("success"):
-            return False, None, "早读服务暂时不可用，请稍后重试"
-        seed = seed_data["data"]["seed"]
-        # 2. 计算 token
-        token = hashlib.sha256(f"{username}:{password}:{seed}".encode("utf-8")).hexdigest()
-        # 3. 请求 status 验证身份
-        status_url = f"{MORNING_API_URL}?action=status&username={urllib.parse.quote(username)}"
-        req = urllib.request.Request(status_url)
-        req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            status_data = json.loads(resp.read().decode("utf-8"))
-        if not status_data.get("success"):
+        data = client.call("status", username, password, "record")
+        if not data.get("success"):
             return False, None, "账号或密码错误，请检查后重试"
-        # 4. 解析时间段
+        # 解析时间段
         periods = {}
-        period_text = status_data.get("data", {}).get("period_text", "")
+        period_text = data.get("data", {}).get("period_text", "")
         if "早读" in period_text:
             morning_part = period_text.split("早读：")[1].split("，")[0]
             start, end = morning_part.split("-")
@@ -422,37 +398,27 @@ def verify_morning_login(grade, class_number, password):
             start, end = evening_part.split("-")
             periods["evening"] = {"start": start.strip(), "end": end.strip()}
         return True, (periods if periods else None), ""
-    except urllib.error.HTTPError as e:
-        if e.code in (401, 403):
-            return False, None, "账号或密码错误，请检查后重试"
-        return False, None, f"早读服务响应异常（{e.code}），请稍后重试"
     except Exception as e:
         log_daemon(f"早读登录校验失败: {e}")
         return False, None, "网络连接失败，请检查网络后重试"
 
 
 def get_morning_students(config: dict = None) -> list[dict]:
-    """获取早读班级的学生列表。返回 [{"student_no": 1, "name": "张三"}, ...]"""
+    """获取早读班级的学生列表（用 morning_api_client 自动过 challenge）。
+    返回 [{"student_no": 1, "name": "张三"}, ...]
+    """
     if config is None:
         config = load_morning_config()
     if not is_morning_logged_in():
         return []
-    token = get_morning_token(config)
-    if not token:
-        return []
     try:
-        grade = config.get("grade")
-        class_number = config.get("class_number")
-        username = f"{grade}-{class_number}"
-        url = f"{MORNING_API_URL}?action=students&username={urllib.parse.quote(username)}"
-        req = urllib.request.Request(url)
-        req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        from src.morning_api_client import ApiClient
+        client = ApiClient()
+        username = f"{config.get('grade')}-{config.get('class_number')}"
+        data = client.call("students", username, config.get("password", ""), "record")
         if not data.get("success"):
             return []
-        students = data["data"]["students"]
-        # 简化字段，只保留学号和姓名
+        students = data.get("data", {}).get("students", [])
         return [{"student_no": s["student_no"], "name": s["name"]} for s in students]
     except Exception as e:
         log_daemon(f"早读学生列表获取失败: {e}")

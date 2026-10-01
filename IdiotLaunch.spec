@@ -38,6 +38,8 @@ a = Analysis(
         "countdown_app.cli", "countdown_app.config", "countdown_app.settings",
         "countdown_app.update", "countdown_app.version", "countdown_app.win32",
         "countdown_app.media",
+        # 早读 API 客户端（纯标准库，自动过 InfinityFree challenge）
+        "src.morning_api_client",
         # 构建时注入的密钥模块
         "src._secrets",
     ],

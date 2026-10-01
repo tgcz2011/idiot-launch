@@ -27,6 +27,7 @@
 
 | 版本 | 技术 | 结论 |
 |------|------|------|
+| **v2.0.0.0-beta2** | 同上 | **紧急修复：早读 API 改用 morning_api_client（d 升）**：beta1 的 QWebEngineView 桥方案因 Qt runJavaScript 不等待 async Promise 而完全失效（进程退出但无结果）。改用早读仓库自带的 `api_client.py`（纯 Python 标准库、内嵌 AES-128 解密、自动破解 InfinityFree JS challenge），集成到 `src/morning_api_client.py`，缓存路径改 D 盘（`D:\IdiotLaunch\data\morning_api_cache.json`，cookie 6h/token 2h）。删除 `src/morning_api_bridge.py`、run.py `--morning-api` 分支、spec 对应 hiddenimport。verify_morning_login/get_morning_students/get_morning_token 全部改用 ApiClient，实测假账号正确返回"账号或密码错误" |
 | **v2.0.0.0-beta1** | 同上 | **大版本 V2 起点（a 升，功能 8 项升级）**：①修复打开壁纸设置导致壁纸立即启动——CD `--settings` 模式下不再自动 start_wallpaper（`countdown_app/main.py`）；②早读设置"保存"改"登录"——先经 API 校验账号密码（get_seed→sha256→Bearer→status）成功后才保存本地，失败提示具体原因（core.py 新增 verify_morning_login）；③早读设置对话框搬入网页登录页注意事项（先选年级/班级号规则、初始密码 admin+班号、教师可改密码），窗口加高至 470；④早晚读未登录也能打开——应用内浏览器直接进网页首页（不再拦截），主按钮与悬浮球统一走内嵌浏览器（core.open_morning_reading 改为内嵌、floating_button.open_morning_browser 去掉未配置检查）；⑤倒计时/秒表新增全屏模式——标题栏 ⛶ 按钮、Esc 退出、全屏大字体+大按钮+置顶；倒计时窗口运行时紧凑化（360x212，去掉底部空白）、选择器模式 360x300；⑥倒计时结束铃声改为 assets/alarm.wav（合成多音上行铃，winsound 异步播放，无文件时回退 Beep）；⑦悬浮球改为纯图标（手指点击图案 PNG，圆形绿色按钮，无文字）；⑧内嵌 CD 特供版——设置"关于"页删除更新模块（检查更新/一键更新/自动检查复选框/UpdateChecker），标注"已由傻瓜启动器统一管理" |
 | **v1.0.0.0** | Python + tkinter + PyInstaller | 初始版本，三按钮 + 内嵌安装包 + D 盘静默安装 |
 | **v1.0.0.1** | 同上 | 新增「关闭倒计时」按钮：taskkill /F /T 终止进程树 + 桌面刷新（d 升） |
