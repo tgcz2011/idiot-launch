@@ -4,7 +4,7 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.8.3.0"
+#define MyAppVersion "1.8.3.1"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 
@@ -43,9 +43,9 @@ SolidCompression=no
 WizardStyle=modern
 PrivilegesRequired=lowest
 CloseApplications=yes
-CloseApplicationsFilter=IdiotLaunch.exe
+CloseApplicationsFilter=IdiotLaunch.exe;CountdownDesktop.exe
 RestartApplications=yes
-Uninstallable=no
+Uninstallable=yes
 UsePreviousAppDir=no
 UsePreviousGroup=no
 UsePreviousTasks=no
@@ -119,6 +119,36 @@ begin
         BuildTypeContent := 'compressed';
       #endif
       SaveStringToFile(BuildTypeFile, BuildTypeContent, False);
+    except
+    end;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  // 卸载前：强制结束所有 IdiotLaunch 进程（包括 daemon），避免文件占用
+  if CurUninstallStep = usUninstall then
+  begin
+    try
+      Exec('taskkill', '/F /IM IdiotLaunch.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    except
+    end;
+    // 删除 daemon 创建的快捷方式
+    try
+      DeleteFile('D:\傻瓜启动器.lnk');
+      DeleteFile(ExpandConstant('{commondesktop}\傻瓜启动器.lnk'));
+      DeleteFile(ExpandConstant('{userdesktop}\傻瓜启动器.lnk'));
+    except
+    end;
+  end;
+  // 卸载后：清理残留（_internal 目录、build_type.txt）
+  if CurUninstallStep = usPostUninstall then
+  begin
+    try
+      DelTree(ExpandConstant('{app}\_internal'), True, True, True);
+      DeleteFile(ExpandConstant('{app}\build_type.txt'));
     except
     end;
   end;

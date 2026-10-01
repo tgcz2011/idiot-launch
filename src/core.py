@@ -35,7 +35,7 @@ CHECK_INTERVAL = 6 * 3600
 DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
-IDLE_THRESHOLD = 600  # 10 分钟无操作视为空闲，此时可静默自我更新
+IDLE_THRESHOLD = 300  # 5 分钟无操作视为空闲，此时可静默自我更新
 
 # (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像；
 # 每个镜像给 120s 超时：卡住后 2 分钟切换下一个，7 个源总计约 14 分钟，
@@ -50,7 +50,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.3.0"
+LAUNCHER_VERSION = "1.8.3.1"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
