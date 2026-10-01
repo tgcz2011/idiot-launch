@@ -1,5 +1,5 @@
 """Idiot Launch 入口脚本。
-无参数 = GUI 模式；--daemon = 后台更新守护进程（无窗口）。
+无参数 = GUI 模式；--daemon = 后台更新守护进程（无窗口）；--quit-daemon = 通知 daemon 优雅退出。
 """
 import sys
 import os
@@ -10,6 +10,10 @@ if __name__ == "__main__":
     if "--daemon" in sys.argv:
         from src.core import daemon_run
         sys.exit(daemon_run())
+    elif "--quit-daemon" in sys.argv:
+        from src.core import signal_daemon_quit
+        ok = signal_daemon_quit()
+        sys.exit(0 if ok else 1)
     else:
         # 启动前检查 Idiot Launch 自我更新（仅 frozen 模式）。
         # 如果有待更新，此函数会生成 VBS 替换器并 sys.exit，不会返回。

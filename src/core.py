@@ -35,6 +35,7 @@ CHECK_INTERVAL = 6 * 3600
 DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
+DAEMON_QUIT_EVENT = "IdiotLaunch_Quit"  # 命名事件：收到后 daemon 优雅退出
 IDLE_THRESHOLD = 300  # 5 分钟无操作视为空闲，此时可静默自我更新
 
 # (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像；
@@ -50,7 +51,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "1.8.3.1"
+LAUNCHER_VERSION = "1.8.3.2"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -630,6 +631,49 @@ def _acquire_daemon_mutex():
         return None
 
 
+def signal_daemon_quit() -> bool:
+    """通知 daemon 优雅退出（设置命名事件）。成功返回 True。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenEventW.restype = ctypes.c_void_p
+        EVENT_MODIFY_STATE = 0x0002
+        handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, DAEMON_QUIT_EVENT)
+        if not handle:
+            return False
+        kernel32.SetEvent(handle)
+        kernel32.CloseHandle(handle)
+        return True
+    except Exception:
+        return False
+
+
+def _create_quit_event():
+    """daemon 启动时创建命名事件（自动重置）。返回 handle 或 None。"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateEventW.restype = ctypes.c_void_p
+        # bManualReset=False（自动重置）, bInitialState=False
+        handle = kernel32.CreateEventW(None, False, False, DAEMON_QUIT_EVENT)
+        return handle if handle else None
+    except Exception:
+        return None
+
+
+def _wait_quit_or_sleep(quit_event, ms: int) -> bool:
+    """等待退出事件或超时。返回 True=收到退出信号，False=超时。"""
+    if not quit_event:
+        time.sleep(ms / 1000.0)
+        return False
+    try:
+        WAIT_OBJECT_0 = 0
+        WAIT_TIMEOUT = 258
+        result = ctypes.windll.kernel32.WaitForSingleObject(quit_event, ms)
+        return result == WAIT_OBJECT_0
+    except Exception:
+        time.sleep(ms / 1000.0)
+        return False
+
+
 def _wait_and_install(installer_path: str, version: str, state: dict) -> None:
     deadline = time.time() + 2 * 3600
     while time.time() < deadline:
@@ -880,6 +924,7 @@ def daemon_run() -> int:
         return 0
     log_daemon(f"daemon 启动 (pid={os.getpid()}, v{LAUNCHER_VERSION})")
     set_daemon_status("starting", 0, "守护进程启动")
+    quit_event = _create_quit_event()
     # 启动时重置检查时间，使重启后立即检查更新（不受 6 小时间隔限制）
     try:
         _st = load_state()
@@ -897,7 +942,7 @@ def daemon_run() -> int:
             cmd = poll_command()
             if cmd:
                 _handle_daemon_command(cmd)
-            # 空闲时静默自我更新（10 分钟无操作）
+            # 空闲时静默自我更新（5 分钟无操作）
             if apply_launcher_update_idle():
                 return 0
             _check_and_download_launcher_update()
@@ -907,8 +952,11 @@ def daemon_run() -> int:
             st = load_state().get("daemon", {}).get("activity", "")
             if st not in ("downloading", "updating", "installing", "waiting", "checking"):
                 set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
+            # 30 秒休眠，分成 6 次 5 秒，期间可响应退出事件和命令
             for _ in range(6):
-                time.sleep(5)
+                if _wait_quit_or_sleep(quit_event, 5000):
+                    log_daemon("收到退出事件，daemon 优雅退出")
+                    return 0
                 cmd = poll_command()
                 if cmd:
                     _handle_daemon_command(cmd)
@@ -920,6 +968,11 @@ def daemon_run() -> int:
     finally:
         set_daemon_status("stopped", 0, "守护进程已停止")
         log_daemon("daemon 退出")
+        if quit_event:
+            try:
+                ctypes.windll.kernel32.CloseHandle(quit_event)
+            except Exception:
+                pass
         if mutex:
             try:
                 ctypes.windll.kernel32.CloseHandle(mutex)

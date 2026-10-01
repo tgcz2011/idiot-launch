@@ -4,7 +4,7 @@
 ; PrivilegesRequired=lowest 免管理员，适配学校教室电脑
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "1.8.3.1"
+#define MyAppVersion "1.8.3.2"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 
@@ -128,10 +128,18 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   ResultCode: Integer;
 begin
-  // 卸载前：强制结束所有 IdiotLaunch 进程（包括 daemon），避免文件占用
+  // 卸载前：先优雅通知 daemon 退出，等 5 秒，未退则强杀兜底
   if CurUninstallStep = usUninstall then
   begin
     try
+      // 优雅退出：通过命名事件通知 daemon
+      Exec(ExpandConstant('{app}\{#MyAppExeName}'), '--quit-daemon', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    except
+    end;
+    // 等待 daemon 优雅退出（最多 5 秒）
+    Sleep(5000);
+    try
+      // 兜底：如果 daemon 仍在运行，强制结束
       Exec('taskkill', '/F /IM IdiotLaunch.exe /T', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     except
     end;
