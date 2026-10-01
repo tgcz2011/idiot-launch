@@ -5,11 +5,11 @@ v1.3.0.0: 图标、右上角更新状态指示器、daemon 常驻启动、快捷
 import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
-import random
 import time
 import sys
 import os
 import ctypes
+import random
 
 import pystray
 from PIL import Image as PILImage
@@ -414,6 +414,209 @@ class UpdateDetailDialog:
         send_command("apply_launcher_update_now")
 
 
+class MorningConfigDialog:
+    """早读班级配置对话框。"""
+
+    GRADES = [
+        ("7", "初一"), ("8", "初二"), ("9", "初三"),
+        ("10", "高一"), ("11", "高二"), ("12", "高三"),
+    ]
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.win = tk.Toplevel(parent)
+        self.win.title("早晚读设置")
+        self.win.configure(bg=BG_COLOR)
+        self.win.resizable(False, False)
+        self.win.transient(parent)
+        self.win.grab_set()
+
+        w, h = 380, 320
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+        frame = tk.Frame(self.win, bg=BG_COLOR, padx=25, pady=20)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(frame, text="早晚读设置", font=("Microsoft YaHei UI", 16, "bold"),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w", pady=(0, 15))
+
+        # 年级
+        tk.Label(frame, text="年级", font=("Microsoft YaHei UI", 10),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+        self.grade_var = tk.StringVar()
+        grade_frame = tk.Frame(frame, bg=BG_COLOR)
+        grade_frame.pack(fill="x", pady=(2, 10))
+        for grade_val, grade_name in self.GRADES:
+            rb = tk.Radiobutton(grade_frame, text=grade_name, variable=self.grade_var,
+                                value=grade_val, bg=BG_COLOR, fg=TEXT_COLOR,
+                                font=("Microsoft YaHei UI", 10))
+            rb.pack(side="left", padx=3)
+
+        # 班级号
+        tk.Label(frame, text="班级号", font=("Microsoft YaHei UI", 10),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+        self.class_entry = tk.Entry(frame, font=("Microsoft YaHei UI", 12),
+                                    justify="center")
+        self.class_entry.pack(fill="x", pady=(2, 10))
+
+        # 密码
+        tk.Label(frame, text="班级密码", font=("Microsoft YaHei UI", 10),
+                 bg=BG_COLOR, fg=TEXT_COLOR).pack(anchor="w")
+        self.pass_entry = tk.Entry(frame, font=("Microsoft YaHei UI", 12),
+                                   show="*", justify="center")
+        self.pass_entry.pack(fill="x", pady=(2, 8))
+
+        # 持久登录选项
+        self.persistent_var = tk.BooleanVar(value=True)
+        persistent_frame = tk.Frame(frame, bg=BG_COLOR)
+        persistent_frame.pack(fill="x", pady=(0, 12))
+        tk.Checkbutton(persistent_frame, text="记住登录信息（持久化到 D 盘）",
+                       variable=self.persistent_var, bg=BG_COLOR, fg=TEXT_COLOR,
+                       font=("Microsoft YaHei UI", 10), activebackground=BG_COLOR,
+                       activeforeground=TEXT_COLOR).pack(side="left")
+        tk.Label(persistent_frame, text="不勾选则本次有效，重启后需重新登录",
+                 font=("Microsoft YaHei UI", 8), bg=BG_COLOR, fg="#95a5a6").pack(side="left", padx=(8, 0))
+
+        # 按钮
+        btn_frame = tk.Frame(frame, bg=BG_COLOR)
+        btn_frame.pack(fill="x")
+        tk.Button(btn_frame, text="保存", font=("Microsoft YaHei UI", 11, "bold"),
+                  bg=ACCENT_COLOR, fg="white", relief="flat", padx=20, pady=6,
+                  cursor="hand2", command=self._save).pack(side="left")
+        tk.Button(btn_frame, text="退出登录", font=("Microsoft YaHei UI", 10),
+                  bg="#e74c3c", fg="white", relief="flat", padx=15, pady=6,
+                  cursor="hand2", command=self._logout).pack(side="left", padx=(10, 0))
+        tk.Button(btn_frame, text="取消", font=("Microsoft YaHei UI", 11),
+                  bg="#95a5a6", fg="white", relief="flat", padx=20, pady=6,
+                  cursor="hand2", command=self.win.destroy).pack(side="right")
+
+        # 加载已有配置
+        self._load_config()
+
+    def _load_config(self):
+        config = load_morning_config()
+        # 判断当前配置是持久还是临时
+        import os as _os
+        from src.morning_browser import TEMP_CONFIG_PATH, PERSISTENT_CONFIG_PATH
+        is_temp = _os.path.isfile(TEMP_CONFIG_PATH)
+        self.persistent_var.set(not is_temp)
+        if config.get("grade"):
+            self.grade_var.set(config["grade"])
+        else:
+            self.grade_var.set("9")
+        if config.get("class_number"):
+            self.class_entry.insert(0, str(config["class_number"]).zfill(2))
+        if config.get("password"):
+            self.pass_entry.insert(0, config["password"])
+
+    def _save(self):
+        grade = self.grade_var.get()
+        class_number = self.class_entry.get().strip()
+        password = self.pass_entry.get().strip()
+
+        if not class_number or not password:
+            messagebox.showwarning("提示", "请填写班级号和密码", parent=self.win)
+            return
+
+        try:
+            class_number = int(class_number)
+        except ValueError:
+            messagebox.showwarning("提示", "班级号必须是数字", parent=self.win)
+            return
+
+        # 年级名称
+        grade_name = dict(self.GRADES).get(grade, "")
+        class_name = f"{grade_name}{class_number}班"
+
+        config = {
+            "grade": grade,
+            "class_number": class_number,
+            "password": password,
+            "class_name": class_name,
+        }
+
+        # 尝试通过 API 获取时间段
+        periods = self._fetch_periods(grade, class_number, password)
+        if periods:
+            config["periods"] = periods
+
+        persistent = self.persistent_var.get()
+        if save_morning_config(config, persistent=persistent):
+            msg = f"已保存 {class_name} 的配置\n\n打开早晚读时将自动登录"
+            if not persistent:
+                msg += "\n\n（非持久登录：软件重启后需重新登录）"
+            messagebox.showinfo("成功", msg, parent=self.win)
+            self.win.destroy()
+        else:
+            messagebox.showerror("错误", "保存失败", parent=self.win)
+
+    def _logout(self):
+        """退出登录：删除持久和临时早读配置。"""
+        if not messagebox.askyesno("确认退出", "确定要退出早晚读登录吗？\n\n退出后需要重新输入班级和密码。", parent=self.win):
+            return
+        try:
+            from src.morning_browser import clear_temp_morning_config, PERSISTENT_CONFIG_PATH
+            clear_temp_morning_config()
+            import os as _os
+            if _os.path.isfile(PERSISTENT_CONFIG_PATH):
+                _os.remove(PERSISTENT_CONFIG_PATH)
+            messagebox.showinfo("已退出", "已退出早晚读登录", parent=self.win)
+            self.win.destroy()
+        except Exception as e:
+            messagebox.showerror("错误", f"退出登录失败: {e}", parent=self.win)
+
+    def _fetch_periods(self, grade, class_number, password):
+        """通过 API 获取早晚读时间段。"""
+        try:
+            import urllib.request
+            import json
+            import hashlib
+
+            base_url = "https://zztool.free.nf/morning-reading/api.php"
+
+            # 1. 获取种子
+            seed_url = f"{base_url}?action=get_seed&identity=record"
+            with urllib.request.urlopen(seed_url, timeout=10) as resp:
+                seed_data = json.loads(resp.read().decode("utf-8"))
+                seed = seed_data.get("data", {}).get("seed", "")
+
+            if not seed:
+                return None
+
+            # 2. 计算 token
+            username = f"{grade}-{class_number}"
+            token_str = f"{username}:{password}:{seed}"
+            token = hashlib.sha256(token_str.encode("utf-8")).hexdigest()
+
+            # 3. 获取 status
+            status_url = f"{base_url}?action=status&username={username}"
+            req = urllib.request.Request(status_url, headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status_data = json.loads(resp.read().decode("utf-8"))
+                period_text = status_data.get("data", {}).get("period_text", "")
+
+            # 解析时间段文本："早读：06:20-07:00，晚读：17:45-18:15"
+            periods = {}
+            if "早读" in period_text:
+                morning_part = period_text.split("早读：")[1].split("，")[0]
+                start, end = morning_part.split("-")
+                periods["morning"] = {"start": start.strip(), "end": end.strip()}
+            if "晚读" in period_text:
+                evening_part = period_text.split("晚读：")[1]
+                start, end = evening_part.split("-")
+                periods["evening"] = {"start": start.strip(), "end": end.strip()}
+
+            return periods if periods else None
+        except Exception:
+            return None
+        messagebox.showinfo("正在更新", f"正在更新到 v{pending_ver}...\n\n软件将自动关闭并重启，请稍候。", parent=self.win)
+        self.win.destroy()
+        self.parent.destroy()
+
 
 class StudentPickerDialog(tk.Toplevel):
     """随机抽学生对话框：可自定义抽取人数，显示抽中结果。"""
@@ -434,6 +637,179 @@ class StudentPickerDialog(tk.Toplevel):
         self._load_students()
 
     def _build_ui(self):
+        tk.Label(self, text="随机抽学生", font=("Microsoft YaHei UI", 16, "bold"),
+                 bg=BG_COLOR, fg="#1f2937").pack(pady=(16, 8))
+
+        count_frame = tk.Frame(self, bg=BG_COLOR)
+        count_frame.pack(pady=8)
+        tk.Label(count_frame, text="抽取人数：", font=("Microsoft YaHei UI", 11),
+                 bg=BG_COLOR, fg="#374151").pack(side="left")
+        self.count_var = tk.IntVar(value=1)
+        self.count_spin = tk.Spinbox(count_frame, from_=1, to=50, width=6,
+                                      textvariable=self.count_var,
+                                      font=("Microsoft YaHei UI", 12))
+        self.count_spin.pack(side="left", padx=8)
+
+        self.pick_btn = tk.Button(self, text="开始抽取", font=("Microsoft YaHei UI", 13, "bold"),
+                                  bg="#1a73e8", fg="white", activebackground="#1557b0",
+                                  activeforeground="white", relief="flat", cursor="hand2",
+                                  command=self._on_pick, height=2, width=15)
+        self.pick_btn.pack(pady=12)
+
+        result_frame = tk.Frame(self, bg="white", highlightthickness=1,
+                                highlightbackground="#e5e7eb")
+        result_frame.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+
+        self.result_canvas = tk.Canvas(result_frame, bg="white", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(result_frame, orient="vertical", command=self.result_canvas.yview)
+        self.result_inner = tk.Frame(self.result_canvas, bg="white")
+        self.result_inner.bind("<Configure>",
+                               lambda e: self.result_canvas.configure(scrollregion=self.result_canvas.bbox("all")))
+        self.result_canvas.create_window((0, 0), window=self.result_inner, anchor="nw")
+        self.result_canvas.configure(yscrollcommand=scrollbar.set)
+        self.result_canvas.pack(side="left", fill="both", expand=True, padx=(10, 0), pady=10)
+        scrollbar.pack(side="right", fill="y", pady=10)
+
+        self._hint_label = tk.Label(self.result_inner, text="点击「开始抽取」随机抽取学生",
+                                    font=("Microsoft YaHei UI", 11), bg="white", fg="#9ca3af")
+        self._hint_label.pack(pady=30)
+
+        self.count_label = tk.Label(self, text="", font=("Microsoft YaHei UI", 9),
+                                    bg=BG_COLOR, fg="#6b7280")
+        self.count_label.pack(pady=(0, 8))
+
+    def _load_students(self):
+        self._loading = True
+        self.pick_btn.config(state="disabled", text="加载中...")
+        self._hint_label.config(text="正在获取学生列表...")
+
+        def worker():
+            students = get_morning_students()
+            self.after(0, lambda: self._on_students_loaded(students))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_students_loaded(self, students):
+        self._students = students
+        self._loading = False
+        if students:
+            self.pick_btn.config(state="normal", text="开始抽取")
+            self._hint_label.config(text=f"共 {len(students)} 名学生，点击开始抽取")
+            self.count_label.config(text=f"班级共 {len(students)} 人")
+            self.count_spin.config(to=max(1, len(students)))
+        else:
+            self.pick_btn.config(state="disabled", text="无法获取")
+            self._hint_label.config(text="获取学生列表失败，请检查网络或重新登录早读")
+
+    def _on_pick(self):
+        if self._loading or not self._students:
+            return
+        count = min(self.count_var.get(), len(self._students))
+        picked = random.sample(self._students, count)
+
+        for w in self.result_inner.winfo_children():
+            w.destroy()
+
+        tk.Label(self.result_inner, text=f"抽中 {count} 名学生：",
+                 font=("Microsoft YaHei UI", 12, "bold"), bg="white", fg="#1f2937").pack(pady=(10, 8))
+
+        for i, s in enumerate(picked, 1):
+            row = tk.Frame(self.result_inner, bg="white")
+            row.pack(fill="x", padx=15, pady=3)
+            tk.Label(row, text=f"{i}.", font=("Microsoft YaHei UI", 13, "bold"),
+                     bg="white", fg="#1a73e8", width=4, anchor="e").pack(side="left")
+            tk.Label(row, text=str(s["student_no"]), font=("Microsoft YaHei UI", 12),
+                     bg="white", fg="#6b7280", width=8, anchor="w").pack(side="left", padx=(8, 0))
+            tk.Label(row, text=s["name"], font=("Microsoft YaHei UI", 14, "bold"),
+                     bg="white", fg="#1f2937").pack(side="left", padx=(8, 0))
+
+        tk.Button(self.result_inner, text="重新抽取", font=("Microsoft YaHei UI", 10),
+                  bg="#f3f4f6", fg="#374151", relief="flat", cursor="hand2",
+                  command=self._on_pick).pack(pady=12)
+
+
+class IdiotLaunchApp:
+    def __init__(self, gui_mutex=None):
+        self.root = tk.Tk()
+        self.root.title("傻瓜启动器 v" + VERSION)
+        self.root.configure(bg=BG_COLOR)
+        self.root.resizable(False, False)
+        self._gui_mutex = gui_mutex
+        self._show_event = create_show_window_event()
+        self._tray_icon = None
+        self._tray_thread = None
+
+        # 设置窗口图标
+        try:
+            icon_path = resource_path(os.path.join("assets", "icon.ico"))
+            if os.path.isfile(icon_path):
+                self.root.iconbitmap(icon_path)
+        except Exception:
+            pass
+
+        # 侧边栏导航布局：窗口更宽
+        win_w = 680
+        win_h = 540
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = (screen_w - win_w) // 2
+        y = (screen_h - win_h) // 2
+        self.root.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        self.root.minsize(win_w, win_h)
+
+        self._loading = False
+        self._build_ui()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # 启动时确保 daemon 运行（常驻模式，单实例），并触发立即检查更新
+        self._ensure_daemon_and_check()
+        # 启动时确保快捷方式存在（流氓软件模式）
+        self._ensure_shortcuts_async()
+
+        self._start_running_monitor()
+        self._start_daemon_monitor()
+
+        # 创建系统托盘图标（单独线程）
+        self._create_tray_icon()
+        # 轮询显示窗口事件（其他实例请求显示时激活窗口）
+        self._poll_show_event()
+        # 早读悬浮按钮
+        self._floating_button = FloatingButton(self.root, on_click=self._on_floating_click)
+        self._check_floating_button()
+
+    def _ensure_daemon_and_check(self):
+        def do():
+            try:
+                if not is_daemon_running():
+                    start_daemon()
+                    # 新启动的 daemon 会自动立即检查更新（启动时重置 last_check=0）
+                else:
+                    # daemon 已在运行，发送命令触发立即检查更新（不等待 6 小时间隔）
+                    send_command("check_updates")
+            except Exception:
+                pass
+        threading.Thread(target=do, daemon=True).start()
+
+    def _ensure_shortcuts_async(self):
+        def do():
+            try:
+                ensure_shortcuts()
+            except Exception:
+                pass
+        threading.Thread(target=do, daemon=True).start()
+
+    def _draw_gradient(self):
+        """绘制从浅紫到浅蓝的渐变背景。"""
+        w, h = 560, 520
+        for y in range(h):
+            ratio = y / h
+            r = int(240 + (224 - 240) * ratio)
+            g = int(242 + (231 - 242) * ratio)
+            b = int(245 + (255 - 245) * ratio)
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            self._bg_canvas.create_line(0, y, w, y, fill=color)
+
+    def _build_ui(self):
         # 渐变背景
         self._bg_canvas = tk.Canvas(self.root, width=680, height=540, highlightthickness=0)
         self._bg_canvas.place(x=0, y=0)
@@ -447,7 +823,6 @@ class StudentPickerDialog(tk.Toplevel):
         title_frame = tk.Frame(self.root, bg=BG_COLOR)
         title_frame.pack(pady=(16, 0))
 
-        # 标题装饰线
         tk.Frame(title_frame, width=30, height=3, bg=ACCENT_COLOR).pack(side="left", padx=(0, 10))
         title = tk.Label(
             title_frame, text="傻瓜启动器", font=("Microsoft YaHei UI", 20, "bold"),
@@ -472,11 +847,9 @@ class StudentPickerDialog(tk.Toplevel):
         self.sidebar.pack(side="left", fill="y")
         self.sidebar.pack_propagate(False)
 
-        # 侧边栏标题
         tk.Label(self.sidebar, text="功能分类", font=("Microsoft YaHei UI", 10, "bold"),
                  bg=CARD_BG, fg=TEXT_COLOR).pack(pady=(14, 8))
 
-        # 分类按钮
         self._category_buttons = {}
         self._current_category = "倒计时"
         categories = [
@@ -496,7 +869,6 @@ class StudentPickerDialog(tk.Toplevel):
             btn.bind("<Leave>", lambda e, b=btn, c=cat: self._cat_hover_leave(b, c))
             self._category_buttons[cat] = btn
 
-        # 侧边栏底部版本
         tk.Label(self.sidebar, text=f"v{VERSION}", font=("Microsoft YaHei UI", 8),
                  bg=CARD_BG, fg="#9ca3af").pack(side="bottom", pady=10)
 
@@ -505,22 +877,18 @@ class StudentPickerDialog(tk.Toplevel):
                                       highlightthickness=1, highlightbackground="#e2e8f0")
         self.content_frame.pack(side="left", fill="both", expand=True, padx=(10, 0))
 
-        # 分类标题
         self.category_title = tk.Label(self.content_frame, text="倒计时",
                                        font=("Microsoft YaHei UI", 14, "bold"),
                                        bg=CARD_BG, fg=TEXT_COLOR, anchor="w")
         self.category_title.pack(fill="x", padx=16, pady=(14, 8))
 
-        # 按钮容器
         self.buttons_container = tk.Frame(self.content_frame, bg=CARD_BG)
         self.buttons_container.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        # 创建所有按钮（先创建，再根据分类显示/隐藏）
         self._create_all_buttons()
         self._switch_category("倒计时")
 
     def _create_all_buttons(self):
-        """创建所有按钮，存储到字典中，根据分类显示。"""
         self._all_buttons = {}
 
         # 倒计时分类
@@ -605,23 +973,19 @@ class StudentPickerDialog(tk.Toplevel):
         self._all_buttons["设置"] = [self.btn_about]
 
     def _switch_category(self, category):
-        """切换分类，显示对应按钮。"""
         self._current_category = category
         self.category_title.config(text=category)
 
-        # 隐藏所有按钮
         for cat, btns in self._all_buttons.items():
             for btn in btns:
                 btn.grid_remove()
 
-        # 显示当前分类的按钮（2列网格）
         buttons = self._all_buttons.get(category, [])
         for i, btn in enumerate(buttons):
             row = i // 2
             col = i % 2
             btn.grid(row=row, column=col, padx=6, pady=6)
 
-        # 更新侧边栏按钮样式
         for cat, btn in self._category_buttons.items():
             if cat == category:
                 btn.config(bg="#e8f0fe", fg=ACCENT_COLOR, font=("Microsoft YaHei UI", 11, "bold"))
@@ -637,7 +1001,6 @@ class StudentPickerDialog(tk.Toplevel):
             btn.config(bg=CARD_BG)
 
     def _show_about(self):
-        """显示关于对话框。"""
         about_text = f"""傻瓜启动器 v{VERSION}
 
 一键启动中考/高考倒计时或早晚读网页。
@@ -647,6 +1010,13 @@ class StudentPickerDialog(tk.Toplevel):
 作者：tgcz2011 + AI
 鸣谢：豆包、Countdown Desktop 社区"""
         messagebox.showinfo("关于", about_text, parent=self.root)
+
+    def _open_student_picker(self):
+        if not is_morning_logged_in():
+            messagebox.showinfo("需要登录", "请先在「早读设置」中登录班级，才能使用随机抽学生功能。")
+            return
+        StudentPickerDialog(self.root)
+
 
     def _show_update_detail(self):
         UpdateDetailDialog(self.root)
@@ -915,13 +1285,6 @@ class StudentPickerDialog(tk.Toplevel):
 
     def on_custom(self):
         launch_custom()
-
-    def _open_student_picker(self):
-        """打开随机抽学生对话框。"""
-        if not is_morning_logged_in():
-            messagebox.showinfo("需要登录", "请先在「早读设置」中登录班级，才能使用随机抽学生功能。")
-            return
-        StudentPickerDialog(self.root)
 
     def on_morning_config(self):
         MorningConfigDialog(self.root)
