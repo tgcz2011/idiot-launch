@@ -150,7 +150,8 @@ jobs:
           name: Idiot Launch ${{ github.ref_name }}
           body_path: release_body.md
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+          fail_on_unmatched_files: true
           files: |
-            dist\IdiotLaunch_Setup_*.exe
+            dist/IdiotLaunch_Setup_*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
