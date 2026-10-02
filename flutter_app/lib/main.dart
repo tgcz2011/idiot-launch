@@ -1,10 +1,61 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:window_manager/window_manager.dart';
 import 'api.dart';
 import 'timer_page.dart';
 
+// 单实例：PID 文件 + 进程检查
+bool _isFirstInstance = false;
+
+Future<void> _ensureSingleInstance() async {
+  final pidFile = r'D:\IdiotLaunch\data\instance.pid';
+  try {
+    final dir = Directory(r'D:\IdiotLaunch\data');
+    if (!dir.existsSync()) dir.createSync(recursive: true);
+
+    if (File(pidFile).existsSync()) {
+      final existingPid = int.tryParse(File(pidFile).readAsStringSync().trim());
+      if (existingPid != null) {
+        // 用 tasklist 检查该 PID 是否仍在运行
+        final result = Process.runSync('tasklist', ['/FI', 'PID eq $existingPid', '/NH']);
+        if (result.stdout.toString().contains('$existingPid')) {
+          _isFirstInstance = false;
+          return;
+        }
+      }
+    }
+    // 没有运行中的实例，写入当前 PID
+    File(pidFile).writeAsStringSync(pid.toString());
+    _isFirstInstance = true;
+  } catch (_) {
+    _isFirstInstance = true; // 出错时保守认为是第一个实例
+  }
+}
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+  await _ensureSingleInstance();
+  if (!_isFirstInstance) {
+    // 已有实例运行，强制退出当前进程（Windows 上 exit() 可能被 engine 拦截）
+    Process.killPid(pid);
+    return;
+  }
+
+  WindowOptions windowOptions = const WindowOptions(
+    size: Size(780, 520),
+    minimumSize: Size(640, 420),
+    center: true,
+    backgroundColor: Colors.transparent,
+    skipTaskbar: false,
+    titleBarStyle: TitleBarStyle.normal,
+  );
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+  });
+
   runApp(const IdiotLaunchApp());
 }
 
@@ -36,7 +87,7 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage> {
-  int _selectedIndex = 1; // 默认工具页
+  int _selectedIndex = 0; // 默认壁纸&屏保页
   final ApiService _api = ApiService();
   Map<String, dynamic> _status = {};
   Map<String, dynamic> _updateStatus = {};
@@ -47,9 +98,9 @@ class _MainPageState extends State<MainPage> {
 
   static const _pages = [
     NavigationRailDestination(
-      icon: Icon(Icons.timer_outlined),
-      selectedIcon: Icon(Icons.timer),
-      label: Text('倒计时'),
+      icon: Icon(Icons.wallpaper_outlined),
+      selectedIcon: Icon(Icons.wallpaper),
+      label: Text('壁纸&屏保'),
     ),
     NavigationRailDestination(
       icon: Icon(Icons.handyman_outlined),
@@ -94,13 +145,15 @@ class _MainPageState extends State<MainPage> {
     try {
       final s = await _api.getStatus();
       final u = await _api.getUpdateStatus();
-      setState(() {
-        _status = s;
-        _updateStatus = u;
-        _cdRunning = s['countdown_running'] ?? false;
-        _morningLoggedIn = s['morning_logged_in'] ?? false;
-        _morningClass = s['morning_class'] ?? '';
-      });
+      if (mounted) {
+        setState(() {
+          _status = s;
+          _updateStatus = u;
+          _cdRunning = s['countdown_running'] ?? false;
+          _morningLoggedIn = s['morning_logged_in'] ?? false;
+          _morningClass = s['morning_class'] ?? '';
+        });
+      }
     } catch (_) {}
   }
 
@@ -164,7 +217,7 @@ class _MainPageState extends State<MainPage> {
             selectedIndex: _selectedIndex,
             onDestinationSelected: (i) => setState(() => _selectedIndex = i),
             labelType: NavigationRailLabelType.all,
-            minWidth: 72,
+            minWidth: 68,
             destinations: _pages,
           ),
           const VerticalDivider(thickness: 1, width: 1),
@@ -177,7 +230,7 @@ class _MainPageState extends State<MainPage> {
   Widget _buildPage() {
     switch (_selectedIndex) {
       case 0:
-        return const TimerPage();
+        return _buildWallpaperPage();
       case 1:
         return _buildToolsPage();
       case 2:
@@ -189,10 +242,10 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  // ========== 工具页 ==========
-  Widget _buildToolsPage() {
+  // ========== 壁纸&屏保页 ==========
+  Widget _buildWallpaperPage() {
     return Padding(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -220,23 +273,49 @@ class _MainPageState extends State<MainPage> {
     );
   }
 
+  // ========== 工具页 ==========
+  Widget _buildToolsPage() {
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('工具', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _bigButton(Icons.timer_outlined, '倒计时', Colors.teal, () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const TimerPage()));
+              }),
+              _bigButton(Icons.timer_10_select, '秒表', Colors.indigo, () {
+                Navigator.push(context, MaterialPageRoute(builder: (_) => const StopwatchPage()));
+              }),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _bigButton(IconData icon, String label, Color color, VoidCallback? onPressed) {
     final disabled = onPressed == null;
     return SizedBox(
-      width: 160,
-      height: 100,
+      width: 150,
+      height: 92,
       child: Material(
         color: disabled ? Colors.grey[200] : color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: onPressed,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(14),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(icon, size: 36, color: disabled ? Colors.grey : color),
-              const SizedBox(height: 8),
-              Text(label, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: disabled ? Colors.grey : Colors.black87)),
+              Icon(icon, size: 32, color: disabled ? Colors.grey : color),
+              const SizedBox(height: 6),
+              Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: disabled ? Colors.grey : Colors.black87)),
             ],
           ),
         ),
@@ -250,24 +329,39 @@ class _MainPageState extends State<MainPage> {
     final progress = (_updateStatus['download_progress'] ?? 0.0) as double;
     final pending = _updateStatus['pending_version'] ?? '';
 
+    IconData leadingIcon;
+    Color leadingColor;
+    if (downloading) {
+      leadingIcon = Icons.download;
+      leadingColor = Colors.blue;
+    } else if (hasUpdate) {
+      leadingIcon = Icons.update;
+      leadingColor = Colors.orange;
+    } else {
+      leadingIcon = Icons.check_circle_outline;
+      leadingColor = Colors.green;
+    }
+
     return Card(
       child: ListTile(
-        leading: SizedBox(
-          width: 28,
-          height: 28,
-          child: CircularProgressIndicator(
-            value: downloading ? progress : null,
-            strokeWidth: 3,
-            color: hasUpdate ? Colors.orange : Colors.green,
-          ),
-        ),
+        leading: downloading
+            ? SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  value: progress > 0 ? progress : null,
+                  strokeWidth: 2.5,
+                  color: Colors.blue,
+                ),
+              )
+            : Icon(leadingIcon, color: leadingColor),
         title: Text(
           downloading ? '正在下载更新 $pending...' : (hasUpdate ? '新版本待更新：$pending' : '已是最新版本'),
-          style: const TextStyle(fontSize: 14),
+          style: const TextStyle(fontSize: 13),
         ),
         subtitle: Text(
           '当前 v${_status['version'] ?? '?'}',
-          style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+          style: TextStyle(fontSize: 11, color: Colors.grey[600]),
         ),
         trailing: hasUpdate && !downloading
             ? TextButton(onPressed: () => _api.checkUpdate(), child: const Text('立即更新'))
@@ -306,7 +400,7 @@ class _MainPageState extends State<MainPage> {
   // ========== 早读页 ==========
   Widget _buildMorningPage() {
     return Padding(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -448,7 +542,7 @@ class _MainPageState extends State<MainPage> {
   // ========== 设置页 ==========
   Widget _buildSettingsPage() {
     return Padding(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -473,7 +567,7 @@ class _MainPageState extends State<MainPage> {
                 ListTile(
                   leading: const Icon(Icons.code),
                   title: const Text('开源许可证'),
-                  subtitle: const Text('MIT License · 使用 Countdown Desktop\n鸣谢：豆包 AI 辅助开发'),
+                  subtitle: const Text('GPL-3.0 · 内嵌 Countdown Desktop\n鸣谢：豆包 AI 辅助开发'),
                 ),
               ],
             ),
