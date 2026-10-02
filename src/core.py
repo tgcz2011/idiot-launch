@@ -58,7 +58,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta6"
+LAUNCHER_VERSION = "3.0.0.0-beta7"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -75,16 +75,43 @@ def resource_path(relative: str) -> str:
 
 
 def parse_version(v: str) -> tuple:
+    """解析版本号，返回 (主版本元组, 预发布类型权重, 预发布数字)。
+    预发布类型权重：正式版=100, rc=3, beta=2, alpha=1, 未知=0
+    正式版 > rc > beta > alpha，同类型比数字。
+    """
+    import re
     v = v.strip().lstrip("vV")
+    pre_type = 100  # 默认正式版
+    pre_num = 0
+    if "-" in v:
+        main_part, pre_part = v.split("-", 1)
+        pre_lower = pre_part.lower()
+        if "alpha" in pre_lower:
+            pre_type = 1
+            m = re.search(r'\d+', pre_part)
+            pre_num = int(m.group()) if m else 0
+        elif "beta" in pre_lower:
+            pre_type = 2
+            m = re.search(r'\d+', pre_part)
+            pre_num = int(m.group()) if m else 0
+        elif "rc" in pre_lower:
+            pre_type = 3
+            m = re.search(r'\d+', pre_part)
+            pre_num = int(m.group()) if m else 0
+        else:
+            pre_type = 0
+    else:
+        main_part = v
+
     parts = []
-    for p in v.split("."):
+    for p in main_part.split("."):
         try:
             parts.append(int(p))
         except ValueError:
             parts.append(0)
     while len(parts) < 4:
         parts.append(0)
-    return tuple(parts[:4])
+    return (tuple(parts[:4]), pre_type, pre_num)
 
 
 def compare_versions(v1: str, v2: str) -> int:

@@ -1,7 +1,7 @@
 name: idiot_launch
 description: "傻瓜启动器 — 一键启动中考/高考倒计时、早晚读、计时器"
 publish_to: 'none'
-version: 3.0.0+6
+version: 3.0.0+7
 
 environment:
   sdk: ^3.13.4
@@ -13,6 +13,7 @@ dependencies:
   http: ^1.2.0
   window_manager: ^0.4.0
   audioplayers: ^6.1.0
+  desktop_multi_window: ^0.3.0
 
 dev_dependencies:
   flutter_test:
@@ -38,6 +39,13 @@ flutter:
 
   assets:
     - assets/audio/alarm.wav
+
+  fonts:
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-Regular.otf
+        - asset: assets/fonts/NotoSansSC-Bold.otf
+          weight: 700
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

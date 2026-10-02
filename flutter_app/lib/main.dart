@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:ffi' as ffi;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'api.dart';
 import 'timer_page.dart';
 import 'cd_settings_page.dart';
@@ -52,7 +53,19 @@ Future<void> _ensureSingleInstance() async {
   }
 }
 
-void main() async {
+void main(List<String> args) async {
+  // 多窗口入口分发：倒计时/秒表独立窗口
+  if (args.isNotEmpty) {
+    if (args[0] == 'timer') {
+      await timerWindowMain(args);
+      return;
+    }
+    if (args[0] == 'stopwatch') {
+      await stopwatchWindowMain(args);
+      return;
+    }
+  }
+
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
   await _ensureSingleInstance();
@@ -92,6 +105,7 @@ class IdiotLaunchApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
         useMaterial3: true,
+        fontFamily: 'NotoSansSC',
         textTheme: const TextTheme(
           titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
           titleMedium: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
@@ -418,11 +432,21 @@ class _MainPageState extends State<MainPage> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _bigButton(Icons.timer_outlined, '倒计时', Colors.teal, () {
-                showDialog(context: context, builder: (_) => const _ToolDialog(title: '倒计时', child: TimerPage()));
+              _bigButton(Icons.timer_outlined, '倒计时', Colors.teal, () async {
+                final controller = await DesktopMultiWindow.createWindow(['timer']);
+                controller
+                  ..setFrame(const Offset(0, 0) & const Size(360, 480))
+                  ..center()
+                  ..setTitle('倒计时')
+                  ..show();
               }),
-              _bigButton(Icons.timer_10_select, '秒表', Colors.indigo, () {
-                showDialog(context: context, builder: (_) => const _ToolDialog(title: '秒表', child: StopwatchPage()));
+              _bigButton(Icons.timer_10_select, '秒表', Colors.indigo, () async {
+                final controller = await DesktopMultiWindow.createWindow(['stopwatch']);
+                controller
+                  ..setFrame(const Offset(0, 0) & const Size(360, 520))
+                  ..center()
+                  ..setTitle('秒表')
+                  ..show();
               }),
             ],
           ),
@@ -708,36 +732,113 @@ class _MainPageState extends State<MainPage> {
       final countCtrl = TextEditingController(text: '1');
       showDialog(
         context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('随机抽学生'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('共 ${students.length} 名学生'),
-              const SizedBox(height: 12),
-              TextField(controller: countCtrl, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: '抽取人数')),
+        builder: (ctx) => StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Text('随机抽学生'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('共 ${students.length} 名学生', style: TextStyle(fontSize: 14, color: Colors.grey[600])),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: countCtrl,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(
+                    labelText: '抽取人数（最多 ${students.length}）',
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+              FilledButton(
+                onPressed: () {
+                  final n = int.tryParse(countCtrl.text) ?? 1;
+                  if (n < 1) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('抽取人数至少为 1')));
+                    return;
+                  }
+                  if (n > students.length) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('抽取人数不能超过总人数（${students.length}）')));
+                    return;
+                  }
+                  final shuffled = [...students]..shuffle();
+                  final picked = shuffled.take(n).toList();
+                  Navigator.pop(ctx);
+                  // 美化结果展示
+                  showDialog(
+                    context: context,
+                    builder: (_) => AlertDialog(
+                      title: Row(
+                        children: [
+                          const Icon(Icons.emoji_events, color: Colors.amber),
+                          const SizedBox(width: 8),
+                          Text('抽到的学生（${picked.length}人）'),
+                        ],
+                      ),
+                      content: Container(
+                        width: 300,
+                        constraints: const BoxConstraints(maxHeight: 400),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: picked.asMap().entries.map((entry) {
+                              final idx = entry.key;
+                              final s = entry.value;
+                              final name = s is Map ? (s['name'] ?? s['student_name'] ?? '未知').toString() : s.toString();
+                              final no = s is Map ? (s['student_no'] ?? s['no'] ?? '').toString() : '';
+                              return Container(
+                                margin: const EdgeInsets.symmetric(vertical: 4),
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                                decoration: BoxDecoration(
+                                  color: idx == 0 ? Colors.amber.withOpacity(0.15) : Colors.blue.withOpacity(0.08),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: idx == 0 ? Colors.amber : Colors.blue.withOpacity(0.3),
+                                    width: idx == 0 ? 2 : 1,
+                                  ),
+                                ),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      width: 32, height: 32,
+                                      decoration: BoxDecoration(
+                                        color: idx == 0 ? Colors.amber : Colors.blue,
+                                        borderRadius: BorderRadius.circular(16),
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: Text('${idx + 1}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                                    ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Text(name, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+                                    ),
+                                    if (no.isNotEmpty) Text('学号 $no', style: TextStyle(fontSize: 13, color: Colors.grey[500])),
+                                  ],
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () {
+                            Navigator.pop(context);
+                            _showRandomStudent(); // 再抽一次
+                          },
+                          child: const Text('再抽一次'),
+                        ),
+                        FilledButton(onPressed: () => Navigator.pop(context), child: const Text('确定')),
+                      ],
+                    ),
+                  );
+                },
+                child: const Text('开始抽取'),
+              ),
             ],
           ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-            FilledButton(
-              onPressed: () {
-                final n = int.tryParse(countCtrl.text) ?? 1;
-                final shuffled = [...students]..shuffle();
-                final picked = shuffled.take(n).toList();
-                Navigator.pop(ctx);
-                showDialog(
-                  context: context,
-                  builder: (_) => AlertDialog(
-                    title: Text('抽到的学生（${picked.length}人）'),
-                    content: Column(mainAxisSize: MainAxisSize.min, children: picked.map((s) => Padding(padding: const EdgeInsets.symmetric(vertical: 4), child: Text(s, style: const TextStyle(fontSize: 18)))).toList()),
-                    actions: [TextButton(onPressed: () => Navigator.pop(context), child: const Text('确定'))],
-                  ),
-                );
-              },
-              child: const Text('开始抽取'),
-            ),
-          ],
         ),
       );
     } catch (e) {

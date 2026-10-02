@@ -389,3 +389,64 @@ class _StopwatchPageState extends State<StopwatchPage> {
     );
   }
 }
+
+// ==================== 多窗口入口 ====================
+// 倒计时独立窗口入口
+@pragma('vm:entry-point')
+Future<void> timerWindowMain(List<String> args) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+  WindowOptions windowOptions = const WindowOptions(
+    size: Size(360, 480),
+    minimumSize: Size(300, 400),
+    center: true,
+    title: '倒计时',
+    backgroundColor: Colors.transparent,
+  );
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+  });
+  runApp(MaterialApp(
+    debugShowCheckedModeBanner: false,
+    theme: _timerTheme(),
+    home: const Scaffold(body: TimerPage()),
+  ));
+}
+
+// 秒表独立窗口入口
+@pragma('vm:entry-point')
+Future<void> stopwatchWindowMain(List<String> args) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+  WindowOptions windowOptions = const WindowOptions(
+    size: Size(360, 520),
+    minimumSize: Size(300, 400),
+    center: true,
+    title: '秒表',
+    backgroundColor: Colors.transparent,
+  );
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+  });
+  runApp(MaterialApp(
+    debugShowCheckedModeBanner: false,
+    theme: _timerTheme(),
+    home: const Scaffold(body: StopwatchPage()),
+  ));
+}
+
+ThemeData _timerTheme() {
+  return ThemeData(
+    colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1A73E8)),
+    useMaterial3: true,
+    fontFamily: 'NotoSansSC',
+    textTheme: const TextTheme(
+      titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+      titleMedium: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+      bodyMedium: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+      bodySmall: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+    ),
+  );
+}
