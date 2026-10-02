@@ -4,7 +4,6 @@
 早读悬浮按钮。
 在早读/晚读时间段内显示在屏幕上方，始终置顶，点击打开早读浏览器窗口。
 """
-import tkinter as tk
 import time
 import json
 import os
@@ -64,6 +63,8 @@ class FloatingButton:
     """早读悬浮按钮：仅显示应用图标（手指点击图案）。"""
 
     def __init__(self, root, on_click=None):
+        import tkinter as tk  # 延迟导入，避免后端（无 tkinter）导入本模块时崩溃
+        self._tk = tk
         self.root = root
         self.on_click = on_click
         self.win = None
@@ -81,7 +82,7 @@ class FloatingButton:
             path = resource_path(os.path.join("assets", name))
             if os.path.isfile(path):
                 try:
-                    self._icon = tk.PhotoImage(file=path)
+                    self._icon = self._tk.PhotoImage(file=path)
                     return self._icon
                 except Exception:
                     continue
@@ -89,14 +90,14 @@ class FloatingButton:
 
     def _create_window(self):
         """创建悬浮按钮窗口：圆形图标，无文字。"""
-        self.win = tk.Toplevel(self.root)
+        self.win = self._tk.Toplevel(self.root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
         self.win.configure(bg="#2F6B4F")
 
         # 圆形容器（Canvas 画圆 + 图标）
         size = 56
-        canvas = tk.Canvas(self.win, width=size, height=size,
+        canvas = self._tk.Canvas(self.win, width=size, height=size,
                            bg="#2F6B4F", highlightthickness=0)
         canvas.pack()
         canvas.create_oval(2, 2, size - 2, size - 2, fill="#2F6B4F", outline="")

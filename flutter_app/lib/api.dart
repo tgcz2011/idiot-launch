@@ -101,6 +101,16 @@ class ApiService {
     return r['success'] == true;
   }
 
+  Future<bool> morningLoginWithGrade(String grade, String classNumber, String password, bool persistent) async {
+    final r = await _post('/api/morning/login', {
+      'grade': grade,
+      'class_number': classNumber,
+      'password': password,
+      'persistent': persistent,
+    });
+    return r['success'] == true;
+  }
+
   Future<void> morningLogout() => _post('/api/morning/logout');
   Future<void> openMorningBrowser() => _post('/api/morning/open');
 
@@ -116,4 +126,8 @@ class ApiService {
 
   // ===== 退出 =====
   Future<void> quit() => _post('/api/quit');
+
+  // ===== 单实例激活窗口 =====
+  Future<void> activateWindow() => _post('/api/activate');
+  Future<void> clearActivate() => _post('/api/activate/clear');
 }

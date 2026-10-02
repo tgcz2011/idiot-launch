@@ -17,19 +17,22 @@ Future<void> _ensureSingleInstance() async {
     if (File(pidFile).existsSync()) {
       final existingPid = int.tryParse(File(pidFile).readAsStringSync().trim());
       if (existingPid != null) {
-        // 用 tasklist 检查该 PID 是否仍在运行
         final result = Process.runSync('tasklist', ['/FI', 'PID eq $existingPid', '/NH']);
         if (result.stdout.toString().contains('$existingPid')) {
           _isFirstInstance = false;
+          // 通知已有实例激活窗口
+          try {
+            final api = ApiService();
+            await api.activateWindow();
+          } catch (_) {}
           return;
         }
       }
     }
-    // 没有运行中的实例，写入当前 PID
     File(pidFile).writeAsStringSync(pid.toString());
     _isFirstInstance = true;
   } catch (_) {
-    _isFirstInstance = true; // 出错时保守认为是第一个实例
+    _isFirstInstance = true;
   }
 }
 
@@ -38,7 +41,6 @@ void main() async {
   await windowManager.ensureInitialized();
   await _ensureSingleInstance();
   if (!_isFirstInstance) {
-    // 已有实例运行，强制退出当前进程（Windows 上 exit() 可能被 engine 拦截）
     Process.killPid(pid);
     return;
   }
@@ -50,6 +52,7 @@ void main() async {
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
     titleBarStyle: TitleBarStyle.normal,
+    title: '傻瓜启动器',
   );
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     await windowManager.show();
@@ -73,6 +76,12 @@ class IdiotLaunchApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
         useMaterial3: true,
+        textTheme: const TextTheme(
+          titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+          titleMedium: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          bodyMedium: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          bodySmall: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+        ),
       ),
       home: const MainPage(),
     );
@@ -87,7 +96,7 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage> {
-  int _selectedIndex = 0; // 默认壁纸&屏保页
+  int _selectedIndex = 0;
   final ApiService _api = ApiService();
   Map<String, dynamic> _status = {};
   Map<String, dynamic> _updateStatus = {};
@@ -95,6 +104,8 @@ class _MainPageState extends State<MainPage> {
   bool _morningLoggedIn = false;
   String _morningClass = '';
   Timer? _pollTimer;
+  bool _checkingUpdate = false;
+  bool _startingCd = false;
 
   static const _pages = [
     NavigationRailDestination(
@@ -136,9 +147,7 @@ class _MainPageState extends State<MainPage> {
     try {
       await _api.ensureBackend();
       await _pollStatus();
-    } catch (e) {
-      // 后端启动失败，静默处理
-    }
+    } catch (e) {}
   }
 
   Future<void> _pollStatus() async {
@@ -146,6 +155,12 @@ class _MainPageState extends State<MainPage> {
       final s = await _api.getStatus();
       final u = await _api.getUpdateStatus();
       if (mounted) {
+        // 检查是否有激活窗口请求
+        if (s['activate_requested'] == true) {
+          windowManager.show();
+          windowManager.focus();
+          try { await _api.clearActivate(); } catch (_) {}
+        }
         setState(() {
           _status = s;
           _updateStatus = u;
@@ -158,17 +173,60 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _startCountdown(String exam) async {
+    setState(() => _startingCd = true);
+    _showLoadingDialog('正在启动${exam == 'zhongkao' ? '中考' : '高考'}倒计时...');
     try {
       await _api.startCountdown(exam);
       setState(() => _cdRunning = true);
+      if (mounted) Navigator.pop(context); // 关闭 loading
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('已启动${exam == 'zhongkao' ? '中考' : '高考'}倒计时')),
         );
       }
     } catch (e) {
+      if (mounted) Navigator.pop(context);
       _showError('启动失败', e.toString());
+    } finally {
+      if (mounted) setState(() => _startingCd = false);
     }
+  }
+
+  Future<void> _startCustomWallpaper() async {
+    setState(() => _startingCd = true);
+    _showLoadingDialog('正在启动自定义壁纸&屏保...');
+    try {
+      await _api.startCustomWallpaper();
+      setState(() => _cdRunning = true);
+      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已启动自定义壁纸&屏保')),
+        );
+      }
+    } catch (e) {
+      if (mounted) Navigator.pop(context);
+      _showError('启动失败', e.toString());
+    } finally {
+      if (mounted) setState(() => _startingCd = false);
+    }
+  }
+
+  void _showLoadingDialog(String text) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        content: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(width: 20),
+            Text(text),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _stopCountdown() async {
@@ -189,10 +247,32 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _openMorning() async {
+    if (!_morningLoggedIn) {
+      _showError('未登录', '请先登录早读班级后再打开早晚读');
+      return;
+    }
     try {
       await _api.openMorningBrowser();
     } catch (e) {
       _showError('打开早读失败', e.toString());
+    }
+  }
+
+  Future<void> _checkUpdate() async {
+    setState(() => _checkingUpdate = true);
+    try {
+      await _api.checkUpdate();
+      await Future.delayed(const Duration(seconds: 2));
+      await _pollStatus();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('更新检查完成')),
+        );
+      }
+    } catch (e) {
+      _showError('检查更新失败', e.toString());
+    } finally {
+      if (mounted) setState(() => _checkingUpdate = false);
     }
   }
 
@@ -257,8 +337,9 @@ class _MainPageState extends State<MainPage> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _bigButton(Icons.school, '中考倒计时', Colors.blue, () => _startCountdown('zhongkao')),
-              _bigButton(Icons.school_outlined, '高考倒计时', Colors.purple, () => _startCountdown('gaokao')),
+              _bigButton(Icons.school, '中考倒计时', Colors.blue, _startingCd ? null : () => _startCountdown('zhongkao')),
+              _bigButton(Icons.school_outlined, '高考倒计时', Colors.purple, _startingCd ? null : () => _startCountdown('gaokao')),
+              _bigButton(Icons.image_outlined, '自定义壁纸&屏保', Colors.teal, _startingCd ? null : _startCustomWallpaper),
               _bigButton(Icons.settings, '壁纸&屏保设置', Colors.grey, _openSettings),
               _bigButton(
                 Icons.stop_circle_outlined,
@@ -287,10 +368,10 @@ class _MainPageState extends State<MainPage> {
             runSpacing: 12,
             children: [
               _bigButton(Icons.timer_outlined, '倒计时', Colors.teal, () {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const TimerPage()));
+                showDialog(context: context, builder: (_) => const _ToolDialog(title: '倒计时', child: TimerPage()));
               }),
               _bigButton(Icons.timer_10_select, '秒表', Colors.indigo, () {
-                Navigator.push(context, MaterialPageRoute(builder: (_) => const StopwatchPage()));
+                showDialog(context: context, builder: (_) => const _ToolDialog(title: '秒表', child: StopwatchPage()));
               }),
             ],
           ),
@@ -354,15 +435,16 @@ class _MainPageState extends State<MainPage> {
                   color: Colors.blue,
                 ),
               )
-            : Icon(leadingIcon, color: leadingColor),
+            : _checkingUpdate
+                ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2.5))
+                : Icon(leadingIcon, color: leadingColor),
         title: Text(
-          downloading ? '正在下载更新 $pending...' : (hasUpdate ? '新版本待更新：$pending' : '已是最新版本'),
-          style: const TextStyle(fontSize: 13),
+          downloading ? '正在下载更新 $pending...' : (hasUpdate ? '新版本待更新：$pending' : '当前 v${_status['version'] ?? '?'}'),
+          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
         ),
-        subtitle: Text(
-          '当前 v${_status['version'] ?? '?'}',
-          style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-        ),
+        subtitle: downloading
+            ? Text('${(progress * 100).toStringAsFixed(0)}%', style: TextStyle(fontSize: 11, color: Colors.grey[600]))
+            : null,
         trailing: hasUpdate && !downloading
             ? TextButton(onPressed: () => _api.checkUpdate(), child: const Text('立即更新'))
             : null,
@@ -391,7 +473,10 @@ class _MainPageState extends State<MainPage> {
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('关闭')),
-          FilledButton(onPressed: () async { await _api.checkUpdate(); if (mounted) Navigator.pop(context); }, child: const Text('检查更新')),
+          FilledButton(
+            onPressed: _checkingUpdate ? null : () async { await _checkUpdate(); if (mounted) Navigator.pop(context); },
+            child: Text(_checkingUpdate ? '检查中...' : '检查更新'),
+          ),
         ],
       ),
     );
@@ -421,7 +506,7 @@ class _MainPageState extends State<MainPage> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _bigButton(Icons.menu_book, '打开早晚读', Colors.teal, _openMorning),
+              _bigButton(Icons.menu_book, '打开早晚读', Colors.teal, _morningLoggedIn ? _openMorning : null),
               _bigButton(
                 Icons.people_alt_outlined,
                 '随机抽学生',
@@ -433,7 +518,7 @@ class _MainPageState extends State<MainPage> {
           if (!_morningLoggedIn)
             Padding(
               padding: const EdgeInsets.only(top: 8),
-              child: Text('随机抽学生需要登录后使用', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              child: Text('随机抽学生和打开早晚读需要登录后使用', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
             ),
         ],
       ),
@@ -441,9 +526,13 @@ class _MainPageState extends State<MainPage> {
   }
 
   void _showMorningLogin() {
-    final idCtrl = TextEditingController();
+    String selectedGrade = '初三';
+    final classCtrl = TextEditingController();
     final pwdCtrl = TextEditingController();
     bool persistent = true;
+
+    const grades = ['初一', '初二', '初三', '高一', '高二', '高三'];
+    const gradeMap = {'初一': '7', '初二': '8', '初三': '9', '高一': '10', '高二': '11', '高三': '12'};
 
     showDialog(
       context: context,
@@ -452,10 +541,18 @@ class _MainPageState extends State<MainPage> {
           title: const Text('早晚读登录'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              TextField(controller: idCtrl, decoration: const InputDecoration(labelText: '班级 ID（如 2024-1-1）')),
+              DropdownButtonFormField<String>(
+                value: selectedGrade,
+                decoration: const InputDecoration(labelText: '年级'),
+                items: grades.map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
+                onChanged: (v) => setDialogState(() => selectedGrade = v ?? '初三'),
+              ),
               const SizedBox(height: 12),
-              TextField(controller: pwdCtrl, obscureText: true, decoration: const InputDecoration(labelText: '密码')),
+              TextField(controller: classCtrl, decoration: const InputDecoration(labelText: '班级号（如 01）')),
+              const SizedBox(height: 12),
+              TextField(controller: pwdCtrl, obscureText: true, decoration: const InputDecoration(labelText: '班级密码')),
               const SizedBox(height: 12),
               Row(
                 children: [
@@ -464,15 +561,24 @@ class _MainPageState extends State<MainPage> {
                 ],
               ),
               const SizedBox(height: 8),
-              Text('注意：用户名格式为 年级-班级-序号，密码由管理员提供', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+              Text(
+                '先选年级，再填班级号：初中 01-14，高中 01-11\n初始密码：admin + 班级号（一班 = admin01）\n密码可在教师管理界面修改',
+                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+              ),
             ],
           ),
           actions: [
             TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
             FilledButton(
               onPressed: () async {
+                final gradeNum = gradeMap[selectedGrade] ?? '9';
+                final classNum = classCtrl.text.trim();
+                if (classNum.isEmpty) {
+                  ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('请填写班级号')));
+                  return;
+                }
                 try {
-                  final ok = await _api.morningLogin(idCtrl.text.trim(), pwdCtrl.text, persistent);
+                  final ok = await _api.morningLoginWithGrade(gradeNum, classNum, pwdCtrl.text, persistent);
                   if (ok && ctx.mounted) {
                     Navigator.pop(ctx);
                     await _pollStatus();
@@ -559,9 +665,9 @@ class _MainPageState extends State<MainPage> {
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.update),
-                  title: const Text('检查更新'),
-                  trailing: const Icon(Icons.chevron_right),
-                  onTap: () async { await _api.checkUpdate(); await _pollStatus(); },
+                  title: Text(_checkingUpdate ? '正在检查更新...' : '检查更新'),
+                  trailing: _checkingUpdate ? const CircularProgressIndicator() : const Icon(Icons.chevron_right),
+                  onTap: _checkingUpdate ? null : _checkUpdate,
                 ),
                 const Divider(height: 1),
                 ListTile(
@@ -573,6 +679,27 @@ class _MainPageState extends State<MainPage> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// 工具弹窗容器
+class _ToolDialog extends StatelessWidget {
+  final String title;
+  final Widget child;
+  const _ToolDialog({required this.title, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox(
+          width: 440,
+          height: 520,
+          child: child,
+        ),
       ),
     );
   }

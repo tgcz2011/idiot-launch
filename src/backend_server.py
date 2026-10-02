@@ -35,6 +35,7 @@ from src.core import (
     get_morning_students,
     get_daemon_status,
     load_state,
+    save_state,
     send_command,
     apply_launcher_update_now,
     log_daemon,
@@ -108,6 +109,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "has_update": bool(pending) and pending != LAUNCHER_VERSION,
                 "downloading": state.get("downloading", False),
                 "download_progress": state.get("download_progress", 0.0),
+                "activate_requested": state.get("activate_requested", False),
             })
 
         elif path == "/api/morning/config":
@@ -199,7 +201,24 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True})
 
         elif path == "/api/morning/open":
-            open_morning_reading()
+            try:
+                open_morning_reading()
+                self._send_json({"success": True})
+            except Exception as e:
+                log_daemon(f"打开早读失败: {e}")
+                self._send_json({"success": False, "error": str(e)})
+
+        elif path == "/api/activate":
+            # 非首实例请求激活首实例窗口
+            state = load_state()
+            state["activate_requested"] = True
+            save_state(state)
+            self._send_json({"success": True})
+
+        elif path == "/api/activate/clear":
+            state = load_state()
+            state["activate_requested"] = False
+            save_state(state)
             self._send_json({"success": True})
 
         elif path == "/api/update/check":
