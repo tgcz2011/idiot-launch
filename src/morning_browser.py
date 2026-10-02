@@ -2,17 +2,21 @@
 # -*- coding: utf-8 -*-
 """
 早读内嵌浏览器窗口。
-用 PySide6 + QWebEngineView，支持自动登录、置顶、调整大小、移动。
+用 PySide6 + QWebEngineView，支持自动登录（官方 Token 直链）、置顶、调整大小、移动。
 通过 run.py --morning-browser 启动，从配置文件读取班级信息。
 """
 import sys
 import os
 import json
+import time
+import logging
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QFrame)
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtCore import QUrl, Qt, QTimer
 from PySide6.QtGui import QIcon
+
+log = logging.getLogger("morning_browser")
 
 # 早读网页地址
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
@@ -146,13 +150,54 @@ class MorningBrowserWindow(QMainWindow):
         self.browser.loadFinished.connect(self._on_load_finished)
 
     def _load_page(self):
-        """加载早读页面。"""
-        self.browser.setUrl(QUrl(MORNING_READING_URL))
+        """加载早读页面。已登录则用官方 Token 直链免登录打开，否则打开首页。"""
+        url = self._get_auto_login_url()
+        if url:
+            log.info("使用免登录 Token 直链打开早读")
+        else:
+            url = MORNING_READING_URL
+            log.info("未配置登录信息，打开早读首页")
+        self.browser.setUrl(QUrl(url))
+
+    def _get_auto_login_url(self):
+        """构造官方免登录 Token 直链。失败返回 None。
+
+        官方文档：?username=9-6&token=<sha256>&t=<Unix时间戳>
+        token = sha256(username:password:seed)，链接 2 小时有效。
+        """
+        try:
+            grade = str(self.config.get("grade", "")).strip()
+            class_number = str(self.config.get("class_number", "")).strip()
+            password = self.config.get("password", "")
+            if not (grade and class_number and password):
+                return None
+
+            # 班级号补零
+            try:
+                class_number = f"{int(class_number):02d}"
+            except (ValueError, TypeError):
+                pass
+
+            username = f"{grade}-{class_number}"
+
+            # 用 morning_api_client 获取 token（自动过 InfinityFree JS challenge + 缓存）
+            from src.morning_api_client import ApiClient
+            client = ApiClient()
+            token = client._cached_token("record", username, password)
+            if not token:
+                log.warning("获取早读 token 失败，回退到首页")
+                return None
+
+            timestamp = int(time.time())
+            return f"{MORNING_READING_URL}?username={username}&token={token}&t={timestamp}"
+        except Exception as e:
+            log.warning(f"构造免登录 URL 失败: {e}，回退到首页")
+            return None
 
     def _reload(self):
-        """重新加载页面。"""
+        """重新加载页面。重新构造免登录 URL（防止 token 过期）。"""
         self._auto_login_done = False
-        self.browser.reload()
+        self._load_page()
 
     def _toggle_top(self):
         """切换置顶状态。"""
