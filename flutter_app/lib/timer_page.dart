@@ -35,14 +35,64 @@ const int _wsThickFrame = 0x00040000;
 const int _wsSysMenu = 0x00080000;
 const int _swpFrameChanged = 0x0020;
 const int _swpNoZOrder = 0x0004;
+const int _swpNoMove = 0x0002;
+const int _swpNoSize = 0x0001;
+const int _hwndTopmost = -1;
+const int _hwndNotopmost = -2;
+
+// 当前子窗口句柄缓存
+int _cachedHWnd = 0;
+bool _isTopMost = false;
+
+/// 通过进程ID查找属于当前进程的可见顶层窗口（比 GetForegroundWindow 更可靠）
+int _findOurWindow() {
+  if (_cachedHWnd != 0) return _cachedHWnd;
+  try {
+    final kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
+    final getCurrentProcessId = kernel32.lookupFunction<
+        ffi.Uint32 Function(), int Function()>('GetCurrentProcessId');
+    final pid = getCurrentProcessId();
+
+    // 用 GetWindow 遍历所有顶层窗口
+    final getWindow = _user32.lookupFunction<
+        ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Uint32 uCmd),
+        int Function(int hWnd, int uCmd)>('GetWindow');
+    final isWindowVisible = _user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr hWnd),
+        int Function(int hWnd)>('IsWindowVisible');
+    final getWindowThreadProcessId = _user32.lookupFunction<
+        ffi.Uint32 Function(ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId),
+        int Function(int hWnd, ffi.Pointer<ffi.Uint32>)>('GetWindowThreadProcessId');
+
+    const int gwHwndFirst = 0;
+    const int gwHwndNext = 2;
+    final pidPtr = ffi.calloc<ffi.Uint32>();
+
+    int hWnd = getWindow(0, gwHwndFirst);
+    while (hWnd != 0) {
+      if (isWindowVisible(hWnd) != 0) {
+        getWindowThreadProcessId(hWnd, pidPtr);
+        if (pidPtr.value == pid) {
+          _cachedHWnd = hWnd;
+          ffi.calloc.free(pidPtr);
+          return hWnd;
+        }
+      }
+      hWnd = getWindow(hWnd, gwHwndNext);
+    }
+    ffi.calloc.free(pidPtr);
+  } catch (_) {}
+  // fallback: 用前台窗口
+  return _getForegroundWindow();
+}
 
 /// 设置当前活动窗口为无边框，并调整大小和居中。
 void _setupFramelessWindow(int width, int height) {
-  try {
-    // 延迟一点，确保子窗口已成为前台窗口
-    Future.delayed(const Duration(milliseconds: 200), () {
+  // 多次尝试，确保窗口已创建
+  for (int attempt = 0; attempt < 8; attempt++) {
+    Future.delayed(Duration(milliseconds: 100 + attempt * 80), () {
       try {
-        final hWnd = _getForegroundWindow();
+        final hWnd = _findOurWindow();
         if (hWnd == 0) return;
         // 去掉标题栏和可调整边框
         int style = _getWindowLong(hWnd, _gwlStyle);
@@ -58,13 +108,24 @@ void _setupFramelessWindow(int width, int height) {
         _setWindowPos(hWnd, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
       } catch (_) {}
     });
+  }
+}
+
+/// 切换窗口置顶状态
+void _toggleTopMost() {
+  try {
+    final hWnd = _findOurWindow();
+    if (hWnd == 0) return;
+    _isTopMost = !_isTopMost;
+    _setWindowPos(hWnd, _isTopMost ? _hwndTopmost : _hwndNotopmost,
+        0, 0, 0, 0, _swpNoMove | _swpNoSize | _swpFrameChanged);
   } catch (_) {}
 }
 
 // ==================== 倒计时页面 ====================
-Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onFullscreen) {
+Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onFullscreen, {bool showPin = true}) {
   return Container(
-    height: 32,
+    height: 36,
     decoration: BoxDecoration(
       color: Theme.of(context).colorScheme.surface,
       border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.2), width: 1)),
@@ -74,22 +135,32 @@ Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onF
         Expanded(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
-            onPanStart: (_) => windowManager.startDragging(),
+            onPanStart: (_) {
+              try { windowManager.startDragging(); } catch (_) {}
+            },
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              child: Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
             ),
           ),
         ),
+        if (showPin)
+          SizedBox(width: 36, height: 36, child: InkWell(
+            onTap: _toggleTopMost,
+            child: Icon(Icons.push_pin_outlined, size: 17, color: Colors.grey[600]),
+          )),
         if (onFullscreen != null)
-          SizedBox(width: 36, height: 32, child: InkWell(onTap: onFullscreen, child: const Icon(Icons.fullscreen, size: 16))),
-        SizedBox(width: 46, height: 32, child: InkWell(onTap: () => windowManager.minimize(), child: const Icon(Icons.remove, size: 16))),
+          SizedBox(width: 36, height: 36, child: InkWell(onTap: onFullscreen, child: const Icon(Icons.fullscreen, size: 17))),
+        SizedBox(width: 36, height: 36, child: InkWell(
+          onTap: () { try { windowManager.minimize(); } catch (_) {} },
+          child: const Icon(Icons.remove, size: 17),
+        )),
         SizedBox(
-          width: 46, height: 32,
+          width: 44, height: 36,
           child: InkWell(
-            onTap: () => windowManager.close(),
+            onTap: () { try { windowManager.close(); } catch (_) {} },
             hoverColor: Colors.red.withOpacity(0.8),
-            child: const Icon(Icons.close, size: 16),
+            child: const Icon(Icons.close, size: 17),
           ),
         ),
       ],
@@ -118,9 +189,10 @@ class _TimerPageState extends State<TimerPage> {
   @override
   void initState() {
     super.initState();
-    // 子窗口：用 FFI 直接设置无边框+大小+居中（windowManager 在子窗口中不生效）
+    _cachedHWnd = 0;
+    _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupFramelessWindow(320, 420);
+      _setupFramelessWindow(380, 480);
     });
   }
 
@@ -339,8 +411,10 @@ class _StopwatchPageState extends State<StopwatchPage> {
   @override
   void initState() {
     super.initState();
+    _cachedHWnd = 0;
+    _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupFramelessWindow(320, 460);
+      _setupFramelessWindow(380, 520);
     });
   }
 

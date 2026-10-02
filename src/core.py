@@ -46,19 +46,23 @@ GUI_SHOW_EVENT = "IdiotLaunch_ShowWindow"  # 命名事件：请求已有 GUI 实
 IDLE_THRESHOLD = 300  # 5 分钟无操作视为空闲，此时可静默自我更新
 
 # (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像；
-# 每个镜像给 120s 超时：卡住后 2 分钟切换下一个，7 个源总计约 14 分钟，
-# 接近用户设定的 15 分钟上限（15 分钟还没下完大抵下不完了）。
+# 下载镜像源列表（按优先级排序，空字符串=GitHub直连）
+# 并行竞速模式：同时从所有源下载，取最快完成的
 DOWNLOAD_MIRRORS = [
-    ("", 60),                           # GitHub 直连
-    ("https://gh-proxy.com/", 120),     # GH-Proxy 2.0，全球 CDN
-    ("https://ghfast.top/", 120),       # ghfast
-    ("https://ghproxy.net/", 120),      # ghproxy.net
-    ("https://gh.llkk.cc/", 120),       # LLKK 公益加速
-    ("https://hub.gitmirror.com/", 120),# GitMirror 公益加速
-    ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
+    "",                                    # GitHub 直连（最可靠）
+    "https://ghproxy.com/",                # ghproxy 老牌
+    "https://mirror.ghproxy.com/",         # ghproxy 镜像
+    "https://gh-proxy.com/",               # GH-Proxy 2.0
+    "https://ghfast.top/",                 # ghfast
+    "https://ghproxy.net/",                # ghproxy.net
+    "https://gh.llkk.cc/",                 # LLKK 公益加速
+    "https://hub.gitmirror.com/",          # GitMirror
+    "https://ghproxy.homeboyc.cn/",        # 大文件稳定
+    "https://ghps.cc/",                    # ghps
+    "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta12"
+LAUNCHER_VERSION = "3.0.0.0-beta13"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -618,7 +622,8 @@ def verify_sha256(file_path: str, expected: str) -> bool:
         return False
 
 
-def _download_single(url: str, dest_path: str, timeout: int, tag: str = "") -> bool:
+def _download_single(url: str, dest_path: str, timeout: int, tag: str = "", cancel_event=None) -> bool:
+    """从单个URL下载文件到dest_path。cancel_event被设置时提前退出。"""
     tmp_path = dest_path + ".part"
     try:
         ctx = ssl.create_default_context()
@@ -629,16 +634,16 @@ def _download_single(url: str, dest_path: str, timeout: int, tag: str = "") -> b
             last_report = 0
             with open(tmp_path, "wb") as f:
                 while True:
+                    if cancel_event and cancel_event.is_set():
+                        return False
                     chunk = resp.read(65536)
                     if not chunk:
                         break
                     f.write(chunk)
                     downloaded += len(chunk)
-                    # 进度上报（每 512KB 一次，避免频繁写 state.json）
                     if total > 0 and downloaded - last_report >= 512 * 1024:
                         last_report = downloaded
                         pct = min(99, int(downloaded * 100 / total))
-                        # 分别存储两个软件的下载进度
                         if tag:
                             try:
                                 _st = load_state()
@@ -649,11 +654,13 @@ def _download_single(url: str, dest_path: str, timeout: int, tag: str = "") -> b
                             except Exception:
                                 pass
                         set_daemon_status("downloading", pct, f"正在下载... {pct}%", download_tag=tag)
+        if cancel_event and cancel_event.is_set():
+            try: os.remove(tmp_path)
+            except OSError: pass
+            return False
         if total > 0 and downloaded < total:
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+            try: os.remove(tmp_path)
+            except OSError: pass
             return False
         if os.path.isfile(dest_path):
             os.remove(dest_path)
@@ -669,22 +676,60 @@ def _download_single(url: str, dest_path: str, timeout: int, tag: str = "") -> b
 
 
 def download_installer(url: str, dest_path: str, tag: str = "") -> bool:
+    """并行竞速下载：同时从所有镜像源下载，取最快完成的。"""
+    import threading
     _ensure_update_dir()
+
     for attempt in range(DOWNLOAD_RETRY):
-        # 动态超时：第1轮 1x，第2轮 2x，第3轮 3x——避免所有源都在短超时内失败后永远更新不了
-        timeout_multiplier = attempt + 1
-        for mirror, base_timeout in DOWNLOAD_MIRRORS:
-            mirror_timeout = base_timeout * timeout_multiplier
+        log_daemon(f"并行下载尝试 ({attempt+1}/{DOWNLOAD_RETRY})，共 {len(DOWNLOAD_MIRRORS)} 个源竞速")
+        cancel_event = threading.Event()
+        result_lock = threading.Lock()
+        winner = {"path": None, "source": None}
+
+        def _worker(mirror):
+            if cancel_event.is_set():
+                return
             full_url = mirror + url if mirror else url
             source_name = mirror.rstrip("/") if mirror else "GitHub direct"
-            log_daemon(f"下载尝试 ({attempt+1}/{DOWNLOAD_RETRY}) [{source_name}] 超时{mirror_timeout}s: {os.path.basename(dest_path)}")
-            if _download_single(full_url, dest_path, mirror_timeout, tag):
-                log_daemon(f"下载成功 [{source_name}]: {os.path.basename(dest_path)}")
-                return True
-            log_daemon(f"下载失败 [{source_name}]，尝试下一个源")
+            # 每个源独立的临时文件
+            worker_dest = dest_path + f".{abs(hash(mirror)) % 10000}"
+            timeout = 180  # 并行模式下给每个源3分钟
+            ok = _download_single(full_url, worker_dest, timeout, tag, cancel_event)
+            if ok and not cancel_event.is_set():
+                with result_lock:
+                    if winner["path"] is None:
+                        winner["path"] = worker_dest
+                        winner["source"] = source_name
+                        cancel_event.set()  # 通知其他线程停止
+
+        threads = []
+        for mirror in DOWNLOAD_MIRRORS:
+            t = threading.Thread(target=_worker, args=(mirror,), daemon=True)
+            threads.append(t)
+            t.start()
+
+        # 等待所有线程完成或被取消（最多等5分钟）
+        for t in threads:
+            t.join(timeout=300)
+
+        if winner["path"] and os.path.isfile(winner["path"]):
+            # 胜利者重命名为最终文件
+            if os.path.isfile(dest_path):
+                os.remove(dest_path)
+            os.rename(winner["path"], dest_path)
+            log_daemon(f"下载成功 [{winner['source']}]: {os.path.basename(dest_path)}")
+            # 清理其他线程的临时文件
+            for mirror in DOWNLOAD_MIRRORS:
+                worker_dest = dest_path + f".{abs(hash(mirror)) % 10000}"
+                if os.path.isfile(worker_dest):
+                    try: os.remove(worker_dest)
+                    except OSError: pass
+            return True
+
         log_daemon(f"所有源均失败，重试 {attempt+1}/{DOWNLOAD_RETRY} 完成")
         if attempt < DOWNLOAD_RETRY - 1:
-            time.sleep(30)
+            time.sleep(15)
+
     set_daemon_status("idle", 0, "下载失败，稍后重试")
     return False
 
