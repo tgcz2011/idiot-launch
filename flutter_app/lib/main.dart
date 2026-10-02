@@ -53,21 +53,33 @@ Future<void> _ensureSingleInstance() async {
   }
 }
 
-void main(List<String> args) async {
-  // 多窗口入口分发：倒计时/秒表独立窗口
-  if (args.isNotEmpty) {
-    if (args[0] == 'timer') {
-      await timerWindowMain(args);
-      return;
-    }
-    if (args[0] == 'stopwatch') {
-      await stopwatchWindowMain(args);
-      return;
-    }
-  }
-
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
+
+  // 多窗口入口分发：用 WindowController.fromCurrentEngine 获取 arguments
+  try {
+    final controller = await WindowController.fromCurrentEngine();
+    if (controller.arguments == 'timer') {
+      windowManager.waitUntilReadyToShow(
+        const WindowOptions(size: Size(360, 480), minimumSize: Size(300, 400), center: true, title: '倒计时'),
+        () async { await windowManager.show(); await windowManager.focus(); },
+      );
+      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: TimerPage())));
+      return;
+    }
+    if (controller.arguments == 'stopwatch') {
+      windowManager.waitUntilReadyToShow(
+        const WindowOptions(size: Size(360, 520), minimumSize: Size(300, 400), center: true, title: '秒表'),
+        () async { await windowManager.show(); await windowManager.focus(); },
+      );
+      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: StopwatchPage())));
+      return;
+    }
+  } catch (_) {
+    // 主窗口没有 fromCurrentEngine，忽略
+  }
+
   await _ensureSingleInstance();
   if (!_isFirstInstance) {
     Process.killPid(pid);
@@ -125,6 +137,20 @@ class IdiotLaunchApp extends StatelessWidget {
       home: const MainPage(),
     );
   }
+}
+
+ThemeData _timerTheme() {
+  return ThemeData(
+    colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1A73E8)),
+    useMaterial3: true,
+    fontFamily: 'NotoSansSC',
+    textTheme: const TextTheme(
+      titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+      titleMedium: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+      bodyMedium: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+      bodySmall: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+    ),
+  );
 }
 
 class MainPage extends StatefulWidget {
@@ -433,20 +459,10 @@ class _MainPageState extends State<MainPage> {
             runSpacing: 12,
             children: [
               _bigButton(Icons.timer_outlined, '倒计时', Colors.teal, () async {
-                final controller = await DesktopMultiWindow.createWindow(['timer']);
-                controller
-                  ..setFrame(const Offset(0, 0) & const Size(360, 480))
-                  ..center()
-                  ..setTitle('倒计时')
-                  ..show();
+                await WindowController.create(const WindowConfiguration(arguments: 'timer'));
               }),
               _bigButton(Icons.timer_10_select, '秒表', Colors.indigo, () async {
-                final controller = await DesktopMultiWindow.createWindow(['stopwatch']);
-                controller
-                  ..setFrame(const Offset(0, 0) & const Size(360, 520))
-                  ..center()
-                  ..setTitle('秒表')
-                  ..show();
+                await WindowController.create(const WindowConfiguration(arguments: 'stopwatch'));
               }),
             ],
           ),
@@ -785,9 +801,16 @@ class _MainPageState extends State<MainPage> {
                             mainAxisSize: MainAxisSize.min,
                             children: picked.asMap().entries.map((entry) {
                               final idx = entry.key;
-                              final s = entry.value;
-                              final name = s is Map ? (s['name'] ?? s['student_name'] ?? '未知').toString() : s.toString();
-                              final no = s is Map ? (s['student_no'] ?? s['no'] ?? '').toString() : '';
+                              final dynamic s = entry.value;
+                              String name = '未知';
+                              String no = '';
+                              if (s is Map) {
+                                name = (s['name'] ?? s['student_name'] ?? '未知').toString();
+                                final n = s['student_no'] ?? s['no'];
+                                no = n?.toString() ?? '';
+                              } else {
+                                name = s.toString();
+                              }
                               return Container(
                                 margin: const EdgeInsets.symmetric(vertical: 4),
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
