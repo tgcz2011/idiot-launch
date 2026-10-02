@@ -154,7 +154,7 @@ class _TimerPageState extends State<TimerPage> {
     return Scaffold(
       body: Column(
         children: [
-          _buildTitleBar(context, '倒计时', _toggleFullscreen),
+          _buildTimerTitleBar(context, '倒计时', _toggleFullscreen),
           Expanded(
             child: Column(
               children: [
