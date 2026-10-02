@@ -130,4 +130,9 @@ class ApiService {
   // ===== 单实例激活窗口 =====
   Future<void> activateWindow() => _post('/api/activate');
   Future<void> clearActivate() => _post('/api/activate/clear');
+
+  // ===== Countdown Desktop 设置 =====
+  Future<Map<String, dynamic>> getCdConfig() => _get('/api/cd/config');
+  Future<void> saveCdConfig(Map<String, dynamic> config) => _post('/api/cd/config', {'config': config});
+  Future<void> testCdScreensaver() => _post('/api/cd/test-screensaver');
 }

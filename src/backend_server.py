@@ -46,6 +46,11 @@ from src.morning_browser import (
     clear_temp_morning_config,
 )
 
+# CD 配置目录指向 D 盘（与 launch_countdown 的 _countdown_env 一致）
+os.environ["COUNTDOWN_CONFIG_DIR"] = os.path.join(UPDATE_DIR, "countdown")
+from countdown_app import config as cd_config
+from countdown_app.version import VERSION as CD_VERSION
+
 BACKEND_PORT_FILE = os.path.join(UPDATE_DIR, "backend_port")
 BACKEND_PID_FILE = os.path.join(UPDATE_DIR, "backend_pid")
 
@@ -138,6 +143,20 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "download_progress": state.get("download_progress", 0.0),
             })
 
+        elif path == "/api/cd/config":
+            # 获取 Countdown Desktop 配置
+            cfg = cd_config.load()
+            self._send_json({
+                "success": True,
+                "config": cfg,
+                "cd_version": CD_VERSION,
+                "exam_types": cd_config.EXAM_TYPES,
+                "exam_labels": cd_config.EXAM_LABELS,
+                "fit_modes": cd_config.FIT_MODES,
+                "fit_labels": cd_config.FIT_LABELS,
+                "default_url": cd_config.DEFAULT_URL,
+            })
+
         else:
             self._send_json({"error": "not found"}, 404)
 
@@ -228,6 +247,29 @@ class ApiHandler(BaseHTTPRequestHandler):
         elif path == "/api/update/install":
             apply_launcher_update_now()
             self._send_json({"success": True, "message": "更新已触发"})
+
+        elif path == "/api/cd/config":
+            # 保存 Countdown Desktop 配置
+            try:
+                cfg = body.get("config", {})
+                cd_config.save(cfg)
+                # 如果壁纸配置变化，通过命名事件通知 CD 主进程重启播放器
+                self._send_json({"success": True})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)})
+
+        elif path == "/api/cd/test-screensaver":
+            # 立即测试屏保（启动 player screensaver 子进程）
+            try:
+                env = os.environ.copy()
+                env["COUNTDOWN_CONFIG_DIR"] = os.path.join(UPDATE_DIR, "countdown")
+                subprocess.Popen(
+                    [sys.executable, "--countdown-app", "player", "screensaver"],
+                    creationflags=0x00000008, close_fds=True, env=env,
+                )
+                self._send_json({"success": True})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)})
 
         elif path == "/api/quit":
             # 后端退出（前端卸载时调用）

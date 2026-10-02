@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'api.dart';
 import 'timer_page.dart';
+import 'cd_settings_page.dart';
 
 // Windows API 进程检测（dart:ffi）
 final ffi.DynamicLibrary _kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
@@ -254,12 +255,11 @@ class _MainPageState extends State<MainPage> {
     }
   }
 
-  Future<void> _openSettings() async {
-    try {
-      await _api.openCountdownSettings();
-    } catch (e) {
-      _showError('打开设置失败', e.toString());
-    }
+  void _openSettings() {
+    showDialog(
+      context: context,
+      builder: (_) => const CdSettingsDialog(),
+    );
   }
 
   Future<void> _openMorning() async {
