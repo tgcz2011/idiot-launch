@@ -234,7 +234,7 @@ class MainPage extends StatefulWidget {
   State<MainPage> createState() => _MainPageState();
 }
 
-class _MainPageState extends State<MainPage> {
+class _MainPageState extends State<MainPage> with WindowListener {
   int _selectedIndex = 0;
   final ApiService _api = ApiService();
   Map<String, dynamic> _status = {};
@@ -273,14 +273,23 @@ class _MainPageState extends State<MainPage> {
   @override
   void initState() {
     super.initState();
+    windowManager.addListener(this);
+    windowManager.setPreventClose(true);
     _initBackend();
     _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _pollStatus());
   }
 
   @override
   void dispose() {
+    windowManager.removeListener(this);
     _pollTimer?.cancel();
     super.dispose();
+  }
+
+  @override
+  void onWindowClose() {
+    // 关闭主窗口时只隐藏，不退出进程（计时器/秒表子窗口继续运行）
+    windowManager.hide();
   }
 
   Future<void> _initBackend() async {
