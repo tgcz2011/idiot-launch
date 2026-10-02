@@ -1,6 +1,7 @@
 """Idiot Launch 入口脚本。
 无参数 = GUI 模式；--server = 后端 HTTP API 服务器（Flutter 前端模式）；
 --daemon = 后台更新守护进程（无窗口）；--quit-daemon = 通知 daemon 优雅退出；
+--quit = 优雅退出后端服务器（安装/卸载时调用，不导入 GUI）；
 --countdown-app = 运行 Countdown Desktop（已合并到本项目，共享 Python 运行时）；
 --morning-browser = 运行早读内嵌浏览器（独立进程）。
 """
@@ -13,6 +14,29 @@ if __name__ == "__main__":
     if "--server" in sys.argv:
         from src.backend_server import main as backend_main
         backend_main()
+    elif "--quit" in sys.argv:
+        # 优雅退出后端服务器（安装/卸载时调用，不导入任何 GUI 模块）
+        import urllib.request
+        import json
+        port_file = r"D:\IdiotLaunch\data\backend_port"
+        try:
+            with open(port_file, "r") as f:
+                port = f.read().strip()
+            if port:
+                req = urllib.request.Request(f"http://127.0.0.1:{port}/api/quit", method="POST")
+                urllib.request.urlopen(req, timeout=3)
+        except Exception:
+            pass
+        # 兼容旧版 daemon：发送命名事件
+        try:
+            import ctypes
+            evt = ctypes.windll.kernel32.OpenEventW(0x1F0003, False, "IdiotLaunch_Quit")
+            if evt:
+                ctypes.windll.kernel32.SetEvent(evt)
+                ctypes.windll.kernel32.CloseHandle(evt)
+        except Exception:
+            pass
+        sys.exit(0)
     elif "--daemon" in sys.argv:
         from src.core import daemon_run
         sys.exit(daemon_run())
