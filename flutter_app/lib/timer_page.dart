@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:ffi' as ffi;
+import 'dart:io';
+import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:window_manager/window_manager.dart';
@@ -48,10 +50,8 @@ bool _isTopMost = false;
 int _findOurWindow() {
   if (_cachedHWnd != 0) return _cachedHWnd;
   try {
-    final kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
-    final getCurrentProcessId = kernel32.lookupFunction<
-        ffi.Uint32 Function(), int Function()>('GetCurrentProcessId');
-    final pid = getCurrentProcessId();
+    final currentPid = pid;  // dart:io 的全局 getter
+    if (currentPid == 0) return _getForegroundWindow();
 
     // 用 GetWindow 遍历所有顶层窗口
     final getWindow = _user32.lookupFunction<
@@ -66,21 +66,21 @@ int _findOurWindow() {
 
     const int gwHwndFirst = 0;
     const int gwHwndNext = 2;
-    final pidPtr = ffi.calloc<ffi.Uint32>();
+    final pidPtr = calloc<ffi.Uint32>();
 
     int hWnd = getWindow(0, gwHwndFirst);
     while (hWnd != 0) {
       if (isWindowVisible(hWnd) != 0) {
         getWindowThreadProcessId(hWnd, pidPtr);
-        if (pidPtr.value == pid) {
+        if (pidPtr.value == currentPid) {
           _cachedHWnd = hWnd;
-          ffi.calloc.free(pidPtr);
+          calloc.free(pidPtr);
           return hWnd;
         }
       }
       hWnd = getWindow(hWnd, gwHwndNext);
     }
-    ffi.calloc.free(pidPtr);
+    calloc.free(pidPtr);
   } catch (_) {}
   // fallback: 用前台窗口
   return _getForegroundWindow();
