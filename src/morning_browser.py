@@ -94,9 +94,23 @@ class MorningBrowserWindow(QMainWindow):
             pass
         super().closeEvent(event)
 
+    def eventFilter(self, obj, event):
+        """工具栏拖动窗口。"""
+        if obj == self._toolbar:
+            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+                return True
+            elif event.type() == event.MouseMove and event.buttons() & Qt.LeftButton and self._drag_pos:
+                self.move(event.globalPos() - self._drag_pos)
+                return True
+            elif event.type() == event.MouseButtonRelease:
+                self._drag_pos = None
+                return True
+        return super().eventFilter(obj, event)
+
     def _update_window_flags(self):
-        """更新窗口标志（置顶）。"""
-        flags = Qt.Window
+        """更新窗口标志（置顶+无边框）。"""
+        flags = Qt.Window | Qt.FramelessWindowHint
         if self._always_on_top:
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
@@ -123,8 +137,22 @@ class MorningBrowserWindow(QMainWindow):
 
         tb_layout.addStretch()
 
-        # 班级信息
-        class_name = self.config.get("class_name", "未配置班级")
+        # 班级信息（从 grade + class_number 构造，不依赖 class_name 字段）
+        grade = str(self.config.get("grade", "")).strip()
+        class_number = str(self.config.get("class_number", "")).strip()
+        grade_map = {"7": "初一", "8": "初二", "9": "初三", "10": "高一", "11": "高二", "12": "高三"}
+        grade_name = grade_map.get(grade, "")
+        if grade_name and class_number:
+            try:
+                class_num = int(class_number)
+                cn_nums = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+                           "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十"]
+                class_cn = cn_nums[class_num] if 0 <= class_num < len(cn_nums) else str(class_num)
+                class_name = f"{grade_name}{class_cn}班"
+            except (ValueError, IndexError):
+                class_name = f"{grade_name}{class_number}班"
+        else:
+            class_name = "未配置班级"
         class_label = QLabel(class_name)
         class_label.setStyleSheet("color: rgba(255,255,255,0.8); font-size: 12px;")
         tb_layout.addWidget(class_label)
@@ -149,6 +177,31 @@ class MorningBrowserWindow(QMainWindow):
         refresh_btn.setCursor(Qt.PointingHandCursor)
         refresh_btn.clicked.connect(self._reload)
         tb_layout.addWidget(refresh_btn)
+
+        # 最小化按钮
+        min_btn = QPushButton("—")
+        min_btn.setStyleSheet(
+            "background-color: transparent; color: white; border: none; "
+            "padding: 5px 10px; border-radius: 4px; font-size: 14px;"
+        )
+        min_btn.setCursor(Qt.PointingHandCursor)
+        min_btn.clicked.connect(self.showMinimized)
+        tb_layout.addWidget(min_btn)
+
+        # 关闭按钮
+        close_btn = QPushButton("✕")
+        close_btn.setStyleSheet(
+            "background-color: transparent; color: white; border: none; "
+            "padding: 5px 10px; border-radius: 4px; font-size: 14px;"
+        )
+        close_btn.setCursor(Qt.PointingHandCursor)
+        close_btn.clicked.connect(self.close)
+        tb_layout.addWidget(close_btn)
+
+        # 工具栏拖动
+        self._drag_pos = None
+        toolbar.installEventFilter(self)
+        self._toolbar = toolbar
 
         layout.addWidget(toolbar)
 

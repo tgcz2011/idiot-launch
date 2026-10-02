@@ -62,7 +62,7 @@ void main() async {
     final controller = await WindowController.fromCurrentEngine();
     if (controller.arguments == 'timer') {
       windowManager.waitUntilReadyToShow(
-        const WindowOptions(size: Size(360, 480), minimumSize: Size(300, 400), center: true, title: '倒计时', titleBarStyle: TitleBarStyle.hidden),
+        const WindowOptions(size: Size(320, 420), minimumSize: Size(280, 360), center: true, title: '倒计时', titleBarStyle: TitleBarStyle.hidden),
         () async { await windowManager.show(); await windowManager.focus(); },
       );
       runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: TimerPage())));
@@ -70,7 +70,7 @@ void main() async {
     }
     if (controller.arguments == 'stopwatch') {
       windowManager.waitUntilReadyToShow(
-        const WindowOptions(size: Size(360, 520), minimumSize: Size(300, 400), center: true, title: '秒表', titleBarStyle: TitleBarStyle.hidden),
+        const WindowOptions(size: Size(320, 460), minimumSize: Size(280, 360), center: true, title: '秒表', titleBarStyle: TitleBarStyle.hidden),
         () async { await windowManager.show(); await windowManager.focus(); },
       );
       runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: StopwatchPage())));
@@ -403,12 +403,22 @@ class _MainPageState extends State<MainPage> {
     setState(() => _checkingUpdate = true);
     try {
       await _api.checkUpdate();
-      await Future.delayed(const Duration(seconds: 2));
-      await _pollStatus();
+      // 轮询状态最多 15 秒，等 daemon 完成检查
+      for (int i = 0; i < 15; i++) {
+        await Future.delayed(const Duration(seconds: 1));
+        await _pollStatus();
+        final activity = _updateStatus['daemon_activity'] ?? _updateStatus['activity'] ?? '';
+        final hasUpdate = _updateStatus['has_update'] ?? false;
+        final pending = _updateStatus['pending_version'] ?? '';
+        // 检查完成（不再是 checking 状态）或发现更新就跳出
+        if (hasUpdate || (activity != 'checking' && i >= 3)) {
+          if (hasUpdate || pending.isNotEmpty) break;
+        }
+      }
       if (mounted) {
         final hasUpdate = _updateStatus['has_update'] ?? false;
         final pending = _updateStatus['pending_version'] ?? '';
-        if (hasUpdate) {
+        if (hasUpdate || pending.isNotEmpty) {
           showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
@@ -654,8 +664,6 @@ class _MainPageState extends State<MainPage> {
             Text('待更新版本：${_updateStatus['pending_version'] ?? '无'}'),
             const SizedBox(height: 8),
             Text('下载进度：${((_updateStatus['download_progress'] ?? 0) * 100).toStringAsFixed(1)}%'),
-            const SizedBox(height: 8),
-            Text('守护进程：${_status['daemon_running'] == true ? '运行中' : '已停止'}'),
           ],
         ),
         actions: [

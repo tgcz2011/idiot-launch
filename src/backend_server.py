@@ -241,7 +241,7 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True})
 
         elif path == "/api/update/check":
-            send_command("check_update")
+            send_command("check_updates")
             self._send_json({"success": True, "message": "检查更新已触发"})
 
         elif path == "/api/update/install":
@@ -299,6 +299,28 @@ def _daemon_loop():
         log_daemon(f"daemon loop 异常: {e}")
 
 
+def _floating_button_loop():
+    """早读悬浮球线程：创建 tkinter root + FloatingButton，定期检查时间段。"""
+    try:
+        import tkinter as tk
+        from src.floating_button import FloatingButton, open_morning_browser
+        root = tk.Tk()
+        root.withdraw()  # 隐藏主窗口
+        btn = FloatingButton(root, on_click=lambda: open_morning_browser())
+
+        def check():
+            try:
+                btn.update_visibility()
+            except Exception as e:
+                log_daemon(f"悬浮球检查异常: {e}")
+            root.after(30000, check)
+
+        root.after(1000, check)  # 1秒后首次检查
+        root.mainloop()
+    except Exception as e:
+        log_daemon(f"悬浮球线程异常: {e}")
+
+
 def main():
     """启动后端 HTTP 服务器。"""
     global _server
@@ -306,6 +328,9 @@ def main():
 
     # 启动 daemon 后台线程（更新检查、快捷方式守护）
     threading.Thread(target=_daemon_loop, daemon=True).start()
+
+    # 启动早读悬浮球线程
+    threading.Thread(target=_floating_button_loop, daemon=True).start()
 
     # 启动 HTTP 服务器（随机端口）
     _server = ThreadingHTTPServer(("127.0.0.1", 0), ApiHandler)
