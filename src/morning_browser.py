@@ -168,28 +168,55 @@ class MorningBrowserWindow(QMainWindow):
             return
 
         grade = self.config.get("grade")
-        class_number = self.config.get("class_number")
+        class_number = str(self.config.get("class_number", "")).strip()
         password = self.config.get("password")
 
         if not all([grade, class_number, password]):
             return
 
+        # 班级号补零（如 "1" -> "01"）
+        try:
+            class_num = int(class_number)
+            class_number = f"{class_num:02d}"
+        except (ValueError, TypeError):
+            pass
+
         # 注入 JavaScript 自动填写表单并提交
+        # 用多种选择器兼容网页改版
         js = f"""
         (function() {{
-            // 等待表单元素出现
             function tryLogin() {{
-                var gradeSelect = document.querySelector('select[name="grade"]');
-                var classInput = document.querySelector('input[name="class_number"]');
-                var passInput = document.querySelector('input[name="password"]');
-                var loginBtn = document.querySelector('button[name="login"]');
+                // 尝试多种选择器，兼容网页改版
+                var gradeSelect = document.querySelector('select[name="grade"]') ||
+                                  document.querySelector('select') ||
+                                  document.querySelector('.grade-select');
+                var inputs = document.querySelectorAll('input');
+                var classInput = null, passInput = null;
+                for (var i = 0; i < inputs.length; i++) {{
+                    var t = inputs[i].type;
+                    var ph = (inputs[i].placeholder || '').toLowerCase();
+                    var n = (inputs[i].name || '').toLowerCase();
+                    if (t === 'password' || n.indexOf('pass') >= 0) {{
+                        passInput = inputs[i];
+                    }} else if (n.indexOf('class') >= 0 || ph.indexOf('班级') >= 0 || ph.indexOf('class') >= 0) {{
+                        classInput = inputs[i];
+                    }}
+                }}
+                if (!classInput && inputs.length >= 2) classInput = inputs[0];
+                var loginBtn = document.querySelector('button[name="login"]') ||
+                               document.querySelector('button[type="submit"]') ||
+                               document.querySelector('.login-btn') ||
+                               document.querySelector('button');
 
                 if (gradeSelect && classInput && passInput && loginBtn) {{
+                    // 设置年级并触发 change 事件
                     gradeSelect.value = '{grade}';
-                    // 触发 change 事件
-                    gradeSelect.dispatchEvent(new Event('change'));
-                    classInput.value = '{class_number:02d}';
+                    gradeSelect.dispatchEvent(new Event('change', {{bubbles: true}}));
+                    // 设置班级号和密码并触发 input 事件
+                    classInput.value = '{class_number}';
+                    classInput.dispatchEvent(new Event('input', {{bubbles: true}}));
                     passInput.value = '{password}';
+                    passInput.dispatchEvent(new Event('input', {{bubbles: true}}));
                     loginBtn.click();
                     return true;
                 }}
@@ -197,19 +224,21 @@ class MorningBrowserWindow(QMainWindow):
             }}
 
             if (!tryLogin()) {{
-                // 页面可能还没渲染完，重试
                 var attempts = 0;
                 var interval = setInterval(function() {{
                     attempts++;
-                    if (tryLogin() || attempts > 20) {{
+                    if (tryLogin() || attempts > 30) {{
                         clearInterval(interval);
                     }}
-                }}, 200);
+                }}, 300);
             }}
         }})();
         """
-        self.browser.page().runJavaScript(js)
-        self._auto_login_done = True
+        try:
+            self.browser.page().runJavaScript(js)
+            self._auto_login_done = True
+        except Exception as e:
+            log.warning(f"自动登录 JS 注入失败: {e}")
 
 
 def main():

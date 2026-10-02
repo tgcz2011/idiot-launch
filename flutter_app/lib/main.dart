@@ -95,8 +95,17 @@ class IdiotLaunchApp extends StatelessWidget {
         textTheme: const TextTheme(
           titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
           titleMedium: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          titleSmall: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+          bodyLarge: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
           bodyMedium: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-          bodySmall: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+          bodySmall: TextStyle(fontSize: 13, fontWeight: FontWeight.w400),
+          labelLarge: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          labelMedium: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+          labelSmall: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
+        ),
+        listTileTheme: const ListTileThemeData(
+          titleTextStyle: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.black87),
+          subtitleTextStyle: TextStyle(fontSize: 13, fontWeight: FontWeight.w400, color: Colors.black54),
         ),
       ),
       home: const MainPage(),
@@ -581,6 +590,7 @@ class _MainPageState extends State<MainPage> {
     final classCtrl = TextEditingController();
     final pwdCtrl = TextEditingController();
     bool persistent = true;
+    bool loggingIn = false;
 
     const grades = ['初一', '初二', '初三', '高一', '高二', '高三'];
     const gradeMap = {'初一': '7', '初二': '8', '初三': '9', '高一': '10', '高二': '11', '高三': '12'};
@@ -598,16 +608,28 @@ class _MainPageState extends State<MainPage> {
                 value: selectedGrade,
                 decoration: const InputDecoration(labelText: '年级'),
                 items: grades.map((g) => DropdownMenuItem(value: g, child: Text(g))).toList(),
-                onChanged: (v) => setDialogState(() => selectedGrade = v ?? '初三'),
+                onChanged: loggingIn ? null : (v) => setDialogState(() => selectedGrade = v ?? '初三'),
               ),
               const SizedBox(height: 12),
-              TextField(controller: classCtrl, decoration: const InputDecoration(labelText: '班级号（如 01）')),
+              TextField(
+                controller: classCtrl,
+                enabled: !loggingIn,
+                decoration: const InputDecoration(labelText: '班级号（如 01）'),
+              ),
               const SizedBox(height: 12),
-              TextField(controller: pwdCtrl, obscureText: true, decoration: const InputDecoration(labelText: '班级密码')),
+              TextField(
+                controller: pwdCtrl,
+                obscureText: true,
+                enabled: !loggingIn,
+                decoration: const InputDecoration(labelText: '班级密码'),
+              ),
               const SizedBox(height: 12),
               Row(
                 children: [
-                  Checkbox(value: persistent, onChanged: (v) => setDialogState(() => persistent = v ?? true)),
+                  Checkbox(
+                    value: persistent,
+                    onChanged: loggingIn ? null : (v) => setDialogState(() => persistent = v ?? true),
+                  ),
                   const Text('持久登录（重启后保留）'),
                 ],
               ),
@@ -616,32 +638,59 @@ class _MainPageState extends State<MainPage> {
                 '先选年级，再填班级号：初中 01-14，高中 01-11\n初始密码：admin + 班级号（一班 = admin01）\n密码可在教师管理界面修改',
                 style: TextStyle(fontSize: 11, color: Colors.grey[600]),
               ),
+              if (loggingIn) ...[
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const SizedBox(
+                      width: 20, height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 12),
+                    Text('正在登录，服务器响应可能较慢…', style: TextStyle(fontSize: 13, color: Colors.grey[600])),
+                  ],
+                ),
+              ],
             ],
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
+            TextButton(
+              onPressed: loggingIn ? null : () => Navigator.pop(ctx),
+              child: const Text('取消'),
+            ),
             FilledButton(
-              onPressed: () async {
-                final gradeNum = gradeMap[selectedGrade] ?? '9';
-                final classNum = classCtrl.text.trim();
-                if (classNum.isEmpty) {
-                  ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('请填写班级号')));
-                  return;
-                }
-                try {
-                  final ok = await _api.morningLoginWithGrade(gradeNum, classNum, pwdCtrl.text, persistent);
-                  if (ok && ctx.mounted) {
-                    Navigator.pop(ctx);
-                    await _pollStatus();
-                    if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('登录成功')));
-                  } else {
-                    if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('账号或密码错误')));
-                  }
-                } catch (e) {
-                  if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('登录失败：$e')));
-                }
-              },
-              child: const Text('登录'),
+              onPressed: loggingIn
+                  ? null
+                  : () async {
+                      final gradeNum = gradeMap[selectedGrade] ?? '9';
+                      final classNum = classCtrl.text.trim();
+                      if (classNum.isEmpty) {
+                        ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('请填写班级号')));
+                        return;
+                      }
+                      setDialogState(() => loggingIn = true);
+                      try {
+                        final ok = await _api.morningLoginWithGrade(gradeNum, classNum, pwdCtrl.text, persistent);
+                        if (ok && ctx.mounted) {
+                          Navigator.pop(ctx);
+                          await _pollStatus();
+                          if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('登录成功')));
+                        } else {
+                          if (ctx.mounted) {
+                            setDialogState(() => loggingIn = false);
+                            ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('账号或密码错误')));
+                          }
+                        }
+                      } catch (e) {
+                        if (ctx.mounted) {
+                          setDialogState(() => loggingIn = false);
+                          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('登录失败：$e')));
+                        }
+                      }
+                    },
+              child: loggingIn
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('登录'),
             ),
           ],
         ),
