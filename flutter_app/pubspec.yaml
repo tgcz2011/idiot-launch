@@ -1,7 +1,7 @@
 name: idiot_launch
 description: "傻瓜启动器 — 一键启动中考/高考倒计时、早晚读、计时器"
 publish_to: 'none'
-version: 3.0.0+11
+version: 3.0.0+12
 
 environment:
   sdk: ^3.13.4

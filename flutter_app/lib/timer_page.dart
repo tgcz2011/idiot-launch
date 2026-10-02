@@ -10,9 +10,9 @@ import 'package:audioplayers/audioplayers.dart';
 // 所以用 FFI 直接调用 user32.dll 控制当前活动窗口（子窗口）。
 final _user32 = ffi.DynamicLibrary.open('user32.dll');
 
-typedef _GetActiveWindowNative = ffi.IntPtr Function();
-typedef _GetActiveWindowDart = int Function();
-final _getActiveWindow = _user32.lookupFunction<_GetActiveWindowNative, _GetActiveWindowDart>('GetActiveWindow');
+typedef _GetForegroundWindowNative = ffi.IntPtr Function();
+typedef _GetForegroundWindowDart = int Function();
+final _getForegroundWindow = _user32.lookupFunction<_GetForegroundWindowNative, _GetForegroundWindowDart>('GetForegroundWindow');
 
 typedef _GetWindowLongNative = ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Int32 nIndex);
 typedef _GetWindowLongDart = int Function(int hWnd, int nIndex);
@@ -39,20 +39,25 @@ const int _swpNoZOrder = 0x0004;
 /// 设置当前活动窗口为无边框，并调整大小和居中。
 void _setupFramelessWindow(int width, int height) {
   try {
-    final hWnd = _getActiveWindow();
-    if (hWnd == 0) return;
-    // 去掉标题栏和可调整边框
-    int style = _getWindowLong(hWnd, _gwlStyle);
-    style &= ~(_wsCaption | _wsThickFrame | _wsSysMenu);
-    _setWindowLong(hWnd, _gwlStyle, style);
-    // 计算居中位置
-    final screenW = WidgetsBinding.instance.platformDispatcher.views.first.physicalSize.width;
-    final screenH = WidgetsBinding.instance.platformDispatcher.views.first.physicalSize.height;
-    final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
-    final x = ((screenW / dpr - width) / 2).round();
-    final y = ((screenH / dpr - height) / 2).round();
-    // 设置大小位置并刷新框架
-    _setWindowPos(hWnd, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
+    // 延迟一点，确保子窗口已成为前台窗口
+    Future.delayed(const Duration(milliseconds: 200), () {
+      try {
+        final hWnd = _getForegroundWindow();
+        if (hWnd == 0) return;
+        // 去掉标题栏和可调整边框
+        int style = _getWindowLong(hWnd, _gwlStyle);
+        style &= ~(_wsCaption | _wsThickFrame | _wsSysMenu);
+        _setWindowLong(hWnd, _gwlStyle, style);
+        // 计算居中位置
+        final view = WidgetsBinding.instance.platformDispatcher.views.first;
+        final screenW = view.physicalSize.width / view.devicePixelRatio;
+        final screenH = view.physicalSize.height / view.devicePixelRatio;
+        final x = ((screenW - width) / 2).round();
+        final y = ((screenH - height) / 2).round();
+        // 设置大小位置并刷新框架
+        _setWindowPos(hWnd, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
+      } catch (_) {}
+    });
   } catch (_) {}
 }
 

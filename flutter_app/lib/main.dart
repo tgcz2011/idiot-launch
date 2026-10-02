@@ -55,9 +55,9 @@ Future<void> _ensureSingleInstance() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await windowManager.ensureInitialized();
 
   // 多窗口入口分发：用 WindowController.fromCurrentEngine 获取 arguments
+  // 必须在 windowManager.ensureInitialized() 之前，因为 windowManager 在子窗口中可能异常
   try {
     final controller = await WindowController.fromCurrentEngine();
     if (controller.arguments == 'timer') {
@@ -71,6 +71,8 @@ void main() async {
   } catch (_) {
     // 主窗口没有 fromCurrentEngine，忽略
   }
+
+  await windowManager.ensureInitialized();
 
   await _ensureSingleInstance();
   if (!_isFirstInstance) {
