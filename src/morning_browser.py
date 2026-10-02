@@ -84,6 +84,16 @@ class MorningBrowserWindow(QMainWindow):
         self._build_ui()
         self._load_page()
 
+    def closeEvent(self, event):
+        """窗口关闭时清理 PID 文件。"""
+        try:
+            pid_file = r"D:\IdiotLaunch\data\morning_browser.pid"
+            if os.path.isfile(pid_file):
+                os.remove(pid_file)
+        except Exception:
+            pass
+        super().closeEvent(event)
+
     def _update_window_flags(self):
         """更新窗口标志（置顶）。"""
         flags = Qt.Window

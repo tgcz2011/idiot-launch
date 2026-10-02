@@ -181,11 +181,60 @@ class FloatingButton:
 
 
 def open_morning_browser(config=None):
-    """打开早读浏览器窗口（独立进程）。
+    """打开早读浏览器窗口（单开：已运行则激活，未运行则启动）。
     已登录（配置含年级/班级/密码）则自动登录；未登录则直接打开网页首页。
     """
     if config is None:
         config = load_morning_config()
+
+    # 单开检测：检查 PID 文件
+    pid_file = r"D:\IdiotLaunch\data\morning_browser.pid"
+    try:
+        if os.path.isfile(pid_file):
+            existing_pid = int(open(pid_file).read().strip())
+            # 用 ctypes 检测进程是否存在
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, existing_pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                # 进程存在，激活窗口到前台
+                import ctypes
+                user32 = ctypes.windll.user32
+                # 枚举窗口找到早读浏览器窗口并激活
+                EnumWindows = user32.EnumWindows
+                EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+                GetWindowTextLength = user32.GetWindowTextLengthW
+                GetWindowText = user32.GetWindowTextW
+                GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+                IsWindowVisible = user32.IsWindowVisible
+
+                found_hwnd = []
+
+                def callback(hwnd, lParam):
+                    if not IsWindowVisible(hwnd):
+                        return True
+                    pid = ctypes.c_ulong()
+                    GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                    if pid.value == existing_pid:
+                        length = GetWindowTextLength(hwnd)
+                        if length > 0:
+                            buf = ctypes.create_unicode_buffer(length + 1)
+                            GetWindowText(hwnd, buf, length + 1)
+                            if "早晚读" in buf.value or "morning" in buf.value.lower():
+                                found_hwnd.append(hwnd)
+                                return False
+                    return True
+
+                EnumWindows(EnumWindowsProc(callback), 0)
+                if found_hwnd:
+                    hwnd = found_hwnd[0]
+                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                    user32.SetForegroundWindow(hwnd)
+                    return True
+    except Exception:
+        pass
 
     # 启动独立进程
     run_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run.py")
@@ -194,10 +243,18 @@ def open_morning_browser(config=None):
     if getattr(sys, "frozen", False):
         exe = sys.executable
         creationflags = 0x00000008 | 0x08000000
-        subprocess.Popen([exe, "--morning-browser", config_json],
-                         creationflags=creationflags, close_fds=True)
+        proc = subprocess.Popen([exe, "--morning-browser", config_json],
+                                creationflags=creationflags, close_fds=True)
     else:
         creationflags = 0x00000008 | 0x08000000
-        subprocess.Popen([sys.executable, run_py, "--morning-browser", config_json],
-                         creationflags=creationflags, close_fds=True)
+        proc = subprocess.Popen([sys.executable, run_py, "--morning-browser", config_json],
+                                creationflags=creationflags, close_fds=True)
+
+    # 写入 PID 文件
+    try:
+        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+        with open(pid_file, "w") as f:
+            f.write(str(proc.pid))
+    except Exception:
+        pass
     return True

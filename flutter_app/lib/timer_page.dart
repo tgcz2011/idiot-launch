@@ -5,6 +5,41 @@ import 'package:window_manager/window_manager.dart';
 import 'package:audioplayers/audioplayers.dart';
 
 // ==================== 倒计时页面 ====================
+Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onFullscreen) {
+  return Container(
+    height: 32,
+    decoration: BoxDecoration(
+      color: Theme.of(context).colorScheme.surface,
+      border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.2), width: 1)),
+    ),
+    child: Row(
+      children: [
+        Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onPanStart: (_) => windowManager.startDragging(),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+            ),
+          ),
+        ),
+        if (onFullscreen != null)
+          SizedBox(width: 36, height: 32, child: InkWell(onTap: onFullscreen, child: const Icon(Icons.fullscreen, size: 16))),
+        SizedBox(width: 46, height: 32, child: InkWell(onTap: () => windowManager.minimize(), child: const Icon(Icons.remove, size: 16))),
+        SizedBox(
+          width: 46, height: 32,
+          child: InkWell(
+            onTap: () => windowManager.close(),
+            hoverColor: Colors.red.withOpacity(0.8),
+            child: const Icon(Icons.close, size: 16),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
 class TimerPage extends StatefulWidget {
   const TimerPage({super.key});
 
@@ -117,18 +152,12 @@ class _TimerPageState extends State<TimerPage> {
   Widget build(BuildContext context) {
     final selecting = _totalSeconds == 0 && !_running;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('倒计时'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.fullscreen),
-            tooltip: '全屏',
-            onPressed: _toggleFullscreen,
-          ),
-        ],
-      ),
       body: Column(
         children: [
+          _buildTitleBar(context, '倒计时', _toggleFullscreen),
+          Expanded(
+            child: Column(
+              children: [
           Expanded(
             child: Center(
               child: selecting ? _buildPicker() : _buildDisplay(),
@@ -168,6 +197,9 @@ class _TimerPageState extends State<TimerPage> {
           ),
         ],
       ),
+    ),
+  ],
+),
     );
   }
 
@@ -299,18 +331,12 @@ class _StopwatchPageState extends State<StopwatchPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('秒表'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.fullscreen),
-            tooltip: '全屏',
-            onPressed: _toggleFullscreen,
-          ),
-        ],
-      ),
       body: Column(
         children: [
+          _buildTimerTitleBar(context, '秒表', _toggleFullscreen),
+          Expanded(
+            child: Column(
+              children: [
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 32),
             child: Text(
@@ -386,6 +412,9 @@ class _StopwatchPageState extends State<StopwatchPage> {
           ),
         ],
       ),
+    ),
+  ],
+),
     );
   }
 }

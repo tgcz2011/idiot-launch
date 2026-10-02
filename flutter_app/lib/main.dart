@@ -62,7 +62,7 @@ void main() async {
     final controller = await WindowController.fromCurrentEngine();
     if (controller.arguments == 'timer') {
       windowManager.waitUntilReadyToShow(
-        const WindowOptions(size: Size(360, 480), minimumSize: Size(300, 400), center: true, title: '倒计时'),
+        const WindowOptions(size: Size(360, 480), minimumSize: Size(300, 400), center: true, title: '倒计时', titleBarStyle: TitleBarStyle.hidden),
         () async { await windowManager.show(); await windowManager.focus(); },
       );
       runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: TimerPage())));
@@ -70,7 +70,7 @@ void main() async {
     }
     if (controller.arguments == 'stopwatch') {
       windowManager.waitUntilReadyToShow(
-        const WindowOptions(size: Size(360, 520), minimumSize: Size(300, 400), center: true, title: '秒表'),
+        const WindowOptions(size: Size(360, 520), minimumSize: Size(300, 400), center: true, title: '秒表', titleBarStyle: TitleBarStyle.hidden),
         () async { await windowManager.show(); await windowManager.focus(); },
       );
       runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: StopwatchPage())));
@@ -92,7 +92,7 @@ void main() async {
     center: true,
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
-    titleBarStyle: TitleBarStyle.normal,
+    titleBarStyle: TitleBarStyle.hidden,
     title: '傻瓜启动器',
   );
   windowManager.waitUntilReadyToShow(windowOptions, () async {
@@ -151,6 +151,86 @@ ThemeData _timerTheme() {
       bodySmall: TextStyle(fontSize: 12, fontWeight: FontWeight.w400),
     ),
   );
+}
+
+// 自定义标题栏（隐藏原生标题栏后使用）
+class CustomTitleBar extends StatelessWidget {
+  final String title;
+  final bool showMaximize;
+  const CustomTitleBar({super.key, required this.title, this.showMaximize = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 32,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.2), width: 1)),
+      ),
+      child: Row(
+        children: [
+          // 拖动区域
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onPanStart: (_) => windowManager.startDragging(),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Row(
+                  children: [
+                    Icon(Icons.touch_app, size: 16, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          // 最小化
+          _TitleBarButton(
+            icon: Icons.remove,
+            onPressed: () => windowManager.minimize(),
+          ),
+          if (showMaximize)
+            _TitleBarButton(
+              icon: Icons.check_box_outline_blank,
+              onPressed: () async {
+                if (await windowManager.isMaximized()) {
+                  windowManager.unmaximize();
+                } else {
+                  windowManager.maximize();
+                }
+              },
+            ),
+          _TitleBarButton(
+            icon: Icons.close,
+            isClose: true,
+            onPressed: () => windowManager.close(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TitleBarButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onPressed;
+  final bool isClose;
+  const _TitleBarButton({required this.icon, required this.onPressed, this.isClose = false});
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 46,
+      height: 32,
+      child: InkWell(
+        onTap: onPressed,
+        hoverColor: isClose ? Colors.red.withOpacity(0.8) : Colors.grey.withOpacity(0.15),
+        child: Icon(icon, size: 16, color: isClose ? null : Colors.grey[700]),
+      ),
+    );
+  }
 }
 
 class MainPage extends StatefulWidget {
@@ -368,17 +448,24 @@ class _MainPageState extends State<MainPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Row(
+      body: Column(
         children: [
-          NavigationRail(
-            selectedIndex: _selectedIndex,
-            onDestinationSelected: (i) => setState(() => _selectedIndex = i),
-            labelType: NavigationRailLabelType.all,
-            minWidth: 68,
-            destinations: _pages,
+          const CustomTitleBar(title: '傻瓜启动器'),
+          Expanded(
+            child: Row(
+              children: [
+                NavigationRail(
+                  selectedIndex: _selectedIndex,
+                  onDestinationSelected: (i) => setState(() => _selectedIndex = i),
+                  labelType: NavigationRailLabelType.all,
+                  minWidth: 68,
+                  destinations: _pages,
+                ),
+                const VerticalDivider(thickness: 1, width: 1),
+                Expanded(child: _buildPage()),
+              ],
+            ),
           ),
-          const VerticalDivider(thickness: 1, width: 1),
-          Expanded(child: _buildPage()),
         ],
       ),
     );
@@ -459,10 +546,10 @@ class _MainPageState extends State<MainPage> {
             runSpacing: 12,
             children: [
               _bigButton(Icons.timer_outlined, '倒计时', Colors.teal, () async {
-                await WindowController.create(const WindowConfiguration(arguments: 'timer'));
+                await WindowController.create(const WindowConfiguration(arguments: 'timer', hiddenAtLaunch: false));
               }),
               _bigButton(Icons.timer_10_select, '秒表', Colors.indigo, () async {
-                await WindowController.create(const WindowConfiguration(arguments: 'stopwatch'));
+                await WindowController.create(const WindowConfiguration(arguments: 'stopwatch', hiddenAtLaunch: false));
               }),
             ],
           ),
@@ -772,11 +859,11 @@ class _MainPageState extends State<MainPage> {
                 onPressed: () {
                   final n = int.tryParse(countCtrl.text) ?? 1;
                   if (n < 1) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(content: Text('抽取人数至少为 1')));
+                    showDialog(context: ctx, builder: (_) => AlertDialog(title: const Text('提示'), content: const Text('抽取人数至少为 1'), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('确定'))]));
                     return;
                   }
                   if (n > students.length) {
-                    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('抽取人数不能超过总人数（${students.length}）')));
+                    showDialog(context: ctx, builder: (_) => AlertDialog(title: const Text('提示'), content: Text('抽取人数不能超过总人数（${students.length}人）'), actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('确定'))]));
                     return;
                   }
                   final shuffled = [...students]..shuffle();
