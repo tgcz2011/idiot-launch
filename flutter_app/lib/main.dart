@@ -1,11 +1,29 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ffi' as ffi;
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 import 'api.dart';
 import 'timer_page.dart';
 
-// 单实例：PID 文件 + 进程检查
+// Windows API 进程检测（dart:ffi）
+final ffi.DynamicLibrary _kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
+typedef OpenProcessNative = ffi.IntPtr Function(ffi.Uint32, ffi.Int32, ffi.Uint32);
+typedef OpenProcessDart = int Function(int, int, int);
+final _openProcess = _kernel32.lookupFunction<OpenProcessNative, OpenProcessDart>('OpenProcess');
+typedef CloseHandleNative = ffi.Int32 Function(ffi.IntPtr);
+typedef CloseHandleDart = int Function(int);
+final _closeHandle = _kernel32.lookupFunction<CloseHandleNative, CloseHandleDart>('CloseHandle');
+
+bool _processExists(int pid) {
+  const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+  final handle = _openProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+  if (handle == 0) return false;
+  _closeHandle(handle);
+  return true;
+}
+
+// 单实例：PID 文件 + FFI 进程检测
 bool _isFirstInstance = false;
 
 Future<void> _ensureSingleInstance() async {
@@ -16,17 +34,14 @@ Future<void> _ensureSingleInstance() async {
 
     if (File(pidFile).existsSync()) {
       final existingPid = int.tryParse(File(pidFile).readAsStringSync().trim());
-      if (existingPid != null) {
-        final result = Process.runSync('tasklist', ['/FI', 'PID eq $existingPid', '/NH']);
-        if (result.stdout.toString().contains('$existingPid')) {
-          _isFirstInstance = false;
-          // 通知已有实例激活窗口
-          try {
-            final api = ApiService();
-            await api.activateWindow();
-          } catch (_) {}
-          return;
-        }
+      if (existingPid != null && _processExists(existingPid)) {
+        _isFirstInstance = false;
+        // 通知已有实例激活窗口
+        try {
+          final api = ApiService();
+          await api.activateWindow();
+        } catch (_) {}
+        return;
       }
     }
     File(pidFile).writeAsStringSync(pid.toString());
