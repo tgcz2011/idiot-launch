@@ -121,6 +121,7 @@ class _MainPageState extends State<MainPage> {
   Timer? _pollTimer;
   bool _checkingUpdate = false;
   bool _startingCd = false;
+  bool _showVersionCard = true;
 
   static const _pages = [
     NavigationRailDestination(
@@ -262,10 +263,6 @@ class _MainPageState extends State<MainPage> {
   }
 
   Future<void> _openMorning() async {
-    if (!_morningLoggedIn) {
-      _showError('未登录', '请先登录早读班级后再打开早晚读');
-      return;
-    }
     try {
       await _api.openMorningBrowser();
     } catch (e) {
@@ -280,9 +277,25 @@ class _MainPageState extends State<MainPage> {
       await Future.delayed(const Duration(seconds: 2));
       await _pollStatus();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('更新检查完成')),
-        );
+        final hasUpdate = _updateStatus['has_update'] ?? false;
+        final pending = _updateStatus['pending_version'] ?? '';
+        if (hasUpdate) {
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('发现新版本'),
+              content: Text('当前版本：v${_status['version'] ?? '?'}\n最新版本：$pending\n\n将在后台静默下载，下载完成后空闲时自动更新。'),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+                FilledButton(onPressed: () async { Navigator.pop(ctx); await _api.installUpdate(); }, child: const Text('立即更新')),
+              ],
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('已是最新版本（v${_status['version'] ?? '?'}）')),
+          );
+        }
       }
     } catch (e) {
       _showError('检查更新失败', e.toString());
@@ -344,8 +357,22 @@ class _MainPageState extends State<MainPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _buildUpdateIndicator(),
-          const SizedBox(height: 16),
+          if (_showVersionCard)
+            _buildUpdateIndicator()
+          else
+            Align(
+              alignment: Alignment.topRight,
+              child: IconButton(
+                icon: Icon(
+                  (_updateStatus['has_update'] ?? false) ? Icons.update : Icons.check_circle_outline,
+                  color: (_updateStatus['has_update'] ?? false) ? Colors.orange : Colors.green,
+                  size: 22,
+                ),
+                tooltip: '查看更新状态',
+                onPressed: () => setState(() => _showVersionCard = true),
+              ),
+            ),
+          if (_showVersionCard) const SizedBox(height: 16),
           Text('壁纸 & 屏保', style: Theme.of(context).textTheme.titleLarge),
           const SizedBox(height: 12),
           Wrap(
@@ -460,9 +487,18 @@ class _MainPageState extends State<MainPage> {
         subtitle: downloading
             ? Text('${(progress * 100).toStringAsFixed(0)}%', style: TextStyle(fontSize: 11, color: Colors.grey[600]))
             : null,
-        trailing: hasUpdate && !downloading
-            ? TextButton(onPressed: () => _api.checkUpdate(), child: const Text('立即更新'))
-            : null,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (hasUpdate && !downloading)
+              TextButton(onPressed: () => _api.checkUpdate(), child: const Text('立即更新')),
+            IconButton(
+              icon: const Icon(Icons.close, size: 18),
+              tooltip: '收起',
+              onPressed: () => setState(() => _showVersionCard = false),
+            ),
+          ],
+        ),
         onTap: () => _showUpdateDetail(),
       ),
     );
@@ -521,7 +557,7 @@ class _MainPageState extends State<MainPage> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _bigButton(Icons.menu_book, '打开早晚读', Colors.teal, _morningLoggedIn ? _openMorning : null),
+              _bigButton(Icons.menu_book, '打开早晚读', Colors.teal, _openMorning),
               _bigButton(
                 Icons.people_alt_outlined,
                 '随机抽学生',

@@ -17,9 +17,8 @@ from PySide6.QtGui import QIcon
 # 早读网页地址
 MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
 
-# 配置文件路径
-PERSISTENT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                      "data", "morning_config.json")
+# 配置文件路径（与 core.py 的 UPDATE_DIR 保持一致：D:\IdiotLaunch\data）
+PERSISTENT_CONFIG_PATH = r"D:\IdiotLaunch\data\morning_config.json"
 TEMP_CONFIG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")),
                                 "idiot_launch_morning_config.json")
 
