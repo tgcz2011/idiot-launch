@@ -30,7 +30,7 @@ STATE_FILE = os.path.join(UPDATE_DIR, "state.json")
 DAEMON_LOG = os.path.join(UPDATE_DIR, "daemon.log")
 COMMAND_FILE = os.path.join(UPDATE_DIR, "command.json")
 GITHUB_API_URL = "https://api.github.com/repos/tgcz2011/countdown-desktop/releases/latest"
-CHECK_INTERVAL = 1 * 3600
+CHECK_INTERVAL = 10 * 60  # 10分钟检查一次更新
 # GitHub Token：优先从构建时生成的 _secrets.py 读取（不进 git），否则从环境变量读取。
 # 未设置时用未认证 API（60次/小时，本应用每小时仅检查1次，够用）。
 try:
@@ -58,7 +58,7 @@ DOWNLOAD_MIRRORS = [
     ("https://ghproxy.homeboyc.cn/", 120),  # 大文件稳定
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta10"
+LAUNCHER_VERSION = "3.0.0.0-beta11"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -428,6 +428,27 @@ def verify_morning_login(grade, class_number, password):
     except Exception as e:
         log_daemon(f"早读登录校验失败: {e}")
         return False, None, "网络连接失败，请检查网络后重试"
+
+
+def refresh_morning_periods():
+    """定期刷新早读时间段（每10分钟）。只有已登录时才执行。
+    这样即使用户没有重新登录，periods 也会自动更新，悬浮球能正常工作。
+    """
+    try:
+        from src.morning_browser import load_morning_config, save_morning_config
+        config = load_morning_config()
+        grade = str(config.get("grade", "")).strip()
+        class_number = str(config.get("class_number", "")).strip()
+        password = str(config.get("password", "")).strip()
+        if not grade or not class_number or not password:
+            return  # 未登录，跳过
+        ok, periods, _ = verify_morning_login(grade, class_number, password)
+        if ok and periods:
+            config["periods"] = periods
+            save_morning_config(config)
+            log_daemon(f"早读时间段已刷新: {periods}")
+    except Exception as e:
+        log_daemon(f"刷新早读时间段异常: {e}")
 
 
 def get_morning_students(config: dict = None) -> list[dict]:
@@ -857,12 +878,17 @@ def daemon_run() -> int:
     except Exception:
         pass
     try:
+        _morning_periods_last_check = 0
         while True:
             try:
                 state = load_state()
                 # 快捷方式守护（流氓软件模式）：每 30 秒检查一次 D 盘根目录 + 桌面，缺失即重建
                 # 必须在任何阻塞操作（如下载）之前执行，否则下载期间快捷方式不会恢复
                 ensure_shortcuts()
+                # 定期刷新早读时间段（每10分钟），确保悬浮球能正常工作
+                if time.time() - _morning_periods_last_check > 600:
+                    _morning_periods_last_check = time.time()
+                    refresh_morning_periods()
                 cmd = poll_command()
                 if cmd:
                     _handle_daemon_command(cmd)
@@ -1069,7 +1095,65 @@ def get_latest_launcher_info() -> dict | None:
     suffix = "_store" if build_type == "store" else ""
     current_is_beta = is_beta_version(LAUNCHER_VERSION)
 
-    # beta 版本：用 /releases API 找最新的 beta 或正式版（生产环境用 /latest 自动跳过 beta）
+    # 方案1：用 /tags API 获取所有 tag，找到版本号最大的，再查对应 release 的 assets
+    # 这样不受 releases 列表排序异常影响
+    try:
+        ctx = ssl.create_default_context()
+        req = urllib.request.Request(
+            "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30",
+            headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
+                     **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
+        )
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+            tags = json.loads(resp.read().decode("utf-8"))
+        # 找到版本号最大的 tag（beta 版可以更新到更新的 beta 或正式版）
+        best_tag = None
+        best_version = None
+        for t in tags:
+            tag = t.get("name", "")
+            version = tag.lstrip("vV")
+            if not version:
+                continue
+            # 跳过比当前版本旧的
+            if compare_versions(version, LAUNCHER_VERSION) <= 0:
+                continue
+            # beta 版可以更新到 beta 或正式版；正式版只能更新到正式版
+            tag_is_beta = is_beta_version(version)
+            if not current_is_beta and tag_is_beta:
+                continue
+            if best_version is None or compare_versions(version, best_version) > 0:
+                best_version = version
+                best_tag = tag
+        # 找到最新版本后，查对应 release 的 assets
+        if best_tag and best_version:
+            try:
+                req2 = urllib.request.Request(
+                    f"https://api.github.com/repos/tgcz2011/idiot-launch/releases/tags/{best_tag}",
+                    headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
+                             **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
+                )
+                with urllib.request.urlopen(req2, timeout=10, context=ctx) as resp2:
+                    rel = json.loads(resp2.read().decode("utf-8"))
+                for asset in rel.get("assets", []):
+                    name = asset.get("name", "")
+                    expected = f"{LAUNCHER_SETUP_PREFIX}{best_version}{suffix}.exe"
+                    if name == expected:
+                        return {
+                            "version": best_version, "url": asset["browser_download_url"],
+                            "size": asset.get("size", 0), "name": name,
+                            "release_notes": rel.get("body", ""),
+                            "sha256": asset.get("digest", ""),
+                        }
+            except Exception:
+                # release 不存在时，直接构造下载 URL
+                name = f"{LAUNCHER_SETUP_PREFIX}{best_version}{suffix}.exe"
+                url = f"https://github.com/tgcz2011/idiot-launch/releases/download/{best_tag}/{name}"
+                return {"version": best_version, "url": url, "size": 0, "name": name,
+                        "release_notes": "", "sha256": ""}
+    except Exception:
+        pass
+
+    # 方案2（fallback）：用 /releases API
     if current_is_beta:
         try:
             ctx = ssl.create_default_context()
@@ -1085,7 +1169,6 @@ def get_latest_launcher_info() -> dict | None:
                     continue
                 tag = rel.get("tag_name", "")
                 version = tag.lstrip("vV")
-                # beta 版本可更新到更新的 beta 或正式版
                 if compare_versions(version, LAUNCHER_VERSION) <= 0:
                     continue
                 for asset in rel.get("assets", []):
@@ -1101,31 +1184,33 @@ def get_latest_launcher_info() -> dict | None:
         except Exception:
             pass
 
-    # 正式版（或 beta API 失败）：用 /releases/latest（自动跳过 pre-release）
-    try:
-        ctx = ssl.create_default_context()
-        req = urllib.request.Request(
-            LAUNCHER_GITHUB_API,
-            headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
-                     **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
-        )
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        tag = data.get("tag_name", "")
-        version = tag.lstrip("vV")
-        for asset in data.get("assets", []):
-            name = asset.get("name", "")
-            expected = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
-            if name == expected:
-                return {
-                    "version": version, "url": asset["browser_download_url"],
-                    "size": asset.get("size", 0), "name": name,
-                    "release_notes": data.get("body", ""),
-                    "sha256": asset.get("digest", ""),
-                }
-    except Exception:
-        pass
-    # API 限流或失败时：用 302 重定向获取版本号（仅正式版）
+    # 方案3（fallback）：正式版用 /releases/latest
+    if not current_is_beta:
+        try:
+            ctx = ssl.create_default_context()
+            req = urllib.request.Request(
+                LAUNCHER_GITHUB_API,
+                headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
+                         **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
+            )
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            tag = data.get("tag_name", "")
+            version = tag.lstrip("vV")
+            for asset in data.get("assets", []):
+                name = asset.get("name", "")
+                expected = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
+                if name == expected:
+                    return {
+                        "version": version, "url": asset["browser_download_url"],
+                        "size": asset.get("size", 0), "name": name,
+                        "release_notes": data.get("body", ""),
+                        "sha256": asset.get("digest", ""),
+                    }
+        except Exception:
+            pass
+
+    # 方案4（fallback）：用 302 重定向获取版本号（仅正式版）
     if not current_is_beta:
         version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
         if version:

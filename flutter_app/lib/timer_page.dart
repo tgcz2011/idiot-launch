@@ -1,8 +1,60 @@
 import 'dart:async';
+import 'dart:ffi' as ffi;
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:audioplayers/audioplayers.dart';
+
+// ==================== FFI: 子窗口无边框控制 ====================
+// window_manager 在 desktop_multi_window 子窗口中控制的是主窗口，
+// 所以用 FFI 直接调用 user32.dll 控制当前活动窗口（子窗口）。
+final _user32 = ffi.DynamicLibrary.open('user32.dll');
+
+typedef _GetActiveWindowNative = ffi.IntPtr Function();
+typedef _GetActiveWindowDart = int Function();
+final _getActiveWindow = _user32.lookupFunction<_GetActiveWindowNative, _GetActiveWindowDart>('GetActiveWindow');
+
+typedef _GetWindowLongNative = ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Int32 nIndex);
+typedef _GetWindowLongDart = int Function(int hWnd, int nIndex);
+final _getWindowLong = _user32.lookupFunction<_GetWindowLongNative, _GetWindowLongDart>('GetWindowLongW');
+
+typedef _SetWindowLongNative = ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Int32 nIndex, ffi.IntPtr dwNewLong);
+typedef _SetWindowLongDart = int Function(int hWnd, int nIndex, int dwNewLong);
+final _setWindowLong = _user32.lookupFunction<_SetWindowLongNative, _SetWindowLongDart>('SetWindowLongW');
+
+typedef _SetWindowPosNative = ffi.Int32 Function(
+    ffi.IntPtr hWnd, ffi.IntPtr hWndInsertAfter,
+    ffi.Int32 X, ffi.Int32 Y, ffi.Int32 cx, ffi.Int32 cy, ffi.Uint32 uFlags);
+typedef _SetWindowPosDart = int Function(
+    int hWnd, int hWndInsertAfter, int X, int Y, int cx, int cy, int uFlags);
+final _setWindowPos = _user32.lookupFunction<_SetWindowPosNative, _SetWindowPosDart>('SetWindowPos');
+
+const int _gwlStyle = -16;
+const int _wsCaption = 0x00C00000;
+const int _wsThickFrame = 0x00040000;
+const int _wsSysMenu = 0x00080000;
+const int _swpFrameChanged = 0x0020;
+const int _swpNoZOrder = 0x0004;
+
+/// 设置当前活动窗口为无边框，并调整大小和居中。
+void _setupFramelessWindow(int width, int height) {
+  try {
+    final hWnd = _getActiveWindow();
+    if (hWnd == 0) return;
+    // 去掉标题栏和可调整边框
+    int style = _getWindowLong(hWnd, _gwlStyle);
+    style &= ~(_wsCaption | _wsThickFrame | _wsSysMenu);
+    _setWindowLong(hWnd, _gwlStyle, style);
+    // 计算居中位置
+    final screenW = WidgetsBinding.instance.platformDispatcher.views.first.physicalSize.width;
+    final screenH = WidgetsBinding.instance.platformDispatcher.views.first.physicalSize.height;
+    final dpr = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
+    final x = ((screenW / dpr - width) / 2).round();
+    final y = ((screenH / dpr - height) / 2).round();
+    // 设置大小位置并刷新框架
+    _setWindowPos(hWnd, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
+  } catch (_) {}
+}
 
 // ==================== 倒计时页面 ====================
 Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onFullscreen) {
@@ -61,16 +113,9 @@ class _TimerPageState extends State<TimerPage> {
   @override
   void initState() {
     super.initState();
-    // 子窗口：设置大小 + 隐藏原生标题栏
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
-        await windowManager.setSize(const Size(320, 420));
-        await windowManager.setMinimumSize(const Size(280, 360));
-        await windowManager.center();
-        await windowManager.show();
-        await windowManager.focus();
-      } catch (_) {}
+    // 子窗口：用 FFI 直接设置无边框+大小+居中（windowManager 在子窗口中不生效）
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _setupFramelessWindow(320, 420);
     });
   }
 
@@ -289,15 +334,8 @@ class _StopwatchPageState extends State<StopwatchPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
-        await windowManager.setSize(const Size(320, 460));
-        await windowManager.setMinimumSize(const Size(280, 360));
-        await windowManager.center();
-        await windowManager.show();
-        await windowManager.focus();
-      } catch (_) {}
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _setupFramelessWindow(320, 460);
     });
   }
 
