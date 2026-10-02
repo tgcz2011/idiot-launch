@@ -58,6 +58,22 @@ class _TimerPageState extends State<TimerPage> {
   final AudioPlayer _player = AudioPlayer();
   bool _alarmPlayed = false;
 
+  @override
+  void initState() {
+    super.initState();
+    // 子窗口：设置大小 + 隐藏原生标题栏
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+        await windowManager.setSize(const Size(320, 420));
+        await windowManager.setMinimumSize(const Size(280, 360));
+        await windowManager.center();
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
+    });
+  }
+
   int get _oneFifth => (_totalSeconds / 5).ceil();
 
   void _start() {
@@ -156,15 +172,12 @@ class _TimerPageState extends State<TimerPage> {
         children: [
           _buildTimerTitleBar(context, '倒计时', _toggleFullscreen),
           Expanded(
-            child: Column(
-              children: [
-          Expanded(
             child: Center(
               child: selecting ? _buildPicker() : _buildDisplay(),
             ),
           ),
           Padding(
-            padding: const EdgeInsets.only(bottom: 32),
+            padding: const EdgeInsets.only(bottom: 24),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -175,7 +188,7 @@ class _TimerPageState extends State<TimerPage> {
                     label: const Text('开始'),
                     style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 32, vertical: 14)),
+                            horizontal: 28, vertical: 12)),
                   )
                 else
                   OutlinedButton.icon(
@@ -184,9 +197,9 @@ class _TimerPageState extends State<TimerPage> {
                     label: const Text('暂停'),
                     style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 32, vertical: 14)),
+                            horizontal: 28, vertical: 12)),
                   ),
-                const SizedBox(width: 16),
+                const SizedBox(width: 12),
                 TextButton.icon(
                   onPressed: _reset,
                   icon: const Icon(Icons.refresh),
@@ -197,9 +210,6 @@ class _TimerPageState extends State<TimerPage> {
           ),
         ],
       ),
-    ),
-  ],
-),
     );
   }
 
@@ -276,6 +286,21 @@ class _StopwatchPageState extends State<StopwatchPage> {
   Timer? _tick;
   final Stopwatch _sw = Stopwatch();
 
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await windowManager.setTitleBarStyle(TitleBarStyle.hidden);
+        await windowManager.setSize(const Size(320, 460));
+        await windowManager.setMinimumSize(const Size(280, 360));
+        await windowManager.center();
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
+    });
+  }
+
   void _start() {
     _sw.start();
     setState(() => _running = true);
@@ -334,15 +359,12 @@ class _StopwatchPageState extends State<StopwatchPage> {
       body: Column(
         children: [
           _buildTimerTitleBar(context, '秒表', _toggleFullscreen),
-          Expanded(
-            child: Column(
-              children: [
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 32),
+            padding: const EdgeInsets.symmetric(vertical: 20),
             child: Text(
               _fmt(_elapsed),
               style: const TextStyle(
-                fontSize: 64,
+                fontSize: 56,
                 fontWeight: FontWeight.bold,
                 fontFeatures: [FontFeature.tabularFigures()],
               ),
@@ -372,7 +394,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
                   ),
           ),
           Padding(
-            padding: const EdgeInsets.only(bottom: 32),
+            padding: const EdgeInsets.only(bottom: 24),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
@@ -383,7 +405,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
                     label: const Text('开始'),
                     style: FilledButton.styleFrom(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 32, vertical: 14)),
+                            horizontal: 28, vertical: 12)),
                   )
                 else
                   OutlinedButton.icon(
@@ -392,16 +414,16 @@ class _StopwatchPageState extends State<StopwatchPage> {
                     label: const Text('暂停'),
                     style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 32, vertical: 14)),
+                            horizontal: 28, vertical: 12)),
                   ),
-                const SizedBox(width: 16),
+                const SizedBox(width: 12),
                 if (_running)
                   TextButton.icon(
                     onPressed: _lap,
                     icon: const Icon(Icons.flag),
                     label: const Text('记次'),
                   ),
-                const SizedBox(width: 16),
+                const SizedBox(width: 12),
                 TextButton.icon(
                   onPressed: _reset,
                   icon: const Icon(Icons.refresh),
@@ -412,9 +434,6 @@ class _StopwatchPageState extends State<StopwatchPage> {
           ),
         ],
       ),
-    ),
-  ],
-),
     );
   }
 }

@@ -96,16 +96,18 @@ class MorningBrowserWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         """工具栏拖动窗口。"""
-        if obj == self._toolbar:
-            if event.type() == event.MouseButtonPress and event.button() == Qt.LeftButton:
-                self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
-                return True
-            elif event.type() == event.MouseMove and event.buttons() & Qt.LeftButton and self._drag_pos:
-                self.move(event.globalPos() - self._drag_pos)
-                return True
-            elif event.type() == event.MouseButtonRelease:
-                self._drag_pos = None
-                return True
+        if obj == getattr(self, '_toolbar', None):
+            from PySide6.QtGui import QMouseEvent
+            if isinstance(event, QMouseEvent):
+                if event.type() == event.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+                    self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                    return True
+                elif event.type() == event.Type.MouseMove and event.buttons() & Qt.LeftButton and self._drag_pos:
+                    self.move(event.globalPosition().toPoint() - self._drag_pos)
+                    return True
+                elif event.type() == event.Type.MouseButtonRelease:
+                    self._drag_pos = None
+                    return True
         return super().eventFilter(obj, event)
 
     def _update_window_flags(self):
@@ -205,9 +207,9 @@ class MorningBrowserWindow(QMainWindow):
 
         layout.addWidget(toolbar)
 
-        # 浏览器
+        # 浏览器（stretch=1 填充剩余空间）
         self.browser = QWebEngineView()
-        layout.addWidget(self.browser)
+        layout.addWidget(self.browser, 1)
 
         # 页面加载完成后自动登录
         self.browser.loadFinished.connect(self._on_load_finished)

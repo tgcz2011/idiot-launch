@@ -196,12 +196,15 @@ class ApiHandler(BaseHTTPRequestHandler):
             persistent = body.get("persistent", True)
             ok, periods, err = verify_morning_login(grade, class_number, password)
             if ok:
-                save_morning_config({
+                config_data = {
                     "grade": grade,
                     "class_number": class_number,
                     "password": password,
                     "persistent": persistent,
-                })
+                }
+                if periods:
+                    config_data["periods"] = periods
+                save_morning_config(config_data)
             self._send_json({
                 "success": ok,
                 "periods": periods,
@@ -321,6 +324,57 @@ def _floating_button_loop():
         log_daemon(f"悬浮球线程异常: {e}")
 
 
+def _tray_icon_loop():
+    """系统托盘图标线程：右键菜单（打开窗口/退出），左键无操作。"""
+    try:
+        import pystray
+        from PIL import Image
+        # 加载图标
+        icon_path = None
+        for name in ("assets/icon.png", "assets/icon_source.png", "assets/floating_icon.png"):
+            p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), name)
+            if os.path.isfile(p):
+                icon_path = p
+                break
+        image = Image.open(icon_path) if icon_path else Image.new("RGB", (64, 64), (47, 107, 79))
+
+        def _open_window(icon, item):
+            """激活 Flutter 前端窗口。"""
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                # 查找窗口标题包含"傻瓜启动器"的窗口
+                def callback(hwnd, _):
+                    title = ctypes.create_unicode_buffer(256)
+                    user32.GetWindowTextW(hwnd, title, 256)
+                    if "傻瓜启动器" in title.value and user32.IsWindowVisible(hwnd):
+                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        user32.SetForegroundWindow(hwnd)
+                    return True
+                user32.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(callback), None)
+            except Exception as e:
+                log_daemon(f"托盘打开窗口异常: {e}")
+
+        def _quit(icon, item):
+            """完全退出：停止托盘+后端服务器。"""
+            icon.stop()
+            try:
+                if _server:
+                    _server.shutdown()
+            except Exception:
+                pass
+            os._exit(0)
+
+        menu = pystray.Menu(
+            pystray.MenuItem("打开窗口", _open_window, default=False),
+            pystray.MenuItem("退出", _quit),
+        )
+        icon = pystray.Icon("IdiotLaunch", image, "傻瓜启动器", menu)
+        icon.run()
+    except Exception as e:
+        log_daemon(f"托盘图标线程异常: {e}")
+
+
 def main():
     """启动后端 HTTP 服务器。"""
     global _server
@@ -331,6 +385,9 @@ def main():
 
     # 启动早读悬浮球线程
     threading.Thread(target=_floating_button_loop, daemon=True).start()
+
+    # 启动系统托盘图标线程
+    threading.Thread(target=_tray_icon_loop, daemon=True).start()
 
     # 启动 HTTP 服务器（随机端口）
     _server = ThreadingHTTPServer(("127.0.0.1", 0), ApiHandler)

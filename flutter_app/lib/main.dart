@@ -61,19 +61,11 @@ void main() async {
   try {
     final controller = await WindowController.fromCurrentEngine();
     if (controller.arguments == 'timer') {
-      windowManager.waitUntilReadyToShow(
-        const WindowOptions(size: Size(320, 420), minimumSize: Size(280, 360), center: true, title: '倒计时', titleBarStyle: TitleBarStyle.hidden),
-        () async { await windowManager.show(); await windowManager.focus(); },
-      );
-      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: TimerPage())));
+      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const TimerPage()));
       return;
     }
     if (controller.arguments == 'stopwatch') {
-      windowManager.waitUntilReadyToShow(
-        const WindowOptions(size: Size(320, 460), minimumSize: Size(280, 360), center: true, title: '秒表', titleBarStyle: TitleBarStyle.hidden),
-        () async { await windowManager.show(); await windowManager.focus(); },
-      );
-      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const Scaffold(body: StopwatchPage())));
+      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const StopwatchPage()));
       return;
     }
   } catch (_) {
