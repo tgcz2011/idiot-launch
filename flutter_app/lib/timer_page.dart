@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:window_manager/window_manager.dart';
 import 'package:audioplayers/audioplayers.dart';
+import 'package:desktop_multi_window/desktop_multi_window.dart';
 
 // ==================== FFI: 子窗口无边框控制 ====================
 // window_manager 在 desktop_multi_window 子窗口中控制的是主窗口，
@@ -67,11 +68,12 @@ final _getSystemMetrics = _user32.lookupFunction<_GetSystemMetricsNative, _GetSy
 // 当前子窗口句柄缓存
 int _cachedHWnd = 0;
 bool _isTopMost = false;
+String _windowTitle = ''; // 当前子窗口标题，用于精确查找窗口
 
-/// 通过进程ID查找属于当前进程的可见顶层窗口。
-/// 优先用 GetForegroundWindow（子窗口创建后应为前台窗口），验证进程ID后使用。
+/// 通过窗口标题查找属于当前进程的可见顶层窗口。
 int _findOurWindow() {
   if (_cachedHWnd != 0) return _cachedHWnd;
+  final title = _windowTitle;
   try {
     final currentPid = pid;
     final getWindowThreadProcessId = _user32.lookupFunction<
@@ -83,44 +85,60 @@ int _findOurWindow() {
     final getWindow = _user32.lookupFunction<
         ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Uint32 uCmd),
         int Function(int hWnd, int uCmd)>('GetWindow');
+    final getWindowText = _user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<Utf16> lpString, ffi.Int32 nMaxCount),
+        int Function(int hWnd, ffi.Pointer<Utf16>, int)>('GetWindowTextW');
 
-    final pidPtr = calloc<ffi.Uint32>();
-
-    // 1. 优先用前台窗口（子窗口刚创建时是前台窗口）
-    int fg = _getForegroundWindow();
-    if (fg != 0 && isWindowVisible(fg) != 0) {
-      getWindowThreadProcessId(fg, pidPtr);
-      if (pidPtr.value == currentPid) {
-        _cachedHWnd = fg;
-        calloc.free(pidPtr);
-        return fg;
-      }
-    }
-
-    // 2. 枚举所有窗口，找属于当前进程的可见窗口（排除主窗口：主窗口类名是 Flutter 窗口）
     const int gwHwndFirst = 0;
     const int gwHwndNext = 2;
+    final pidPtr = calloc<ffi.Uint32>();
+    final textPtr = calloc<Utf16>(256);
+
     int hWnd = getWindow(0, gwHwndFirst);
     while (hWnd != 0) {
-      if (isWindowVisible(hWnd) != 0 && hWnd != fg) {
+      if (isWindowVisible(hWnd) != 0) {
         getWindowThreadProcessId(hWnd, pidPtr);
         if (pidPtr.value == currentPid) {
-          _cachedHWnd = hWnd;
-          calloc.free(pidPtr);
-          return hWnd;
+          final len = getWindowText(hWnd, textPtr, 256);
+          final wndTitle = len > 0 ? textPtr.toDartString() : '';
+          // 如果设置了窗口标题，精确匹配；否则排除主窗口
+          if (_windowTitle.isNotEmpty) {
+            if (wndTitle == _windowTitle) {
+              _cachedHWnd = hWnd;
+              calloc.free(pidPtr);
+              calloc.free(textPtr);
+              return hWnd;
+            }
+          } else {
+            if (!wndTitle.contains('傻瓜启动器') && !wndTitle.contains('IdiotLaunch')) {
+              _cachedHWnd = hWnd;
+              calloc.free(pidPtr);
+              calloc.free(textPtr);
+              return hWnd;
+            }
+          }
         }
       }
       hWnd = getWindow(hWnd, gwHwndNext);
     }
     calloc.free(pidPtr);
+    calloc.free(textPtr);
   } catch (_) {}
   return _getForegroundWindow();
 }
 
 /// 设置窗口大小并居中。去掉系统标题栏，用自定义标题栏+FFI拖动。
-void _setupWindow(int width, int height) {
-  for (int attempt = 0; attempt < 6; attempt++) {
-    Future.delayed(Duration(milliseconds: 100 + attempt * 100), () {
+void _setupWindow(int width, int height, String title) {
+  _windowTitle = title;
+  _cachedHWnd = 0; // 重置缓存，用新标题重新查找
+  // 先用 WindowController 设置窗口标题（desktop_multi_window 原生支持）
+  try {
+    WindowController.fromCurrentEngine().then((controller) {
+      controller.setTitle(title);
+    });
+  } catch (_) {}
+  for (int attempt = 0; attempt < 8; attempt++) {
+    Future.delayed(Duration(milliseconds: 100 + attempt * 150), () {
       try {
         final hWnd = _findOurWindow();
         if (hWnd == 0) return;
@@ -251,7 +269,7 @@ class _TimerPageState extends State<TimerPage> {
     _cachedHWnd = 0;
     _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupWindow(440, 560);
+      _setupWindow(440, 560, '倒计时');
     });
   }
 
@@ -473,7 +491,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
     _cachedHWnd = 0;
     _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupWindow(440, 600);
+      _setupWindow(440, 600, '秒表');
     });
   }
 
