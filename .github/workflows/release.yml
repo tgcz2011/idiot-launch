@@ -43,7 +43,7 @@ jobs:
 
       - name: Build Python backend (PyInstaller)
         env:
-          GITHUB_TOKEN: ${{ secrets.UPDATE_CHECK_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $secretsPath = "src\_secrets.py"

@@ -68,28 +68,41 @@ final _getSystemMetrics = _user32.lookupFunction<_GetSystemMetricsNative, _GetSy
 int _cachedHWnd = 0;
 bool _isTopMost = false;
 
-/// 通过进程ID查找属于当前进程的可见顶层窗口
+/// 通过进程ID查找属于当前进程的可见顶层窗口。
+/// 优先用 GetForegroundWindow（子窗口创建后应为前台窗口），验证进程ID后使用。
 int _findOurWindow() {
   if (_cachedHWnd != 0) return _cachedHWnd;
   try {
     final currentPid = pid;
-    final getWindow = _user32.lookupFunction<
-        ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Uint32 uCmd),
-        int Function(int hWnd, int uCmd)>('GetWindow');
-    final isWindowVisible = _user32.lookupFunction<
-        ffi.Int32 Function(ffi.IntPtr hWnd),
-        int Function(int hWnd)>('IsWindowVisible');
     final getWindowThreadProcessId = _user32.lookupFunction<
         ffi.Uint32 Function(ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId),
         int Function(int hWnd, ffi.Pointer<ffi.Uint32>)>('GetWindowThreadProcessId');
+    final isWindowVisible = _user32.lookupFunction<
+        ffi.Int32 Function(ffi.IntPtr hWnd),
+        int Function(int hWnd)>('IsWindowVisible');
+    final getWindow = _user32.lookupFunction<
+        ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Uint32 uCmd),
+        int Function(int hWnd, int uCmd)>('GetWindow');
 
-    const int gwHwndFirst = 0;
-    const int gwHwndNext = 2;
     final pidPtr = calloc<ffi.Uint32>();
 
+    // 1. 优先用前台窗口（子窗口刚创建时是前台窗口）
+    int fg = _getForegroundWindow();
+    if (fg != 0 && isWindowVisible(fg) != 0) {
+      getWindowThreadProcessId(fg, pidPtr);
+      if (pidPtr.value == currentPid) {
+        _cachedHWnd = fg;
+        calloc.free(pidPtr);
+        return fg;
+      }
+    }
+
+    // 2. 枚举所有窗口，找属于当前进程的可见窗口（排除主窗口：主窗口类名是 Flutter 窗口）
+    const int gwHwndFirst = 0;
+    const int gwHwndNext = 2;
     int hWnd = getWindow(0, gwHwndFirst);
     while (hWnd != 0) {
-      if (isWindowVisible(hWnd) != 0) {
+      if (isWindowVisible(hWnd) != 0 && hWnd != fg) {
         getWindowThreadProcessId(hWnd, pidPtr);
         if (pidPtr.value == currentPid) {
           _cachedHWnd = hWnd;
@@ -136,6 +149,27 @@ void _startDrag() {
   } catch (_) {}
 }
 
+// 窗口最小化/关闭
+const int _swMinimize = 6;
+const int _wmClose = 0x0010;
+typedef _ShowWindowNative = ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Int32 nCmdShow);
+typedef _ShowWindowDart = int Function(int hWnd, int nCmdShow);
+final _showWindow = _user32.lookupFunction<_ShowWindowNative, _ShowWindowDart>('ShowWindow');
+
+void _minimizeWindow() {
+  try {
+    final hWnd = _findOurWindow();
+    if (hWnd != 0) _showWindow(hWnd, _swMinimize);
+  } catch (_) {}
+}
+
+void _closeWindow() {
+  try {
+    final hWnd = _findOurWindow();
+    if (hWnd != 0) _sendMessage(hWnd, _wmClose, 0, 0);
+  } catch (_) {}
+}
+
 /// 切换窗口置顶状态
 void _toggleTopMost() {
   try {
@@ -177,13 +211,13 @@ Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onF
         if (onFullscreen != null)
           SizedBox(width: 36, height: 36, child: InkWell(onTap: onFullscreen, child: const Icon(Icons.fullscreen, size: 17))),
         SizedBox(width: 36, height: 36, child: InkWell(
-          onTap: () { try { windowManager.minimize(); } catch (_) {} },
+          onTap: _minimizeWindow,
           child: const Icon(Icons.remove, size: 17),
         )),
         SizedBox(
           width: 44, height: 36,
           child: InkWell(
-            onTap: () { try { windowManager.close(); } catch (_) {} },
+            onTap: _closeWindow,
             hoverColor: Colors.red.withOpacity(0.8),
             child: const Icon(Icons.close, size: 17),
           ),
@@ -315,61 +349,44 @@ class _TimerPageState extends State<TimerPage> {
   Widget build(BuildContext context) {
     final selecting = _totalSeconds == 0 && !_running;
     return Scaffold(
-      body: Stack(
+      body: Column(
         children: [
-          Column(
-            children: [
-              Expanded(
-                child: Center(
-                  child: selecting ? _buildPicker() : _buildDisplay(),
-                ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 24),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    if (!_running)
-                      FilledButton.icon(
-                        onPressed: _start,
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text('开始'),
-                        style: FilledButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 28, vertical: 12)),
-                      )
-                    else
-                      OutlinedButton.icon(
-                        onPressed: _pause,
-                        icon: const Icon(Icons.pause),
-                        label: const Text('暂停'),
-                        style: OutlinedButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 28, vertical: 12)),
-                      ),
-                    const SizedBox(width: 12),
-                    TextButton.icon(
-                      onPressed: _reset,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('重置'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+          _buildTimerTitleBar(context, '倒计时', null, showPin: true),
+          Expanded(
+            child: Center(
+              child: selecting ? _buildPicker() : _buildDisplay(),
+            ),
           ),
-          // 置顶按钮放在右上角
-          Positioned(
-            top: 8,
-            right: 8,
-            child: IconButton(
-              icon: Icon(_isTopMost ? Icons.push_pin : Icons.push_pin_outlined,
-                  size: 20, color: _isTopMost ? Colors.teal : Colors.grey),
-              onPressed: () {
-                _toggleTopMost();
-                setState(() {});
-              },
-              tooltip: '置顶',
+          Padding(
+            padding: const EdgeInsets.only(bottom: 24),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (!_running)
+                  FilledButton.icon(
+                    onPressed: _start,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('开始'),
+                    style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 28, vertical: 12)),
+                  )
+                else
+                  OutlinedButton.icon(
+                    onPressed: _pause,
+                    icon: const Icon(Icons.pause),
+                    label: const Text('暂停'),
+                    style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 28, vertical: 12)),
+                  ),
+                const SizedBox(width: 12),
+                TextButton.icon(
+                  onPressed: _reset,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('重置'),
+                ),
+              ],
             ),
           ),
         ],
@@ -515,62 +532,61 @@ class _StopwatchPageState extends State<StopwatchPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Stack(
+      body: Column(
         children: [
-          Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 20),
-                child: Text(
-                  _fmt(_elapsed),
-                  style: const TextStyle(
-                    fontSize: 56,
-                    fontWeight: FontWeight.bold,
-                    fontFeatures: [FontFeature.tabularFigures()],
+          _buildTimerTitleBar(context, '秒表', null, showPin: true),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20),
+            child: Text(
+              _fmt(_elapsed),
+              style: const TextStyle(
+                fontSize: 56,
+                fontWeight: FontWeight.bold,
+                fontFeatures: [FontFeature.tabularFigures()],
+              ),
+            ),
+          ),
+          Expanded(
+            child: _laps.isEmpty
+                ? Center(
+                    child: Text('暂无记次',
+                        style: TextStyle(color: Colors.grey[500])),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    itemCount: _laps.length,
+                    itemBuilder: (ctx, i) {
+                      final lapNum = _laps.length - i;
+                      return ListTile(
+                        dense: true,
+                        leading: Text('第$lapNum次',
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w600)),
+                        trailing: Text(_fmt(_laps[i]),
+                            style: const TextStyle(
+                                fontFeatures: [FontFeature.tabularFigures()])),
+                      );
+                    },
                   ),
-                ),
-              ),
-              Expanded(
-                child: _laps.isEmpty
-                    ? Center(
-                        child: Text('暂无记次',
-                            style: TextStyle(color: Colors.grey[500])),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.symmetric(horizontal: 24),
-                        itemCount: _laps.length,
-                        itemBuilder: (ctx, i) {
-                          final lapNum = _laps.length - i;
-                          return ListTile(
-                            dense: true,
-                            leading: Text('第$lapNum次',
-                                style: const TextStyle(
-                                    fontWeight: FontWeight.w600)),
-                            trailing: Text(_fmt(_laps[i]),
-                                style: const TextStyle(
-                                    fontFeatures: [FontFeature.tabularFigures()])),
-                          );
-                        },
-                      ),
-              ),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 24),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    if (!_running)
-                      FilledButton.icon(
-                        onPressed: _start,
-                        icon: const Icon(Icons.play_arrow),
-                        label: const Text('开始'),
-                        style: FilledButton.styleFrom(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 28, vertical: 12)),
-                      )
-                    else
-                      OutlinedButton.icon(
-                        onPressed: _pause,
-                        icon: const Icon(Icons.pause),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(bottom: 24),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (!_running)
+                  FilledButton.icon(
+                    onPressed: _start,
+                    icon: const Icon(Icons.play_arrow),
+                    label: const Text('开始'),
+                    style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 28, vertical: 12)),
+                  )
+                else
+                  OutlinedButton.icon(
+                    onPressed: _pause,
+                    icon: const Icon(Icons.pause),
                     label: const Text('暂停'),
                     style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(
@@ -594,22 +610,8 @@ class _StopwatchPageState extends State<StopwatchPage> {
           ),
         ],
       ),
-      // 置顶按钮放在右上角
-      Positioned(
-        top: 8,
-        right: 8,
-        child: IconButton(
-          icon: Icon(_isTopMost ? Icons.push_pin : Icons.push_pin_outlined,
-              size: 20, color: _isTopMost ? Colors.teal : Colors.grey),
-          onPressed: () {
-            _toggleTopMost();
-            setState(() {});
-          },
-          tooltip: '置顶',
-        ),
-      ),
-    ],
-  ),
+    );
+  }
 );
 }
 }
