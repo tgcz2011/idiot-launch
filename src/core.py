@@ -1151,7 +1151,8 @@ def get_latest_launcher_info() -> dict | None:
                     "sha256": latest.get("sha256", ""),
                 }
             return None  # Supabase 有数据但当前已是最新
-    except Exception:
+    except Exception as e:
+        log_daemon(f"Supabase查询失败: {e}")
         pass  # Supabase 查询失败，fallback 到 GitHub API
 
     # 方案2：用 GitHub /tags API 获取所有 tag，找到版本号最大的，再查对应 release 的 assets
