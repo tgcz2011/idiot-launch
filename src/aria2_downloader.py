@@ -14,10 +14,11 @@ import urllib.request
 
 def _find_aria2c():
     """查找 aria2c.exe 路径"""
-    # 打包后：在 exe 同目录的 assets 下
+    import sys
     if getattr(sys, "frozen", False):
         base = os.path.dirname(sys.executable)
         candidates = [
+            os.path.join(base, "_internal", "assets", "aria2c.exe"),
             os.path.join(base, "assets", "aria2c.exe"),
             os.path.join(base, "aria2c.exe"),
         ]
