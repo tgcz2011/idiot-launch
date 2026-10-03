@@ -7,6 +7,8 @@ import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'api.dart';
 import 'timer_page.dart';
 import 'cd_settings_page.dart';
+import 'widgets/title_bar.dart';
+import 'widgets/big_button.dart';
 
 // Windows API 进程检测（dart:ffi）
 final ffi.DynamicLibrary _kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
@@ -148,85 +150,6 @@ ThemeData _timerTheme() {
 }
 
 // 自定义标题栏（隐藏原生标题栏后使用）
-class CustomTitleBar extends StatelessWidget {
-  final String title;
-  final bool showMaximize;
-  const CustomTitleBar({super.key, required this.title, this.showMaximize = true});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 32,
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
-        border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.2), width: 1)),
-      ),
-      child: Row(
-        children: [
-          // 拖动区域
-          Expanded(
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onPanStart: (_) => windowManager.startDragging(),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  children: [
-                    Icon(Icons.touch_app, size: 16, color: Theme.of(context).colorScheme.primary),
-                    const SizedBox(width: 8),
-                    Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          // 最小化
-          _TitleBarButton(
-            icon: Icons.remove,
-            onPressed: () => windowManager.minimize(),
-          ),
-          if (showMaximize)
-            _TitleBarButton(
-              icon: Icons.check_box_outline_blank,
-              onPressed: () async {
-                if (await windowManager.isMaximized()) {
-                  windowManager.unmaximize();
-                } else {
-                  windowManager.maximize();
-                }
-              },
-            ),
-          _TitleBarButton(
-            icon: Icons.close,
-            isClose: true,
-            onPressed: () => windowManager.close(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TitleBarButton extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback onPressed;
-  final bool isClose;
-  const _TitleBarButton({required this.icon, required this.onPressed, this.isClose = false});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 46,
-      height: 32,
-      child: InkWell(
-        onTap: onPressed,
-        hoverColor: isClose ? Colors.red.withOpacity(0.8) : Colors.grey.withOpacity(0.15),
-        child: Icon(icon, size: 16, color: isClose ? null : Colors.grey[700]),
-      ),
-    );
-  }
-}
-
 class MainPage extends StatefulWidget {
   const MainPage({super.key});
 
@@ -528,15 +451,15 @@ class _MainPageState extends State<MainPage> with WindowListener {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _bigButton(Icons.school, '中考倒计时', Colors.blue, _startingCd ? null : () => _startCountdown('zhongkao')),
-              _bigButton(Icons.school_outlined, '高考倒计时', Colors.purple, _startingCd ? null : () => _startCountdown('gaokao')),
-              _bigButton(Icons.image_outlined, '自定义壁纸&屏保', Colors.teal, _startingCd ? null : _startCustomWallpaper),
-              _bigButton(Icons.settings, '壁纸&屏保设置', Colors.grey, _openSettings),
-              _bigButton(
-                Icons.stop_circle_outlined,
-                '关闭壁纸',
-                Colors.red,
-                _cdRunning ? _stopCountdown : null,
+              BigButton(icon: Icons.school, label: '中考倒计时', color: Colors.blue, onPressed: _startingCd ? null : () => _startCountdown('zhongkao')),
+              BigButton(icon: Icons.school_outlined, label: '高考倒计时', color: Colors.purple, onPressed: _startingCd ? null : () => _startCountdown('gaokao')),
+              BigButton(icon: Icons.image_outlined, label: '自定义壁纸&屏保', color: Colors.teal, onPressed: _startingCd ? null : _startCustomWallpaper),
+              BigButton(icon: Icons.settings, label: '壁纸&屏保设置', color: Colors.grey, onPressed: _openSettings),
+              BigButton(
+                icon: Icons.stop_circle_outlined,
+                label: '关闭壁纸',
+                color: Colors.red,
+                onPressed: _cdRunning ? _stopCountdown : null,
               ),
             ],
           ),
@@ -558,39 +481,15 @@ class _MainPageState extends State<MainPage> with WindowListener {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _bigButton(Icons.timer_outlined, '倒计时', Colors.teal, () async {
+              BigButton(icon: Icons.timer_outlined, label: '倒计时', color: Colors.teal, onPressed: () async {
                 await WindowController.create(const WindowConfiguration(arguments: 'timer', hiddenAtLaunch: false));
               }),
-              _bigButton(Icons.timer_10_select, '秒表', Colors.indigo, () async {
+              BigButton(icon: Icons.timer_10_select, label: '秒表', color: Colors.indigo, onPressed: () async {
                 await WindowController.create(const WindowConfiguration(arguments: 'stopwatch', hiddenAtLaunch: false));
               }),
             ],
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _bigButton(IconData icon, String label, Color color, VoidCallback? onPressed) {
-    final disabled = onPressed == null;
-    return SizedBox(
-      width: 150,
-      height: 92,
-      child: Material(
-        color: disabled ? Colors.grey[200] : color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(14),
-        child: InkWell(
-          onTap: onPressed,
-          borderRadius: BorderRadius.circular(14),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, size: 32, color: disabled ? Colors.grey : color),
-              const SizedBox(height: 6),
-              Text(label, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: disabled ? Colors.grey : Colors.black87)),
-            ],
-          ),
-        ),
       ),
     );
   }
@@ -704,12 +603,12 @@ class _MainPageState extends State<MainPage> with WindowListener {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _bigButton(Icons.menu_book, '打开早晚读', Colors.teal, _openMorning),
-              _bigButton(
-                Icons.people_alt_outlined,
-                '随机抽学生',
-                Colors.amber,
-                _morningLoggedIn ? _showRandomStudent : null,
+              BigButton(icon: Icons.menu_book, label: '打开早晚读', color: Colors.teal, onPressed: _openMorning),
+              BigButton(
+                icon: Icons.people_alt_outlined,
+                label: '随机抽学生',
+                color: Colors.amber,
+                onPressed: _morningLoggedIn ? _showRandomStudent : null,
               ),
             ],
           ),

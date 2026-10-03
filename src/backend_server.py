@@ -127,8 +127,12 @@ class ApiHandler(BaseHTTPRequestHandler):
             })
 
         elif path == "/api/morning/students":
-            students = get_morning_students()
-            self._send_json({"success": True, "students": students})
+            try:
+                students = get_morning_students()
+                self._send_json({"success": True, "students": students})
+            except Exception as e:
+                log_daemon(f"获取学生列表失败: {e}")
+                self._send_json({"success": False, "students": [], "error": str(e)})
 
         elif path == "/api/update/status":
             state = load_state()
@@ -167,20 +171,32 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         if path == "/api/countdown/start":
             exam = body.get("exam", "zhongkao")
-            ok = launch_countdown(exam)
-            self._send_json({"success": ok, "exam": exam})
+            try:
+                ok = launch_countdown(exam)
+                self._send_json({"success": ok, "exam": exam})
+            except Exception as e:
+                log_daemon(f"启动倒计时失败 ({exam}): {e}")
+                self._send_json({"success": False, "error": str(e)})
 
         elif path == "/api/countdown/stop":
             quit_countdown()
             self._send_json({"success": True})
 
         elif path == "/api/countdown/settings":
-            launch_settings()
-            self._send_json({"success": True})
+            try:
+                launch_settings()
+                self._send_json({"success": True})
+            except Exception as e:
+                log_daemon(f"打开壁纸设置失败: {e}")
+                self._send_json({"success": False, "error": str(e)})
 
         elif path == "/api/countdown/custom":
-            launch_custom()
-            self._send_json({"success": True})
+            try:
+                launch_custom()
+                self._send_json({"success": True})
+            except Exception as e:
+                log_daemon(f"启动自定义壁纸失败: {e}")
+                self._send_json({"success": False, "error": str(e)})
 
         elif path == "/api/morning/login":
             # 支持 identity（如 "2024-1-1"）或 grade+class_number 两种格式
@@ -194,22 +210,26 @@ class ApiHandler(BaseHTTPRequestHandler):
                 class_number = str(body.get("class_number", ""))
             password = str(body.get("password", ""))
             persistent = body.get("persistent", True)
-            ok, periods, err = verify_morning_login(grade, class_number, password)
-            if ok:
-                config_data = {
-                    "grade": grade,
-                    "class_number": class_number,
-                    "password": password,
-                    "persistent": persistent,
-                }
-                if periods:
-                    config_data["periods"] = periods
-                save_morning_config(config_data)
-            self._send_json({
-                "success": ok,
-                "periods": periods,
-                "error": err,
-            })
+            try:
+                ok, periods, err = verify_morning_login(grade, class_number, password)
+                if ok:
+                    config_data = {
+                        "grade": grade,
+                        "class_number": class_number,
+                        "password": password,
+                        "persistent": persistent,
+                    }
+                    if periods:
+                        config_data["periods"] = periods
+                    save_morning_config(config_data)
+                self._send_json({
+                    "success": ok,
+                    "periods": periods,
+                    "error": err,
+                })
+            except Exception as e:
+                log_daemon(f"早读登录失败: {e}")
+                self._send_json({"success": False, "error": str(e)})
 
         elif path == "/api/morning/logout":
             clear_temp_morning_config()
@@ -218,8 +238,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 persistent_path = os.path.join(UPDATE_DIR, "morning_config.json")
                 if os.path.exists(persistent_path):
                     os.remove(persistent_path)
-            except Exception:
-                pass
+            except Exception as e:
+                log_daemon(f"删除早读持久配置失败: {e}")
             self._send_json({"success": True})
 
         elif path == "/api/morning/open":
