@@ -356,14 +356,27 @@ def _tray_icon_loop():
                 log_daemon(f"托盘打开窗口异常: {e}")
 
         def _quit(icon, item):
-            """完全退出：停止托盘+后端服务器。"""
-            icon.stop()
+            """完全退出：通知daemon优雅退出+停止托盘+关闭服务器。"""
+            try:
+                icon.stop()
+            except Exception:
+                pass
+            # 通知 daemon 优雅退出（命名事件）
+            try:
+                from src.core import signal_daemon_quit
+                signal_daemon_quit()
+            except Exception:
+                pass
+            # 关闭 HTTP 服务器
             try:
                 if _server:
                     _server.shutdown()
             except Exception:
                 pass
-            os._exit(0)
+            # 等待线程保存状态（最多2秒）
+            time.sleep(2)
+            # 优雅退出（执行 finally 块，而不是 os._exit 强制退出）
+            sys.exit(0)
 
         menu = pystray.Menu(
             pystray.MenuItem("打开窗口", _open_window, default=False),
