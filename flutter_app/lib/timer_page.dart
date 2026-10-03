@@ -32,7 +32,11 @@ typedef _SetWindowPosDart = int Function(
 final _setWindowPos = _user32.lookupFunction<_SetWindowPosNative, _SetWindowPosDart>('SetWindowPos');
 
 const int _gwlStyle = -16;
+const int _wsCaption = 0x00C00000;
 const int _wsThickFrame = 0x00040000;
+const int _wsSysMenu = 0x00080000;
+const int _wsMinimizeBox = 0x00020000;
+const int _wsMaximizeBox = 0x00010000;
 const int _swpFrameChanged = 0x0020;
 const int _swpNoZOrder = 0x0004;
 const int _swpNoMove = 0x0002;
@@ -41,6 +45,20 @@ const int _hwndTopmost = -1;
 const int _hwndNotopmost = -2;
 const int _smCxScreen = 0;
 const int _smCyScreen = 1;
+
+// 无边框窗口拖动：ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN, HTCAPTION)
+typedef _ReleaseCaptureNative = ffi.Int32 Function();
+typedef _ReleaseCaptureDart = int Function();
+final _releaseCapture = _user32.lookupFunction<_ReleaseCaptureNative, _ReleaseCaptureDart>('ReleaseCapture');
+
+typedef _SendMessageNative = ffi.IntPtr Function(
+    ffi.IntPtr hWnd, ffi.Uint32 Msg, ffi.IntPtr wParam, ffi.IntPtr lParam);
+typedef _SendMessageDart = int Function(
+    int hWnd, int Msg, int wParam, int lParam);
+final _sendMessage = _user32.lookupFunction<_SendMessageNative, _SendMessageDart>('SendMessageW');
+
+const int _wmNcLButtonDown = 0x00A1;
+const int _htCaption = 2;
 
 typedef _GetSystemMetricsNative = ffi.Int32 Function(ffi.Int32 nIndex);
 typedef _GetSystemMetricsDart = int Function(int nIndex);
@@ -86,16 +104,16 @@ int _findOurWindow() {
   return _getForegroundWindow();
 }
 
-/// 设置窗口大小并居中。保留原生标题栏（可拖动），只禁止调整大小。
+/// 设置窗口大小并居中。去掉系统标题栏，用自定义标题栏+FFI拖动。
 void _setupWindow(int width, int height) {
   for (int attempt = 0; attempt < 6; attempt++) {
     Future.delayed(Duration(milliseconds: 100 + attempt * 100), () {
       try {
         final hWnd = _findOurWindow();
         if (hWnd == 0) return;
-        // 只禁止调整大小，保留标题栏（可拖动）
+        // 去掉系统标题栏和调整大小边框
         int style = _getWindowLong(hWnd, _gwlStyle);
-        style &= ~_wsThickFrame;
+        style &= ~(_wsCaption | _wsThickFrame | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
         _setWindowLong(hWnd, _gwlStyle, style);
         // 用 GetSystemMetrics 获取屏幕大小
         final screenW = _getSystemMetrics(_smCxScreen);
@@ -106,6 +124,16 @@ void _setupWindow(int width, int height) {
       } catch (_) {}
     });
   }
+}
+
+/// 无边框窗口拖动：模拟标题栏拖动
+void _startDrag() {
+  try {
+    final hWnd = _findOurWindow();
+    if (hWnd == 0) return;
+    _releaseCapture();
+    _sendMessage(hWnd, _wmNcLButtonDown, _htCaption, 0);
+  } catch (_) {}
 }
 
 /// 切换窗口置顶状态
@@ -133,7 +161,7 @@ Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onF
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
             onPanStart: (_) {
-              try { windowManager.startDragging(); } catch (_) {}
+              _startDrag();
             },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -189,7 +217,7 @@ class _TimerPageState extends State<TimerPage> {
     _cachedHWnd = 0;
     _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupWindow(380, 480);
+      _setupWindow(440, 560);
     });
   }
 
@@ -428,7 +456,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
     _cachedHWnd = 0;
     _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupWindow(380, 520);
+      _setupWindow(440, 600);
     });
   }
 
