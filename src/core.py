@@ -284,28 +284,37 @@ def _countdown_env() -> dict:
 
 def launch_countdown(exam_type: str) -> None:
     """启动倒计时壁纸。CD 已合并，用同一个 exe 加 --countdown-app 参数启动。"""
-    subprocess.Popen(
-        [sys.executable, "--countdown-app", "--exam", exam_type, "--auto-check-update", "off"],
-        creationflags=0x00000008, close_fds=True, env=_countdown_env(),
-    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "--countdown-app", "--exam", exam_type, "--auto-check-update", "off"],
+            creationflags=0x00000008, close_fds=True, env=_countdown_env(),
+        )
+    except Exception as e:
+        log_daemon(f"启动倒计时壁纸失败({exam_type}): {e}")
 
 
 def launch_custom() -> None:
     """启动用户自定义的壁纸&屏保（不传入 --exam，使用本地配置）。"""
-    subprocess.Popen(
-        [sys.executable, "--countdown-app", "--auto-check-update", "off"],
-        creationflags=0x00000008, close_fds=True, env=_countdown_env(),
-    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "--countdown-app", "--auto-check-update", "off"],
+            creationflags=0x00000008, close_fds=True, env=_countdown_env(),
+        )
+    except Exception as e:
+        log_daemon(f"启动自定义壁纸失败: {e}")
 
 
 def launch_settings() -> None:
     """一键唤起壁纸&屏保设置窗口。
     CD 已合并，用同一个 exe 加 --countdown-app 参数启动。
     """
-    subprocess.Popen(
-        [sys.executable, "--countdown-app", "--settings", "--auto-check-update", "off"],
-        creationflags=0x00000008, close_fds=True, env=_countdown_env(),
-    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "--countdown-app", "--settings", "--auto-check-update", "off"],
+            creationflags=0x00000008, close_fds=True, env=_countdown_env(),
+        )
+    except Exception as e:
+        log_daemon(f"启动壁纸设置失败: {e}")
 
 
 def is_running() -> bool:
@@ -533,8 +542,11 @@ def save_state(state: dict) -> None:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
         os.replace(tmp, STATE_FILE)
-    except Exception:
-        pass
+    except Exception as e:
+        try:
+            log_daemon(f"状态保存失败: {e}")
+        except Exception:
+            pass
 
 
 def set_daemon_status(activity: str, progress: float = 0, detail: str = "", download_tag: str = "") -> None:
@@ -1110,8 +1122,8 @@ def ensure_shortcuts() -> None:
                                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
                     except Exception:
                         pass
-        except Exception:
-            pass
+        except Exception as e:
+            log_daemon(f"创建快捷方式失败({lnk}): {e}")
 
 
 def _get_latest_tag_via_redirect(repo: str) -> str | None:
@@ -1127,8 +1139,8 @@ def _get_latest_tag_via_redirect(repo: str) -> str | None:
         m = re.search(r"/releases/tag/([^/]+)$", final)
         if m:
             return m.group(1).lstrip("vV")
-    except Exception:
-        pass
+    except Exception as e:
+        log_daemon(f"GitHub重定向获取最新版本失败: {e}")
     return None
 
 

@@ -87,7 +87,8 @@ def save_morning_config(config, persistent=True):
             except Exception:
                 pass
         return True
-    except Exception:
+    except Exception as e:
+        log.error(f"保存早读配置失败: {e}")
         return False
 
 
