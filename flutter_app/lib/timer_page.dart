@@ -86,13 +86,13 @@ int _findOurWindow() {
         ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Uint32 uCmd),
         int Function(int hWnd, int uCmd)>('GetWindow');
     final getWindowText = _user32.lookupFunction<
-        ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<Utf16> lpString, ffi.Int32 nMaxCount),
-        int Function(int hWnd, ffi.Pointer<Utf16>, int)>('GetWindowTextW');
+        ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint16> lpString, ffi.Int32 nMaxCount),
+        int Function(int hWnd, ffi.Pointer<ffi.Uint16>, int)>('GetWindowTextW');
 
     const int gwHwndFirst = 0;
     const int gwHwndNext = 2;
     final pidPtr = calloc<ffi.Uint32>();
-    final textPtr = calloc<Utf16>(256);
+    final textPtr = calloc<ffi.Uint16>(256); // Utf16 不能直接 calloc，用 Uint16 再 cast
 
     int hWnd = getWindow(0, gwHwndFirst);
     while (hWnd != 0) {
@@ -100,7 +100,7 @@ int _findOurWindow() {
         getWindowThreadProcessId(hWnd, pidPtr);
         if (pidPtr.value == currentPid) {
           final len = getWindowText(hWnd, textPtr, 256);
-          final wndTitle = len > 0 ? textPtr.toDartString() : '';
+          final wndTitle = len > 0 ? textPtr.cast<Utf16>().toDartString() : '';
           // 如果设置了窗口标题，精确匹配；否则排除主窗口
           if (_windowTitle.isNotEmpty) {
             if (wndTitle == _windowTitle) {
@@ -131,17 +131,28 @@ int _findOurWindow() {
 void _setupWindow(int width, int height, String title) {
   _windowTitle = title;
   _cachedHWnd = 0; // 重置缓存，用新标题重新查找
-  // 先用 WindowController 设置窗口标题（desktop_multi_window 原生支持）
-  try {
-    WindowController.fromCurrentEngine().then((controller) {
-      controller.setTitle(title);
-    });
-  } catch (_) {}
+  // SetWindowTextW FFI 绑定
+  final setWindowText = _user32.lookupFunction<
+      ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<Utf16> lpString),
+      int Function(int hWnd, ffi.Pointer<Utf16>)>('SetWindowTextW');
   for (int attempt = 0; attempt < 8; attempt++) {
     Future.delayed(Duration(milliseconds: 100 + attempt * 150), () {
       try {
+        // 第一次尝试时，先给前台窗口设置标题（子窗口刚创建时是前台窗口）
+        if (attempt == 0) {
+          final fg = _getForegroundWindow();
+          if (fg != 0) {
+            final titlePtr = title.toNativeUtf16();
+            setWindowText(fg, titlePtr);
+            calloc.free(titlePtr);
+          }
+        }
         final hWnd = _findOurWindow();
         if (hWnd == 0) return;
+        // 确保标题正确设置
+        final titlePtr = title.toNativeUtf16();
+        setWindowText(hWnd, titlePtr);
+        calloc.free(titlePtr);
         // 去掉系统标题栏和调整大小边框
         int style = _getWindowLong(hWnd, _gwlStyle);
         style &= ~(_wsCaption | _wsThickFrame | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
