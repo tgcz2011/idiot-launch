@@ -62,7 +62,7 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta14"
+LAUNCHER_VERSION = "3.0.0.0-beta15"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -676,57 +676,37 @@ def _download_single(url: str, dest_path: str, timeout: int, tag: str = "", canc
 
 
 def download_installer(url: str, dest_path: str, tag: str = "") -> bool:
-    """并行竞速下载：同时从所有镜像源下载，取最快完成的。"""
-    import threading
+    """使用 aria2 多源分块下载（16连接/源，自动多源负载均衡）"""
+    from src.aria2_downloader import download_with_aria2
+    from src.telemetry import report_event
     _ensure_update_dir()
 
+    # 构造所有镜像源的完整 URL，aria2 会自动从多个源并行下载
+    urls = []
+    for mirror in DOWNLOAD_MIRRORS:
+        full_url = mirror + url if mirror else url
+        urls.append(full_url)
+
+    start_time = time.time()
+
+    def _progress(percent, speed):
+        speed_kb = speed // 1024
+        set_daemon_status("downloading", percent, f"下载中 {percent}% ({speed_kb} KB/s)")
+
     for attempt in range(DOWNLOAD_RETRY):
-        log_daemon(f"并行下载尝试 ({attempt+1}/{DOWNLOAD_RETRY})，共 {len(DOWNLOAD_MIRRORS)} 个源竞速")
-        cancel_event = threading.Event()
-        result_lock = threading.Lock()
-        winner = {"path": None, "source": None}
+        log_daemon(f"aria2 下载尝试 ({attempt+1}/{DOWNLOAD_RETRY})，共 {len(urls)} 个源，16连接/源")
 
-        def _worker(mirror):
-            if cancel_event.is_set():
-                return
-            full_url = mirror + url if mirror else url
-            source_name = mirror.rstrip("/") if mirror else "GitHub direct"
-            # 每个源独立的临时文件
-            worker_dest = dest_path + f".{abs(hash(mirror)) % 10000}"
-            timeout = 180  # 并行模式下给每个源3分钟
-            ok = _download_single(full_url, worker_dest, timeout, tag, cancel_event)
-            if ok and not cancel_event.is_set():
-                with result_lock:
-                    if winner["path"] is None:
-                        winner["path"] = worker_dest
-                        winner["source"] = source_name
-                        cancel_event.set()  # 通知其他线程停止
+        ok = download_with_aria2(urls, dest_path, progress_callback=_progress, timeout=900)
 
-        threads = []
-        for mirror in DOWNLOAD_MIRRORS:
-            t = threading.Thread(target=_worker, args=(mirror,), daemon=True)
-            threads.append(t)
-            t.start()
-
-        # 等待所有线程完成或被取消（最多等5分钟）
-        for t in threads:
-            t.join(timeout=300)
-
-        if winner["path"] and os.path.isfile(winner["path"]):
-            # 胜利者重命名为最终文件
-            if os.path.isfile(dest_path):
-                os.remove(dest_path)
-            os.rename(winner["path"], dest_path)
-            log_daemon(f"下载成功 [{winner['source']}]: {os.path.basename(dest_path)}")
-            # 清理其他线程的临时文件
-            for mirror in DOWNLOAD_MIRRORS:
-                worker_dest = dest_path + f".{abs(hash(mirror)) % 10000}"
-                if os.path.isfile(worker_dest):
-                    try: os.remove(worker_dest)
-                    except OSError: pass
+        if ok and os.path.isfile(dest_path):
+            duration = int(time.time() - start_time)
+            size_mb = round(os.path.getsize(dest_path) / 1024 / 1024, 1)
+            log_daemon(f"下载成功: {os.path.basename(dest_path)}，{size_mb}MB，耗时 {duration}s")
+            report_event("download_success", {"version": tag, "duration": duration, "size_mb": size_mb})
             return True
 
-        log_daemon(f"所有源均失败，重试 {attempt+1}/{DOWNLOAD_RETRY} 完成")
+        log_daemon(f"aria2 下载失败，重试 {attempt+1}/{DOWNLOAD_RETRY}")
+        report_event("download_failure", {"version": tag, "attempt": attempt + 1})
         if attempt < DOWNLOAD_RETRY - 1:
             time.sleep(15)
 
@@ -913,6 +893,11 @@ def daemon_run() -> int:
         return 0
     log_daemon(f"daemon 启动 (pid={os.getpid()}, v{LAUNCHER_VERSION})")
     set_daemon_status("starting", 0, "守护进程启动")
+    try:
+        from src.telemetry import report_event
+        report_event("launch")
+    except Exception:
+        pass
     quit_event = _create_quit_event()
     # 启动时重置检查时间，使重启后立即检查更新（不受 6 小时间隔限制）
     try:
@@ -1327,6 +1312,11 @@ def apply_launcher_update_if_pending(force: bool = False) -> bool:
     else:
         log_daemon(f"用户触发立即更新 {LAUNCHER_VERSION} -> v{pending_ver}")
         set_daemon_status("updating", 0, f"正在更新到 v{pending_ver}...")
+    try:
+        from src.telemetry import report_event
+        report_event("update_install", {"from_version": LAUNCHER_VERSION, "to_version": pending_ver, "force": force})
+    except Exception:
+        pass
     installed_exe = LAUNCHER_INSTALL_EXE
     import tempfile
     wmi_query = r"winmgmts:\\.\root\cimv2"
@@ -1483,7 +1473,17 @@ def _check_and_download_launcher_update() -> None:
     set_daemon_status("checking", 0, "正在检查 Idiot Launch 更新...")
     _t0 = time.time()
     latest = get_latest_launcher_info()
-    log_daemon(f"更新检查完成，耗时 {time.time()-_t0:.1f}s，结果: {'有新版本' if latest else '无新版本'}")
+    check_duration = round(time.time() - _t0, 1)
+    log_daemon(f"更新检查完成，耗时 {check_duration}s，结果: {'有新版本' if latest else '无新版本'}")
+    try:
+        from src.telemetry import report_event
+        report_event("update_check", {
+            "has_update": bool(latest),
+            "latest_version": latest["version"] if latest else None,
+            "duration": check_duration,
+        })
+    except Exception:
+        pass
     state["launcher_last_check"] = now
     save_state(state)
     if not latest:
