@@ -612,6 +612,4 @@ class _StopwatchPageState extends State<StopwatchPage> {
       ),
     );
   }
-);
-}
 }

@@ -62,7 +62,7 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta17"
+LAUNCHER_VERSION = "3.0.0.0-beta18"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -1124,9 +1124,37 @@ def get_latest_launcher_info() -> dict | None:
     build_type = get_build_type()
     suffix = "_store" if build_type == "store" else ""
     current_is_beta = is_beta_version(LAUNCHER_VERSION)
+    channel = "beta" if current_is_beta else "stable"
 
-    # 方案1：用 /tags API 获取所有 tag，找到版本号最大的，再查对应 release 的 assets
-    # 这样不受 releases 列表排序异常影响
+    # 方案1（首选）：查 Supabase latest_version 表，不依赖 GitHub API，不会限流
+    try:
+        ctx = ssl.create_default_context()
+        supabase_url = "https://tiofmybnepcheudgfysa.supabase.co"
+        supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpb2ZteWJuZXBjaGV1ZGdmeXNhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5NjYyMjYsImV4cCI6MjEwNjU0MjIyNn0.6CTEoVO9QrmBmxkUxNqgWhx6vQ1I-ikI9yy8rImVAA8"
+        req = urllib.request.Request(
+            f"{supabase_url}/rest/v1/latest_version?channel=eq.{channel}&is_latest=eq.true&select=version,download_url,sha256,release_notes",
+            headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data and isinstance(data, list) and len(data) > 0:
+            latest = data[0]
+            version = latest.get("version", "")
+            if version and compare_versions(version, LAUNCHER_VERSION) > 0:
+                name = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
+                return {
+                    "version": version,
+                    "url": latest.get("download_url", ""),
+                    "size": 0,
+                    "name": name,
+                    "release_notes": latest.get("release_notes", ""),
+                    "sha256": latest.get("sha256", ""),
+                }
+            return None  # Supabase 有数据但当前已是最新
+    except Exception:
+        pass  # Supabase 查询失败，fallback 到 GitHub API
+
+    # 方案2：用 GitHub /tags API 获取所有 tag，找到版本号最大的，再查对应 release 的 assets
     try:
         ctx = ssl.create_default_context()
         req = urllib.request.Request(

@@ -149,3 +149,38 @@ jobs:
           files: dist/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Supabase latest_version
+        if: success()
+        shell: pwsh
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SHA256: ${{ steps.hash.outputs.sha256 }}
+        run: |
+          $launcherVer = (Select-String -Path "src\core.py" -Pattern 'LAUNCHER_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          $isBeta = $launcherVer -match 'beta|alpha|rc|pre'
+          $channel = if ($isBeta) { "beta" } else { "stable" }
+          $setupName = "IdiotLaunch_Setup_$launcherVer.exe"
+          $downloadUrl = "https://github.com/tgcz2011/idiot-launch/releases/download/v$launcherVer/$setupName"
+          $supabaseUrl = "https://tiofmybnepcheudgfysa.supabase.co"
+          $headers = @{
+            "apikey" = $env:SUPABASE_SERVICE_KEY
+            "Authorization" = "Bearer $env:SUPABASE_SERVICE_KEY"
+            "Content-Type" = "application/json"
+            "Prefer" = "return=minimal"
+          }
+          # 1. 将旧版本标记为非最新
+          try {
+            Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/latest_version?channel=eq.$channel" -Method Patch -Headers $headers -Body (@{is_latest = $false} | ConvertTo-Json) | Out-Null
+          } catch { Write-Host "No old versions to update" }
+          # 2. 插入新版本
+          $body = @{
+            version = $launcherVer
+            channel = $channel
+            download_url = $downloadUrl
+            sha256 = $env:SHA256
+            release_notes = "Idiot Launch v$launcherVer"
+            is_latest = $true
+          } | ConvertTo-Json
+          Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/latest_version" -Method Post -Headers $headers -Body $body | Out-Null
+          Write-Host "Supabase updated: $channel -> $launcherVer"
