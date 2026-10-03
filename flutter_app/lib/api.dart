@@ -3,8 +3,8 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 
 class ApiService {
-  static const String _dataDir = r'D:\IdiotLaunch\data';
-  static const String _portFile = '$_dataDir\\backend_port';
+  static String get _portFile =>
+      '${Platform.environment['TEMP'] ?? Platform.environment['TMP'] ?? r'C:\Windows\Temp'}\\idiot_launch_backend_port';
   int? _port;
 
   Future<int> _getPort() async {
@@ -114,10 +114,10 @@ class ApiService {
   Future<void> morningLogout() => _post('/api/morning/logout');
   Future<void> openMorningBrowser() => _post('/api/morning/open');
 
-  Future<List<String>> getMorningStudents() async {
+  Future<List<Map<String, dynamic>>> getMorningStudents() async {
     final r = await _get('/api/morning/students');
     final list = r['students'] as List?;
-    return list?.map((e) => e.toString()).toList() ?? [];
+    return list?.map((e) => Map<String, dynamic>.from(e as Map)).toList() ?? [];
   }
 
   // ===== 更新 =====

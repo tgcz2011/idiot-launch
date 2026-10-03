@@ -899,16 +899,10 @@ class _MainPageState extends State<MainPage> with WindowListener {
                             mainAxisSize: MainAxisSize.min,
                             children: picked.asMap().entries.map((entry) {
                               final idx = entry.key;
-                              final dynamic s = entry.value;
-                              String name = '未知';
-                              String no = '';
-                              if (s is Map) {
-                                name = (s['name'] ?? s['student_name'] ?? '未知').toString();
-                                final n = s['student_no'] ?? s['no'];
-                                no = n?.toString() ?? '';
-                              } else {
-                                name = s.toString();
-                              }
+                              final s = entry.value;
+                              String name = (s['name'] ?? s['student_name'] ?? '未知').toString();
+                              final n = s['student_no'] ?? s['no'];
+                              String no = n?.toString() ?? '';
                               return Container(
                                 margin: const EdgeInsets.symmetric(vertical: 4),
                                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),

@@ -9,6 +9,7 @@ import sys
 import os
 import json
 import time
+import base64
 import logging
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                                QHBoxLayout, QPushButton, QLabel, QFrame)
@@ -26,26 +27,60 @@ PERSISTENT_CONFIG_PATH = r"D:\IdiotLaunch\data\morning_config.json"
 TEMP_CONFIG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")),
                                 "idiot_launch_morning_config.json")
 
+# 密码加密密钥（简单 XOR，不是强加密，只是避免明文存储）
+_PASSWORD_KEY = b"IdiotLaunch_Morning_Reading_2024"
+
+
+def _encrypt_password(password: str) -> str:
+    """简单加密密码：XOR + Base64。"""
+    if not password:
+        return ""
+    data = password.encode("utf-8")
+    encrypted = bytes([data[i] ^ _PASSWORD_KEY[i % len(_PASSWORD_KEY)] for i in range(len(data))])
+    return "enc:" + base64.b64encode(encrypted).decode("ascii")
+
+
+def _decrypt_password(encrypted: str) -> str:
+    """解密密码。如果不是加密格式（旧版明文），直接返回。"""
+    if not encrypted:
+        return ""
+    if not encrypted.startswith("enc:"):
+        return encrypted  # 旧版明文，兼容
+    try:
+        data = base64.b64decode(encrypted[4:])
+        decrypted = bytes([data[i] ^ _PASSWORD_KEY[i % len(_PASSWORD_KEY)] for i in range(len(data))])
+        return decrypted.decode("utf-8")
+    except Exception:
+        return encrypted  # 解密失败，返回原值
+
 
 def load_morning_config():
-    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。"""
+    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。密码自动解密。"""
     for path in (TEMP_CONFIG_PATH, PERSISTENT_CONFIG_PATH):
         try:
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    cfg = json.load(f)
+                # 解密密码
+                if "password" in cfg:
+                    cfg["password"] = _decrypt_password(cfg["password"])
+                return cfg
         except Exception:
             continue
     return {}
 
 
 def save_morning_config(config, persistent=True):
-    """保存早读班级配置。persistent=False 时写入临时文件，IL 重启后自动消失。"""
+    """保存早读班级配置。persistent=False 时写入临时文件，IL 重启后自动消失。密码自动加密。"""
     path = PERSISTENT_CONFIG_PATH if persistent else TEMP_CONFIG_PATH
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        # 加密密码后再保存
+        cfg_to_save = dict(config)
+        if "password" in cfg_to_save and cfg_to_save["password"]:
+            cfg_to_save["password"] = _encrypt_password(cfg_to_save["password"])
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
+            json.dump(cfg_to_save, f, ensure_ascii=False, indent=2)
         if persistent and os.path.isfile(TEMP_CONFIG_PATH):
             try:
                 os.remove(TEMP_CONFIG_PATH)

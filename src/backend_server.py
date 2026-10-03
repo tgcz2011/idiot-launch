@@ -51,8 +51,8 @@ os.environ["COUNTDOWN_CONFIG_DIR"] = os.path.join(UPDATE_DIR, "countdown")
 from countdown_app import config as cd_config
 from countdown_app.version import VERSION as CD_VERSION
 
-BACKEND_PORT_FILE = os.path.join(UPDATE_DIR, "backend_port")
-BACKEND_PID_FILE = os.path.join(UPDATE_DIR, "backend_pid")
+BACKEND_PORT_FILE = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "idiot_launch_backend_port")
+BACKEND_PID_FILE = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")), "idiot_launch_backend_pid")
 
 
 class ApiHandler(BaseHTTPRequestHandler):

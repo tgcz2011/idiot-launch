@@ -370,13 +370,45 @@ def _morning_config_paths():
     return [temp, persistent]
 
 
+# 早读密码加密密钥（与 morning_browser.py 保持一致）
+_MORNING_PASSWORD_KEY = b"IdiotLaunch_Morning_Reading_2024"
+
+
+def _encrypt_morning_password(password: str) -> str:
+    """简单加密早读密码：XOR + Base64。"""
+    if not password:
+        return ""
+    import base64
+    data = password.encode("utf-8")
+    encrypted = bytes([data[i] ^ _MORNING_PASSWORD_KEY[i % len(_MORNING_PASSWORD_KEY)] for i in range(len(data))])
+    return "enc:" + base64.b64encode(encrypted).decode("ascii")
+
+
+def _decrypt_morning_password(encrypted: str) -> str:
+    """解密早读密码。如果不是加密格式（旧版明文），直接返回。"""
+    if not encrypted:
+        return ""
+    if not encrypted.startswith("enc:"):
+        return encrypted
+    try:
+        import base64
+        data = base64.b64decode(encrypted[4:])
+        decrypted = bytes([data[i] ^ _MORNING_PASSWORD_KEY[i % len(_MORNING_PASSWORD_KEY)] for i in range(len(data))])
+        return decrypted.decode("utf-8")
+    except Exception:
+        return encrypted
+
+
 def load_morning_config():
-    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。"""
+    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。密码自动解密。"""
     for path in _morning_config_paths():
         try:
             if os.path.isfile(path):
                 with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    cfg = json.load(f)
+                if "password" in cfg:
+                    cfg["password"] = _decrypt_morning_password(cfg["password"])
+                return cfg
         except Exception:
             continue
     return {}
@@ -675,6 +707,16 @@ def _download_single(url: str, dest_path: str, timeout: int, tag: str = "", canc
         return False
 
 
+def _remove_installer(dest_path: str):
+    """安全删除安装包及其 .aria2 控制文件（避免断点续传状态残留）。"""
+    for p in (dest_path, dest_path + ".aria2"):
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
 def download_installer(url: str, dest_path: str, tag: str = "") -> bool:
     """使用 aria2 多源分块下载（16连接/源，自动多源负载均衡）"""
     from src.aria2_downloader import download_with_aria2
@@ -892,6 +934,19 @@ def daemon_run() -> int:
         log_daemon("daemon 已在运行，退出")
         return 0
     log_daemon(f"daemon 启动 (pid={os.getpid()}, v{LAUNCHER_VERSION})")
+
+    # 检查上次更新结果
+    result_file = os.path.join(UPDATE_DIR, "update_result.txt")
+    try:
+        if os.path.isfile(result_file):
+            with open(result_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            log_daemon(f"上次更新结果: {content.strip()}")
+            # 读取后删除，避免重复报告
+            os.remove(result_file)
+    except Exception:
+        pass
+
     set_daemon_status("starting", 0, "守护进程启动")
     try:
         from src.telemetry import report_event
@@ -1057,35 +1112,6 @@ def ensure_shortcuts() -> None:
                         pass
         except Exception:
             pass
-
-
-def has_pending_update() -> bool:
-    state = load_state()
-    return bool(state.get("pending_installer") and state.get("download_complete")
-                and os.path.isfile(state["pending_installer"]))
-
-
-def install_pending_if_idle() -> bool:
-    if not has_pending_update():
-        return False
-    if is_running():
-        return False
-    state = load_state()
-    pending = state.get("pending_installer")
-    if not pending or not os.path.isfile(pending):
-        return False
-    ok = install_from_path(pending)
-    if ok:
-        state.pop("pending_installer", None)
-        state.pop("pending_version", None)
-        state["download_complete"] = False
-        state["last_check"] = time.time()
-        save_state(state)
-        try:
-            os.remove(pending)
-        except OSError:
-            pass
-    return ok
 
 
 def _get_latest_tag_via_redirect(repo: str) -> str | None:
@@ -1348,44 +1374,74 @@ def apply_launcher_update_if_pending(force: bool = False) -> bool:
         pass
     installed_exe = LAUNCHER_INSTALL_EXE
     import tempfile
-    wmi_query = r"winmgmts:\\.\root\cimv2"
+    result_file = os.path.join(UPDATE_DIR, "update_result.txt")
     force_flag = "1" if force else "0"
     vbs_content = f'''Option Explicit
-Dim fso, shell, installer, installedExe, i, wmi, procs
+Dim fso, shell, installer, installedExe, i, wmi, procs, ret, resultPath
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set shell = CreateObject("WScript.Shell")
 installer = "{installer}"
 installedExe = "{installed_exe}"
+resultPath = "{result_file}"
+
+' 写结果文件的辅助函数
+Sub WriteResult(status, msg)
+    On Error Resume Next
+    Dim f
+    Set f = fso.CreateTextFile(resultPath, True)
+    f.WriteLine "status=" & status
+    f.WriteLine "message=" & msg
+    f.WriteLine "timestamp=" & Now()
+    f.Close
+    On Error GoTo 0
+End Sub
+
+WriteResult "running", "开始更新 {LAUNCHER_VERSION} -> v{pending_ver}"
+
 ' 1. 先通知 daemon 优雅退出（命名事件）
 On Error Resume Next
 shell.Run Chr(34) & installedExe & Chr(34) & " --quit-daemon", 0, True
 On Error GoTo 0
 WScript.Sleep 2000
+
 ' 2. 强制结束所有 IdiotLaunch 进程（含子进程 /T，确保 GUI/daemon/早读浏览器全部退出）
-'    不用优雅退出（WM_CLOSE 会被程序忽略，最小化到托盘），直接强杀
 On Error Resume Next
 shell.Run "taskkill /F /IM IdiotLaunch.exe /T", 0, True
 On Error GoTo 0
 WScript.Sleep 1500
-' 3. 静默运行安装包（完全无窗口，等待安装完成）
+
+' 3. 静默运行安装包（完全无窗口，等待安装完成），检查退出码
 On Error Resume Next
-shell.Run Chr(34) & installer & Chr(34) & " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", 0, True
+ret = shell.Run(Chr(34) & installer & Chr(34) & " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", 0, True)
 On Error GoTo 0
-    ' 4. 验证安装成功，启动新程序（force 时启动 GUI，否则只启动 daemon）
-    If fso.FileExists(installedExe) Then
-        On Error Resume Next
-        If "{force_flag}" = "1" Then
-            shell.Run Chr(34) & installedExe & Chr(34), 1, False
-        Else
-            shell.Run Chr(34) & installedExe & Chr(34) & " --daemon", 0, False
-        End If
-        On Error GoTo 0
-    End If
-' 5. 清理下载的安装包
+If ret <> 0 Then
+    WriteResult "failed", "安装包执行失败，退出码=" & ret & "（安装包已保留，可手动安装）"
+    WScript.Quit ret
+End If
+
+' 4. 验证安装成功（检查可执行文件存在）
+If Not fso.FileExists(installedExe) Then
+    WriteResult "failed", "安装完成但找不到程序文件: " & installedExe
+    WScript.Quit 1
+End If
+
+WriteResult "success", "安装成功，正在启动 v{pending_ver}"
+
+' 5. 启动新程序（force 时启动 GUI，否则只启动 daemon）
+On Error Resume Next
+If "{force_flag}" = "1" Then
+    shell.Run Chr(34) & installedExe & Chr(34), 1, False
+Else
+    shell.Run Chr(34) & installedExe & Chr(34) & " --daemon", 0, False
+End If
+On Error GoTo 0
+
+' 6. 清理下载的安装包（安装成功才删）
 On Error Resume Next
 fso.DeleteFile installer, True
 On Error GoTo 0
-' 6. 自删除
+
+' 7. 自删除
 On Error Resume Next
 fso.DeleteFile WScript.ScriptFullName, True
 On Error GoTo 0
@@ -1445,7 +1501,7 @@ def _launcher_download_worker(url: str, dest: str, version: str, release_notes: 
         return
     if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
         try:
-            os.remove(dest)
+            _remove_installer(dest)
         except OSError:
             pass
         return
@@ -1454,7 +1510,7 @@ def _launcher_download_worker(url: str, dest: str, version: str, release_notes: 
         log_daemon(f"SHA-256 校验失败，删除安装包并拒绝更新: {os.path.basename(dest)}")
         set_daemon_status("idle", 0, "更新包校验失败，已拒绝更新，将重新下载")
         try:
-            os.remove(dest)
+            _remove_installer(dest)
         except OSError:
             pass
         return
@@ -1463,7 +1519,7 @@ def _launcher_download_worker(url: str, dest: str, version: str, release_notes: 
     if compare_versions(version, LAUNCHER_VERSION) <= 0:
         log_daemon(f"下载完成但当前已是 v{LAUNCHER_VERSION}（>= v{version}），跳过更新")
         try:
-            os.remove(dest)
+            _remove_installer(dest)
         except OSError:
             pass
         state = load_state()
@@ -1531,22 +1587,27 @@ def _check_and_download_launcher_update() -> None:
     log_daemon(f"发现 Idiot Launch 新版本 {latest['version']}，后台线程下载安装包")
     dest_name = f"IdiotLaunch_Setup_{latest['version']}.exe"
     dest = os.path.join(UPDATE_DIR, dest_name)
-    if (os.path.isfile(dest) and latest.get("size", 0) > 0
-            and os.path.getsize(dest) == latest["size"]
-            and os.path.getsize(dest) >= LAUNCHER_MIN_SIZE
-            and verify_sha256(dest, latest.get("sha256", ""))):
-        state["pending_launcher_path"] = dest
-        state["pending_launcher_version"] = latest["version"]
-        state["launcher_release_notes"] = latest.get("release_notes", "")
-        save_state(state)
-        return
-    # 已存在但哈希校验失败（文件可能被破坏）：删除后重新下载
-    if os.path.isfile(dest):
+    aria2_control = dest + ".aria2"
+    # 断点续传：如果 .aria2 控制文件存在，说明上次下载未完成，直接续传（不删除）
+    if os.path.isfile(dest) and not os.path.isfile(aria2_control):
+        # 没有控制文件，说明是完整下载，检查哈希
+        if (latest.get("size", 0) > 0
+                and os.path.getsize(dest) == latest["size"]
+                and os.path.getsize(dest) >= LAUNCHER_MIN_SIZE
+                and verify_sha256(dest, latest.get("sha256", ""))):
+            state["pending_launcher_path"] = dest
+            state["pending_launcher_version"] = latest["version"]
+            state["launcher_release_notes"] = latest.get("release_notes", "")
+            save_state(state)
+            return
+        # 已存在但哈希校验失败（文件可能被破坏）：删除后重新下载
         log_daemon(f"已存在的安装包哈希校验失败，删除后重新下载: {os.path.basename(dest)}")
         try:
-            os.remove(dest)
+            _remove_installer(dest)
         except OSError:
             pass
+    elif os.path.isfile(dest) and os.path.isfile(aria2_control):
+        log_daemon(f"检测到未完成的下载，断点续传: {os.path.basename(dest)}")
     with _launcher_download_lock:
         if _launcher_download_thread and _launcher_download_thread.is_alive():
             return
