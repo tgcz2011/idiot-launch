@@ -5,8 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:audioplayers/audioplayers.dart';
 
-// ==================== FFI: user32.dll 绑定 ====================
+// ==================== FFI: user32.dll / kernel32.dll 绑定 ====================
 final _user32 = ffi.DynamicLibrary.open('user32.dll');
+final _kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
 
 typedef _GetForegroundWindowNative = ffi.IntPtr Function();
 typedef _GetForegroundWindowDart = int Function();
@@ -48,13 +49,43 @@ typedef _SetWindowTextNative = ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<U
 typedef _SetWindowTextDart = int Function(int hWnd, ffi.Pointer<Utf16>);
 final _setWindowText = _user32.lookupFunction<_SetWindowTextNative, _SetWindowTextDart>('SetWindowTextW');
 
+// 新增：精准定位子窗口所需的 API
+typedef _GetCurrentProcessIdNative = ffi.Uint32 Function();
+typedef _GetCurrentProcessIdDart = int Function();
+final _getCurrentProcessId = _kernel32.lookupFunction<_GetCurrentProcessIdNative, _GetCurrentProcessIdDart>('GetCurrentProcessId');
+
+typedef _GetWindowThreadProcessIdNative = ffi.Uint32 Function(ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId);
+typedef _GetWindowThreadProcessIdDart = int Function(int hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId);
+final _getWindowThreadProcessId = _user32.lookupFunction<_GetWindowThreadProcessIdNative, _GetWindowThreadProcessIdDart>('GetWindowThreadProcessId');
+
+typedef _IsWindowVisibleNative = ffi.Int32 Function(ffi.IntPtr hWnd);
+typedef _IsWindowVisibleDart = int Function(int hWnd);
+final _isWindowVisible = _user32.lookupFunction<_IsWindowVisibleNative, _IsWindowVisibleDart>('IsWindowVisible');
+
+typedef _GetWindowTextNative = ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<Utf16> lpString, ffi.Int32 nMaxCount);
+typedef _GetWindowTextDart = int Function(int hWnd, ffi.Pointer<Utf16> lpString, int nMaxCount);
+final _getWindowText = _user32.lookupFunction<_GetWindowTextNative, _GetWindowTextDart>('GetWindowTextW');
+
+// EnumWindows 回调类型
+typedef _EnumWindowsProcNative = ffi.Int32 Function(ffi.IntPtr hWnd, ffi.IntPtr lParam);
+typedef _EnumWindowsProcDart = int Function(int hWnd, int lParam);
+
+typedef _EnumWindowsNative = ffi.Int32 Function(
+    ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> lpEnumFunc, ffi.IntPtr lParam);
+typedef _EnumWindowsDart = int Function(
+    ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> lpEnumFunc, int lParam);
+final _enumWindows = _user32.lookupFunction<_EnumWindowsNative, _EnumWindowsDart>('EnumWindows');
+
 const int _gwlStyle = -16;
 const int _wsCaption = 0x00C00000;
 const int _wsSysMenu = 0x00080000;
 const int _wsMinimizeBox = 0x00020000;
 const int _wsMaximizeBox = 0x00010000;
+const int _wsThickFrame = 0x00040000;
 const int _swpFrameChanged = 0x0020;
 const int _swpNoZOrder = 0x0004;
+const int _swpNoMove = 0x0002;
+const int _swpNoSize = 0x0001;
 const int _hwndTopmost = -1;
 const int _hwndNotopmost = -2;
 const int _smCxScreen = 0;
@@ -64,44 +95,98 @@ const int _htCaption = 2;
 const int _swMinimize = 6;
 const int _wmClose = 0x0010;
 
-/// 子窗口控制器：每个实例独立持有窗口句柄和状态
+// ==================== EnumWindows 回调（全局，因为 FFI 回调必须是顶级函数） ====================
+final List<int> _gEnumResult = [];
+int _gEnumPid = 0;
+
+int _enumWindowsProc(int hWnd, int lParam) {
+  try {
+    final pidPtr = calloc<ffi.Uint32>();
+    _getWindowThreadProcessId(hWnd, pidPtr);
+    final pid = pidPtr.value;
+    calloc.free(pidPtr);
+    if (pid == _gEnumPid && _isWindowVisible(hWnd) != 0) {
+      // 获取窗口标题，排除主窗口
+      final titlePtr = calloc<ffi.Uint16>(512);
+      _getWindowText(hWnd, titlePtr.cast<Utf16>(), 512);
+      final title = titlePtr.cast<Utf16>().toDartString();
+      calloc.free(titlePtr);
+      // 主窗口标题是"傻瓜启动器"或"idiot_launch"，子窗口标题可能为空或"倒计时"/"秒表"
+      if (title != '傻瓜启动器' && title != 'idiot_launch' && title != 'Idiot Launch') {
+        _gEnumResult.add(hWnd);
+      }
+    }
+  } catch (_) {}
+  return 1; // 继续枚举
+}
+
+/// 通过 EnumWindows + 进程 ID 过滤，找到当前进程的所有子窗口（排除主窗口）
+List<int> _findSubWindows() {
+  _gEnumResult.clear();
+  _gEnumPid = _getCurrentProcessId();
+  final callback = ffi.Pointer.fromFunction<_EnumWindowsProcNative>(_enumWindowsProc, 0);
+  _enumWindows(callback, 0);
+  return List.from(_gEnumResult);
+}
+
+// ==================== 子窗口控制器 ====================
 class _SubWindowController {
   int hWnd = 0;
   bool isTopMost = false;
+  Timer? _retryTimer;
+  int _retryCount = 0;
 
-  /// 初始化：获取前台窗口句柄（子窗口刚创建时就是前台窗口），去掉标题栏，设置大小并居中
+  /// 初始化：通过 EnumWindows 精准定位子窗口，去掉标题栏，设置大小并居中
   Future<void> setup(int width, int height, String title) async {
-    // 多次尝试，等待窗口完全创建
-    for (int attempt = 0; attempt < 10; attempt++) {
-      await Future.delayed(Duration(milliseconds: 50 + attempt * 50));
+    _retryCount = 0;
+    // 最多重试 30 次（约 3 秒），确保窗口完全创建后再修改样式
+    _retryTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      _retryCount++;
       try {
-        final fg = _getForegroundWindow();
-        if (fg == 0) continue;
+        final subWindows = _findSubWindows();
+        if (subWindows.isEmpty) {
+          if (_retryCount > 30) {
+            timer.cancel();
+          }
+          return;
+        }
+        // 选择最后一个子窗口（最新创建的）
+        final hwnd = subWindows.last;
 
         // 设置窗口标题
         final titlePtr = title.toNativeUtf16();
-        _setWindowText(fg, titlePtr);
+        _setWindowText(hwnd, titlePtr);
         calloc.free(titlePtr);
 
         // 去掉系统标题栏（保留 WS_THICKFRAME 以便拖动和调整大小）
-        int style = _getWindowLong(fg, _gwlStyle);
+        int style = _getWindowLong(hwnd, _gwlStyle);
         style &= ~(_wsCaption | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
-        _setWindowLong(fg, _gwlStyle, style);
+        style |= _wsThickFrame; // 确保有 thick frame 才能拖动
+        _setWindowLong(hwnd, _gwlStyle, style);
 
-        // 居中显示
+        // 居中显示（SWP_FRAMECHANGED 刷新非客户区）
         final screenW = _getSystemMetrics(_smCxScreen);
         final screenH = _getSystemMetrics(_smCyScreen);
         final x = ((screenW - width) ~/ 2).clamp(0, screenW - width);
         final y = ((screenH - height) ~/ 2).clamp(0, screenH - height);
-        _setWindowPos(fg, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
+        _setWindowPos(hwnd, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
 
-        hWnd = fg;
-        return;
+        // 验证样式是否生效（标题栏位是否被清除）
+        final newStyle = _getWindowLong(hwnd, _gwlStyle);
+        if ((newStyle & _wsCaption) == 0) {
+          hWnd = hwnd;
+          timer.cancel();
+          _retryTimer = null;
+        }
       } catch (_) {}
-    }
+      if (_retryCount > 30) {
+        timer.cancel();
+        _retryTimer = null;
+      }
+    });
   }
 
-  /// 拖动窗口
+  /// 拖动窗口：模拟标题栏拖动
   void startDrag() {
     if (hWnd == 0) return;
     try {
@@ -132,9 +217,14 @@ class _SubWindowController {
     try {
       isTopMost = !isTopMost;
       _setWindowPos(hWnd, isTopMost ? _hwndTopmost : _hwndNotopmost,
-          0, 0, 0, 0, 0x0001 | 0x0002 | _swpFrameChanged);
+          0, 0, 0, 0, _swpNoMove | _swpNoSize | _swpFrameChanged);
     } catch (_) {}
     return isTopMost;
+  }
+
+  void dispose() {
+    _retryTimer?.cancel();
+    _retryTimer = null;
   }
 }
 
@@ -310,6 +400,7 @@ class _TimerPageState extends State<TimerPage> {
   void dispose() {
     _tick?.cancel();
     _player.dispose();
+    _win.dispose();
     super.dispose();
   }
 
@@ -489,6 +580,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
   @override
   void dispose() {
     _tick?.cancel();
+    _win.dispose();
     super.dispose();
   }
 

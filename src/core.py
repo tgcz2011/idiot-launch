@@ -43,7 +43,7 @@ DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
 DAEMON_QUIT_EVENT = "IdiotLaunch_Quit"  # 命名事件：收到后 daemon 优雅退出
 GUI_SINGLE_MUTEX = "IdiotLaunch_GUI_Single"  # GUI 单实例互斥量
 GUI_SHOW_EVENT = "IdiotLaunch_ShowWindow"  # 命名事件：请求已有 GUI 实例显示窗口
-IDLE_THRESHOLD = 300  # 5 分钟无操作视为空闲，此时可静默自我更新
+IDLE_THRESHOLD = 180  # 3 分钟无操作视为空闲，此时可静默自我更新
 
 # (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像；
 # 下载镜像源列表（按优先级排序，空字符串=GitHub直连）
