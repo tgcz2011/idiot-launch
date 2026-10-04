@@ -107,8 +107,12 @@ jobs:
         shell: pwsh
         run: |
           $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue
-          if (-not $iscc) {
-            choco install innosetup --version=6.4.3 -y --no-progress
+          if ($iscc) { Write-Host "已预装 Inno Setup"; exit 0 }
+          # 优先固定版本（可复现），该版本在 choco 上不存在时回退到最新版
+          choco install innosetup --version=6.4.3 -y --no-progress
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "指定版本安装失败，改用最新版"
+            choco install innosetup -y --no-progress
           }
 
       - name: Build Inno Setup installer
