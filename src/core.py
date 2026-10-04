@@ -1,58 +1,66 @@
 """
-core.py — 核心逻辑：检测安装、静默安装、带参启动、优雅退出、自动更新、快捷方式管理。
-v1.3.0.0: 多源下载 fallback、daemon 常驻、文件 IPC 状态通信、快捷方式自动重建、daemon 日志。
+core.py — 核心逻辑：倒计时启动/退出、早读账号、自动更新、守护进程、状态与日志。
+
+架构（V3）：
+  Flutter 前端  ──HTTP /api──▶  backend_server.py（后端进程）
+                                     ├─ daemon 线程（更新检查 / 空闲静默更新 / 快捷方式守护 / 清理）
+                                     ├─ tkinter 悬浮球线程
+                                     └─ pystray 托盘线程
+  子进程：--countdown-app（壁纸/屏保）、--morning-browser（早晚读浏览器）
+
+约定：
+  * 所有可写数据都在 D:\\IdiotLaunch\\data，冰点还原不影响。
+  * state.json / settings.json 的读改写全部走 _state_lock，避免多线程互相覆盖。
 """
-import os
-import sys
-import subprocess
-import winreg
-import time
-import json
-import shutil
-import webbrowser
-import urllib.request
-import urllib.parse
-import ssl
 import ctypes
+import hashlib
+import json
+import logging
+import logging.handlers
+import os
+import shutil
+import ssl
+import subprocess
+import sys
 import threading
-from pathlib import Path
+import time
+import urllib.request
 
 # ── 常量 ──────────────────────────────────────────────
-APP_NAME = "Countdown Desktop"
-# Countdown Desktop 已合并到本项目（countdown_app/），不再需要独立安装
-COUNTDOWN_VERSION = "3.2.5.4"  # 合并时的 CD 版本，随 IL 一起更新
-MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
-MORNING_API_URL = "https://zztool.free.nf/morning-reading/api.php"
-INSTALL_TIMEOUT = 300
+APP_NAME = "傻瓜启动器"
+# 早读站点地址统一放在 morning_config，避免多处硬编码
+try:
+    from src.morning_config import MORNING_API_URL, MORNING_READING_URL
+except ImportError:  # 以 `python src/core.py` / 老脚本方式直接导入时
+    from morning_config import MORNING_API_URL, MORNING_READING_URL  # type: ignore
 
 UPDATE_DIR = r"D:\IdiotLaunch\data"
 STATE_FILE = os.path.join(UPDATE_DIR, "state.json")
+SETTINGS_FILE = os.path.join(UPDATE_DIR, "settings.json")
 DAEMON_LOG = os.path.join(UPDATE_DIR, "daemon.log")
 COMMAND_FILE = os.path.join(UPDATE_DIR, "command.json")
-GITHUB_API_URL = "https://api.github.com/repos/tgcz2011/countdown-desktop/releases/latest"
-CHECK_INTERVAL = 10 * 60  # 10分钟检查一次更新
-# GitHub Token：优先从构建时生成的 _secrets.py 读取（不进 git），否则从环境变量读取。
-# 未设置时用未认证 API（60次/小时，本应用每小时仅检查1次，够用）。
-try:
-    from src._secrets import GITHUB_TOKEN
-except ImportError:
-    GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+LOG_DIR = UPDATE_DIR
+
+# 更新检查间隔（秒）。历史值是 10 分钟，教室共用出口 IP 时太频繁。
+CHECK_INTERVAL = 60 * 60
+# 空闲多久才允许静默自我更新（秒）。3 分钟太激进：老师站着讲课 3 分钟就会被强杀重装。
+IDLE_THRESHOLD = 600
+# 启动后如果距离上次检查超过这个时间，就立刻检查一次
+STARTUP_CHECK_GRACE = 10 * 60
+
 DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
-DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
-DAEMON_QUIT_EVENT = "IdiotLaunch_Quit"  # 命名事件：收到后 daemon 优雅退出
-GUI_SINGLE_MUTEX = "IdiotLaunch_GUI_Single"  # GUI 单实例互斥量
-GUI_SHOW_EVENT = "IdiotLaunch_ShowWindow"  # 命名事件：请求已有 GUI 实例显示窗口
-IDLE_THRESHOLD = 180  # 3 分钟无操作视为空闲，此时可静默自我更新
+MAX_DOWNLOAD_FAILURES = 3
 
-# (镜像前缀, 该源超时秒数)。直连给 60s 短超时：慢速直连快速失败切镜像；
-# 下载镜像源列表（按优先级排序，空字符串=GitHub直连）
-# 并行竞速模式：同时从所有源下载，取最快完成的
+DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
+DAEMON_QUIT_EVENT = "IdiotLaunch_Quit"
+
+# 下载镜像源（aria2 会同时从多个源分块下载，空字符串 = GitHub 直连）
 DOWNLOAD_MIRRORS = [
     "",                                    # GitHub 直连（最可靠）
     "https://ghproxy.com/",                # ghproxy 老牌
     "https://mirror.ghproxy.com/",         # ghproxy 镜像
-    "https://gh-proxy.com/",               # GH-Proxy 2.0
+    "https://gh-proxy.com/",               # GH-Proxy
     "https://ghfast.top/",                 # ghfast
     "https://ghproxy.net/",                # ghproxy.net
     "https://gh.llkk.cc/",                 # LLKK 公益加速
@@ -62,48 +70,256 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta26"
+LAUNCHER_VERSION = "3.0.0.0-beta27"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
+LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
 LAUNCHER_INSTALL_DIR = r"D:\IdiotLaunch"
 LAUNCHER_INSTALL_EXE = os.path.join(LAUNCHER_INSTALL_DIR, "IdiotLaunch.exe")
 
+# 更新相关常量
+SUPABASE_URL = "https://tiofmybnepcheudgfysa.supabase.co"
+SUPABASE_ANON_KEY = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpb2ZteWJuZXBjaGV1ZGdmeXNhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5NjYyMjYsImV4cCI6MjEwNjU0MjIyNn0."
+    "6CTEoVO9QrmBmxkUxNqgWhx6vQ1I-ikI9yy8rImVAA8"
+)
 
-def resource_path(relative: str) -> str:
-    if getattr(sys, "frozen", False):
-        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
-    else:
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(base, relative)
+# 构建时注入的 GitHub Token（不入 git）；没有就用未认证 API
+try:
+    from src._secrets import GITHUB_TOKEN  # type: ignore
+except ImportError:
+    GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
+# 默认设置
+DEFAULT_SETTINGS = {
+    "theme": "system",        # system / light / dark
+    "auto_update": True,      # 是否允许后台自动下载/静默安装更新
+    "telemetry": True,        # 是否上报匿名运行统计
+    "show_tray_hint": True,   # 关闭窗口时是否提示"已最小化到托盘"
+}
 
 
+# ── Win32 基础 ────────────────────────────────────────
+# use_last_error=True + ctypes.get_last_error()：直接用 windll 读 GetLastError()
+# 在 ctypes 中间调用后可能拿到过期值，会让"单实例互斥量"判定失败，
+# 结果就是两个 daemon 同时跑 → 同一个更新包被下载两遍（线上日志里出现过）。
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _mutex_acquire(name: str):
+    """创建命名互斥量；已存在则返回 None。"""
+    try:
+        _kernel32.CreateMutexW.restype = ctypes.c_void_p
+        handle = _kernel32.CreateMutexW(None, False, name)
+        if not handle:
+            return None
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            _kernel32.CloseHandle(handle)
+            return None
+        return handle
+    except Exception:
+        return None
+
+
+def _event_open(name: str, access: int = 0x0002):
+    try:
+        _kernel32.OpenEventW.restype = ctypes.c_void_p
+        return _kernel32.OpenEventW(access, False, name)
+    except Exception:
+        return None
+
+
+def _event_create(name: str):
+    try:
+        _kernel32.CreateEventW.restype = ctypes.c_void_p
+        return _kernel32.CreateEventW(None, False, False, name)
+    except Exception:
+        return None
+
+
+def _wait_event(handle, ms: int) -> bool:
+    if not handle:
+        time.sleep(ms / 1000.0)
+        return False
+    try:
+        return _kernel32.WaitForSingleObject(handle, ms) == 0
+    except Exception:
+        time.sleep(ms / 1000.0)
+        return False
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+
+def get_idle_seconds() -> float:
+    """系统空闲秒数（距上次键鼠输入）。取不到时返回 0（= 正在使用，宁可不更新）。"""
+    try:
+        lii = _LASTINPUTINFO()
+        lii.cbSize = ctypes.sizeof(_LASTINPUTINFO)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            return 0.0
+        tick = ctypes.windll.kernel32.GetTickCount()
+        return max(0.0, (tick - lii.dwTime) / 1000.0)
+    except Exception:
+        return 0.0
+
+
+def boot_id() -> int:
+    """本次开机的标识（时间戳形式）。用于"每次开机只提示一次"这类逻辑。"""
+    try:
+        _kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+        uptime_ms = int(_kernel32.GetTickCount64())
+    except Exception:
+        try:
+            uptime_ms = int(ctypes.windll.kernel32.GetTickCount())
+        except Exception:
+            uptime_ms = 0
+    return int(time.time() - uptime_ms / 1000.0)
+
+
+# ── 日志 ──────────────────────────────────────────────
+def _ensure_update_dir() -> None:
+    os.makedirs(UPDATE_DIR, exist_ok=True)
+
+
+_log_lock = threading.Lock()
+_logging_ready = False
+
+
+def setup_logging(name: str, level: int = logging.INFO) -> None:
+    """把 logging 输出落到 D 盘的独立文件（每个入口一个文件，避免抢写）。
+
+    历史问题：console=False 的打包程序里 stderr 是 None，所有 log.warning
+    全部丢失，出问题只能靠猜。
+    """
+    global _logging_ready
+    if _logging_ready:
+        return
+    _logging_ready = True
+    try:
+        _ensure_update_dir()
+        handler = logging.handlers.RotatingFileHandler(
+            os.path.join(LOG_DIR, f"{name}.log"),
+            maxBytes=512 * 1024, backupCount=2, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s"))
+        root = logging.getLogger()
+        root.setLevel(level)
+        root.addHandler(handler)
+    except Exception:
+        pass
+
+
+def log_daemon(msg: str) -> None:
+    try:
+        with _log_lock:
+            _ensure_update_dir()
+            line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
+            # 轮转：main → .1 → .2 → .3（最多 3 份备份）
+            if os.path.isfile(DAEMON_LOG) and os.path.getsize(DAEMON_LOG) > 256 * 1024:
+                for i in (2, 1):
+                    src = f"{DAEMON_LOG}.{i}"
+                    dst = f"{DAEMON_LOG}.{i + 1}"
+                    if os.path.isfile(src):
+                        try:
+                            if os.path.isfile(dst):
+                                os.remove(dst)
+                            os.replace(src, dst)
+                        except OSError:
+                            pass
+                try:
+                    os.replace(DAEMON_LOG, DAEMON_LOG + ".1")
+                except OSError:
+                    pass
+            with open(DAEMON_LOG, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+
+
+# ── 设置 ──────────────────────────────────────────────
+def load_settings() -> dict:
+    cfg = dict(DEFAULT_SETTINGS)
+    try:
+        if os.path.isfile(SETTINGS_FILE):
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for k in DEFAULT_SETTINGS:
+                    if k in data:
+                        cfg[k] = data[k]
+    except Exception:
+        pass
+    return cfg
+
+
+def save_settings(patch: dict) -> dict:
+    cfg = load_settings()
+    for k, v in (patch or {}).items():
+        if k in DEFAULT_SETTINGS:
+            cfg[k] = v
+    try:
+        _ensure_update_dir()
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, SETTINGS_FILE)
+    except Exception as e:
+        log_daemon(f"设置保存失败: {e}")
+    return cfg
+
+
+def is_telemetry_enabled() -> bool:
+    try:
+        return bool(load_settings().get("telemetry", True))
+    except Exception:
+        return True
+
+
+def is_auto_update_enabled() -> bool:
+    try:
+        return bool(load_settings().get("auto_update", True))
+    except Exception:
+        return True
+
+
+def idle_threshold_seconds() -> int:
+    """空闲判定阈值。设置里可以调，默认 10 分钟。"""
+    try:
+        v = int(load_settings().get("idle_minutes", IDLE_THRESHOLD // 60))
+        return max(60, v * 60)
+    except Exception:
+        return IDLE_THRESHOLD
+
+
+# ── 版本 ──────────────────────────────────────────────
 def parse_version(v: str) -> tuple:
-    """解析版本号，返回 (主版本元组, 预发布类型权重, 预发布数字)。
-    预发布类型权重：正式版=100, rc=3, beta=2, alpha=1, 未知=0
-    正式版 > rc > beta > alpha，同类型比数字。
+    """返回 ((主版本 4 段元组), 预发布类型权重, 预发布数字)。
+
+    正式版=100 > rc=3 > beta=2 > alpha=1 > 未知=0。
     """
     import re
-    v = v.strip().lstrip("vV")
-    pre_type = 100  # 默认正式版
+
+    v = (v or "").strip().lstrip("vV")
+    pre_type = 100
     pre_num = 0
     if "-" in v:
         main_part, pre_part = v.split("-", 1)
         pre_lower = pre_part.lower()
         if "alpha" in pre_lower:
             pre_type = 1
-            m = re.search(r'\d+', pre_part)
-            pre_num = int(m.group()) if m else 0
         elif "beta" in pre_lower:
             pre_type = 2
-            m = re.search(r'\d+', pre_part)
-            pre_num = int(m.group()) if m else 0
         elif "rc" in pre_lower:
             pre_type = 3
-            m = re.search(r'\d+', pre_part)
-            pre_num = int(m.group()) if m else 0
         else:
             pre_type = 0
+        if pre_type < 100:
+            m = re.search(r"\d+", pre_part)
+            pre_num = int(m.group()) if m else 0
     else:
         main_part = v
 
@@ -128,399 +344,203 @@ def compare_versions(v1: str, v2: str) -> int:
 
 
 def is_beta_version(version: str) -> bool:
-    """判断版本号是否为 beta 版本（包含 beta/alpha/rc 等预发布标记）。"""
-    v = version.lower()
-    return any(tag in v for tag in ["beta", "alpha", "rc", "pre", "-dev"])
+    v = (version or "").lower()
+    return any(tag in v for tag in ("beta", "alpha", "rc", "pre", "-dev"))
 
 
-
-class LASTINPUTINFO(ctypes.Structure):
-    _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
-
-
-def get_idle_seconds() -> float:
-    """返回系统空闲秒数（距上次键盘/鼠标输入的时间）。"""
-    try:
-        lii = LASTINPUTINFO()
-        lii.cbSize = ctypes.sizeof(LASTINPUTINFO)
-        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
-            return 0.0
-        tick = ctypes.windll.kernel32.GetTickCount()
-        return max(0.0, (tick - lii.dwTime) / 1000.0)
-    except Exception:
-        return 0.0
-
-def log_daemon(msg: str) -> None:
-    try:
-        _ensure_update_dir()
-        line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
-        # 日志轮转：超过 100KB 时，当前日志改名为 .1，.1 改名为 .2（最多保留 3 份）
-        if os.path.isfile(DAEMON_LOG) and os.path.getsize(DAEMON_LOG) > 100 * 1024:
-            for i in range(2, 0, -1):
-                src = f"{DAEMON_LOG}.{i}" if i > 1 else DAEMON_LOG
-                dst = f"{DAEMON_LOG}.{i+1}"
-                if os.path.isfile(src):
-                    try:
-                        if os.path.isfile(dst):
-                            os.remove(dst)
-                        os.replace(src, dst)
-                    except OSError:
-                        pass
-        with open(DAEMON_LOG, "a", encoding="utf-8") as f:
-            f.write(line)
-    except Exception:
-        pass
-
-
-def find_installed_path() -> str | None:
-    """CD 已合并到本项目，永远返回可用标记。"""
-    return "bundled"
-
-def get_installed_version() -> str | None:
-    reg_paths = [
-        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
-        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
-    ]
-    for root, subkey in reg_paths:
-        try:
-            with winreg.OpenKey(root, subkey) as key:
-                idx = 0
-                while True:
-                    try:
-                        app_name = winreg.EnumKey(key, idx)
-                        idx += 1
-                        if "countdown" not in app_name.lower():
-                            continue
-                        with winreg.OpenKey(key, app_name) as app_key:
-                            try:
-                                ver, _ = winreg.QueryValueEx(app_key, "DisplayVersion")
-                                if ver:
-                                    return ver
-                            except OSError:
-                                pass
-                    except OSError:
-                        break
-        except OSError:
-            continue
-    exe = find_installed_path()
-    if exe and os.path.isfile(exe):
-        try:
-            size = ctypes.windll.version.GetFileVersionInfoSizeW(exe, None)
-            if size > 0:
-                res = ctypes.create_string_buffer(size)
-                ctypes.windll.version.GetFileVersionInfoW(exe, None, size, res)
-                val = ctypes.c_void_p()
-                length = ctypes.c_uint()
-                if ctypes.windll.version.VerQueryValueW(res, "\\", ctypes.byref(val), ctypes.byref(length)):
-                    class VS_FIXEDFILEINFO(ctypes.Structure):
-                        _fields_ = [("dwSignature", ctypes.c_uint32), ("dwStrucVersion", ctypes.c_uint32),
-                                    ("dwFileVersionMS", ctypes.c_uint32), ("dwFileVersionLS", ctypes.c_uint32),
-                                    ("dwProductVersionMS", ctypes.c_uint32), ("dwProductVersionLS", ctypes.c_uint32)]
-                    info = ctypes.cast(val, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
-                    v1 = (info.dwFileVersionMS >> 16) & 0xFFFF
-                    v2 = info.dwFileVersionMS & 0xFFFF
-                    v3 = (info.dwFileVersionLS >> 16) & 0xFFFF
-                    v4 = info.dwFileVersionLS & 0xFFFF
-                    return f"{v1}.{v2}.{v3}.{v4}"
-        except Exception:
-            pass
-    return None
-
-
-def get_file_version(path: str) -> str | None:
-    """读取任意 exe 的 FileVersion（a.b.c.d），失败返回 None。"""
-    if not path or not os.path.isfile(path):
-        return None
-    try:
-        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
-        if size > 0:
-            res = ctypes.create_string_buffer(size)
-            ctypes.windll.version.GetFileVersionInfoW(path, None, size, res)
-            val = ctypes.c_void_p()
-            length = ctypes.c_uint()
-            if ctypes.windll.version.VerQueryValueW(res, "\\", ctypes.byref(val), ctypes.byref(length)):
-                class VS_FIXEDFILEINFO(ctypes.Structure):
-                    _fields_ = [("dwSignature", ctypes.c_uint32), ("dwStrucVersion", ctypes.c_uint32),
-                                ("dwFileVersionMS", ctypes.c_uint32), ("dwFileVersionLS", ctypes.c_uint32),
-                                ("dwProductVersionMS", ctypes.c_uint32), ("dwProductVersionLS", ctypes.c_uint32)]
-                info = ctypes.cast(val, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
-                v1 = (info.dwFileVersionMS >> 16) & 0xFFFF
-                v2 = info.dwFileVersionMS & 0xFFFF
-                v3 = (info.dwFileVersionLS >> 16) & 0xFFFF
-                v4 = info.dwFileVersionLS & 0xFFFF
-                return f"{v1}.{v2}.{v3}.{v4}"
-    except Exception:
-        pass
-    return None
-
-
-def remove_install_dir() -> None:
-    """CD 已合并，不再需要删除安装目录。"""
-    pass
-
-def install_from_path(installer_path: str) -> bool:
-    """CD 已合并，不再需要安装。保留接口兼容。"""
-    return True
-
-def silent_install() -> bool:
-    """CD 已合并，不再需要安装。"""
-    return True
-
-def _migrate_old_countdown_dir() -> None:
-    """CD 已合并，不再需要迁移旧目录。"""
-    pass
-
-def ensure_installed() -> str:
-    """CD 已合并，直接返回。"""
-    return "bundled"
-
+# ── Countdown Desktop（已合并进本项目） ────────────────
 def _countdown_env() -> dict:
-    """CD 子进程环境变量：配置目录指向 D 盘，规避冰点还原。"""
     env = os.environ.copy()
     env["COUNTDOWN_CONFIG_DIR"] = os.path.join(LAUNCHER_INSTALL_DIR, "data", "countdown")
     return env
 
 
-def launch_countdown(exam_type: str) -> None:
-    """启动倒计时壁纸。CD 已合并，用同一个 exe 加 --countdown-app 参数启动。"""
+def _spawn_countdown(extra_args: list) -> bool:
     try:
         subprocess.Popen(
-            [sys.executable, "--countdown-app", "--exam", exam_type, "--auto-check-update", "off"],
-            creationflags=0x00000008, close_fds=True, env=_countdown_env(),
+            [sys.executable, "--countdown-app", *extra_args, "--auto-check-update", "off"],
+            creationflags=0x00000008,  # DETACHED_PROCESS
+            close_fds=True,
+            env=_countdown_env(),
         )
+        return True
     except Exception as e:
-        log_daemon(f"启动倒计时壁纸失败({exam_type}): {e}")
+        log_daemon(f"启动倒计时失败 {extra_args}: {e}")
+        return False
 
 
-def launch_custom() -> None:
-    """启动用户自定义的壁纸&屏保（不传入 --exam，使用本地配置）。"""
-    try:
-        subprocess.Popen(
-            [sys.executable, "--countdown-app", "--auto-check-update", "off"],
-            creationflags=0x00000008, close_fds=True, env=_countdown_env(),
-        )
-    except Exception as e:
-        log_daemon(f"启动自定义壁纸失败: {e}")
+def launch_countdown(exam_type: str) -> bool:
+    return _spawn_countdown(["--exam", exam_type])
 
 
-def launch_settings() -> None:
-    """一键唤起壁纸&屏保设置窗口。
-    CD 已合并，用同一个 exe 加 --countdown-app 参数启动。
-    """
-    try:
-        subprocess.Popen(
-            [sys.executable, "--countdown-app", "--settings", "--auto-check-update", "off"],
-            creationflags=0x00000008, close_fds=True, env=_countdown_env(),
-        )
-    except Exception as e:
-        log_daemon(f"启动壁纸设置失败: {e}")
+def launch_custom() -> bool:
+    return _spawn_countdown([])
+
+
+def launch_settings() -> bool:
+    return _spawn_countdown(["--settings"])
 
 
 def is_running() -> bool:
     try:
-        kernel32 = ctypes.windll.kernel32
-        SYNCHRONIZE = 0x00100000
-        kernel32.OpenMutexW.restype = ctypes.c_void_p
-        handle = kernel32.OpenMutexW(SYNCHRONIZE, False, "CountdownDesktop_Single")
+        handle = _kernel32.OpenMutexW(0x00100000, False, "CountdownDesktop_Single")
         if handle:
-            kernel32.CloseHandle(handle)
+            _kernel32.CloseHandle(handle)
             return True
-        return False
     except Exception:
-        return False
+        pass
+    return False
 
 
-def quit_countdown() -> bool:
-    kernel32 = ctypes.windll.kernel32
-    MUTEX_NAME = "CountdownDesktop_Single"
-    QUIT_EVENT_NAME = "CountdownDesktop_Quit"
-    EVENT_MODIFY_STATE = 0x0002
-    SYNCHRONIZE = 0x00100000
-    kernel32.OpenMutexW.restype = ctypes.c_void_p
-    mutex = kernel32.OpenMutexW(SYNCHRONIZE, False, MUTEX_NAME)
-    already_running = bool(mutex)
-    if mutex:
-        kernel32.CloseHandle(mutex)
-    if not already_running:
+def quit_countdown(timeout: float = 8.0) -> bool:
+    """通知 Countdown Desktop 优雅退出（命名事件），并按需等待。"""
+    if not is_running():
         return True
-    kernel32.OpenEventW.restype = ctypes.c_void_p
-    event = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, QUIT_EVENT_NAME)
+    event = _event_open("CountdownDesktop_Quit")
     if not event:
         return False
-    kernel32.SetEvent(event)
-    kernel32.CloseHandle(event)
-    deadline = time.time() + 8.0
+    try:
+        _kernel32.SetEvent(event)
+    finally:
+        _kernel32.CloseHandle(event)
+    deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(0.25)
-        kernel32.OpenMutexW.restype = ctypes.c_void_p
-        m = kernel32.OpenMutexW(SYNCHRONIZE, False, MUTEX_NAME)
-        released = not bool(m)
-        if m:
-            kernel32.CloseHandle(m)
-        if released:
+        if not is_running():
             return True
     return False
 
 
-def open_morning_reading() -> None:
-    """打开早晚读网页（内嵌浏览器，独立进程）。
-    已登录则自动登录；未登录则直接进入网页首页（不拦截）。
-    """
-    from src.floating_button import open_morning_browser
-    open_morning_browser()
+# ── 早读 ──────────────────────────────────────────────
+def _morning_client():
+    from src.morning_api_client import ApiClient
+
+    return ApiClient()
 
 
-def _morning_config_paths():
-    """返回早读配置文件路径列表（优先临时配置，再持久配置）。"""
-    persistent = os.path.join(UPDATE_DIR, "morning_config.json")
-    temp = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")),
-                        "idiot_launch_morning_config.json")
-    return [temp, persistent]
+def load_morning_config() -> dict:
+    from src import morning_config
+
+    return morning_config.load()
 
 
-# 早读密码加密密钥（与 morning_browser.py 保持一致）
-_MORNING_PASSWORD_KEY = b"IdiotLaunch_Morning_Reading_2024"
+def save_morning_config(config: dict, persistent: bool = True) -> bool:
+    from src import morning_config
 
-
-def _encrypt_morning_password(password: str) -> str:
-    """简单加密早读密码：XOR + Base64。"""
-    if not password:
-        return ""
-    import base64
-    data = password.encode("utf-8")
-    encrypted = bytes([data[i] ^ _MORNING_PASSWORD_KEY[i % len(_MORNING_PASSWORD_KEY)] for i in range(len(data))])
-    return "enc:" + base64.b64encode(encrypted).decode("ascii")
-
-
-def _decrypt_morning_password(encrypted: str) -> str:
-    """解密早读密码。如果不是加密格式（旧版明文），直接返回。"""
-    if not encrypted:
-        return ""
-    if not encrypted.startswith("enc:"):
-        return encrypted
-    try:
-        import base64
-        data = base64.b64decode(encrypted[4:])
-        decrypted = bytes([data[i] ^ _MORNING_PASSWORD_KEY[i % len(_MORNING_PASSWORD_KEY)] for i in range(len(data))])
-        return decrypted.decode("utf-8")
-    except Exception:
-        return encrypted
-
-
-def load_morning_config():
-    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。密码自动解密。"""
-    for path in _morning_config_paths():
-        try:
-            if os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                if "password" in cfg:
-                    cfg["password"] = _decrypt_morning_password(cfg["password"])
-                return cfg
-        except Exception:
-            continue
-    return {}
+    return morning_config.save(config, persistent=persistent)
 
 
 def is_morning_logged_in() -> bool:
-    """检查早读是否已登录（配置文件存在且有年级/班级/密码）。"""
     cfg = load_morning_config()
     return bool(cfg.get("grade") and cfg.get("class_number") and cfg.get("password"))
 
 
-def get_morning_token(config: dict) -> str | None:
-    """通过早读 API 客户端获取认证 token（自动过 InfinityFree JS challenge + 缓存）。"""
-    try:
-        from src.morning_api_client import ApiClient
-        grade = config.get("grade")
-        class_number = config.get("class_number")
-        password = config.get("password")
-        if not (grade and class_number and password):
-            return None
-        client = ApiClient()
-        username = f"{grade}-{class_number}"
-        return client._cached_token("record", username, password)
-    except Exception as e:
-        log_daemon(f"早读 token 获取失败: {e}")
-        return None
-
-
 def verify_morning_login(grade, class_number, password):
-    """校验早读班级账号密码是否有效（用 morning_api_client 自动过 InfinityFree challenge）。
+    """校验账号密码。返回 (ok, periods, error_msg)。
 
-    返回 (ok, periods, error_msg)。
+    错误信息尽量区分"账号密码错"和"网络/服务端异常"，否则老师会一直重试密码。
     """
     try:
-        from src.morning_api_client import ApiClient
-        client = ApiClient()
+        client = _morning_client()
         username = f"{grade}-{class_number}"
-        data = client.call("status", username, password, "record")
+        ok, data, err = client.call("status", username, password, "record")
+        if not ok:
+            return False, None, err or "无法连接早读服务器，请检查网络后重试"
         if not data.get("success"):
-            return False, None, "账号或密码错误，请检查后重试"
-        # 解析时间段
-        periods = {}
-        period_text = data.get("data", {}).get("period_text", "")
-        if "早读" in period_text:
-            morning_part = period_text.split("早读：")[1].split("，")[0]
-            start, end = morning_part.split("-")
-            periods["morning"] = {"start": start.strip(), "end": end.strip()}
-        if "晚读" in period_text:
-            evening_part = period_text.split("晚读：")[1]
-            start, end = evening_part.split("-")
-            periods["evening"] = {"start": start.strip(), "end": end.strip()}
-        return True, (periods if periods else None), ""
+            code = data.get("code")
+            msg = str(data.get("message") or data.get("msg") or "").strip()
+            if code == 401 or "密码" in msg or "账号" in msg:
+                return False, None, "账号或密码错误，请检查后重试"
+            return False, None, msg or "服务器返回异常，请稍后重试"
+        periods = _parse_periods(str(data.get("data", {}).get("period_text", "")))
+        return True, (periods or None), ""
     except Exception as e:
-        log_daemon(f"早读登录校验失败: {e}")
+        log_daemon(f"早读登录校验异常: {type(e).__name__}: {e}")
         return False, None, "网络连接失败，请检查网络后重试"
 
 
-def refresh_morning_periods():
-    """定期刷新早读时间段（每10分钟）。只有已登录时才执行。
-    这样即使用户没有重新登录，periods 也会自动更新，悬浮球能正常工作。
+def _parse_periods(period_text: str) -> dict:
+    """解析 "早读：06:20-07:10，晚读：17:40-21:30"。
+
+    解析不出来只记日志、返回空，绝不能因此把登录判成失败。
     """
+    periods = {}
     try:
-        from src.morning_browser import load_morning_config, save_morning_config
-        config = load_morning_config()
-        grade = str(config.get("grade", "")).strip()
-        class_number = str(config.get("class_number", "")).strip()
-        password = str(config.get("password", "")).strip()
-        if not grade or not class_number or not password:
-            return  # 未登录，跳过
+        for key, label in (("morning", "早读"), ("evening", "晚读")):
+            if label not in period_text:
+                continue
+            # 兼容全角/半角冒号和分隔符
+            seg = period_text.split(label, 1)[1]
+            seg = seg.lstrip("：: ")
+            seg = seg.split("，")[0].split(",")[0].split("；")[0].split(";")[0]
+            if "-" not in seg:
+                continue
+            start, end = seg.split("-", 1)
+            periods[key] = {"start": start.strip(), "end": end.strip()}
+    except Exception as e:
+        log_daemon(f"早读时间段解析失败({period_text!r}): {e}")
+    return periods
+
+
+def refresh_morning_periods() -> None:
+    """后台定期刷新时间段（悬浮球按时段显示）。保持原有的持久性设置。"""
+    try:
+        cfg = load_morning_config()
+        grade = str(cfg.get("grade", "")).strip()
+        class_number = str(cfg.get("class_number", "")).strip()
+        password = str(cfg.get("password", "")).strip()
+        if not (grade and class_number and password):
+            return
         ok, periods, _ = verify_morning_login(grade, class_number, password)
         if ok and periods:
-            config["periods"] = periods
-            save_morning_config(config)
+            cfg["periods"] = periods
+            # 关键：沿用原来的 persistent，不能把"仅本次登录"变成"永久保存"
+            save_morning_config(cfg, persistent=bool(cfg.get("persistent", True)))
             log_daemon(f"早读时间段已刷新: {periods}")
     except Exception as e:
-        log_daemon(f"刷新早读时间段异常: {e}")
+        log_daemon(f"刷新早读时间段异常: {type(e).__name__}: {e}")
 
 
-def get_morning_students(config: dict = None) -> list[dict]:
-    """获取早读班级的学生列表（用 morning_api_client 自动过 challenge）。
-    返回 [{"student_no": 1, "name": "张三"}, ...]
-    """
+def get_morning_students(config: dict = None) -> list:
+    """返回 [{"student_no": 1, "name": "张三"}, ...]；失败返回空列表（调用方需自辨）。"""
     if config is None:
         config = load_morning_config()
-    if not is_morning_logged_in():
+    if not (config.get("grade") and config.get("class_number") and config.get("password")):
         return []
     try:
-        from src.morning_api_client import ApiClient
-        client = ApiClient()
+        client = _morning_client()
         username = f"{config.get('grade')}-{config.get('class_number')}"
-        data = client.call("students", username, config.get("password", ""), "record")
+        ok, data, err = client.call("students", username, config.get("password", ""), "record")
+        if not ok:
+            log_daemon(f"获取学生列表失败: {err}")
+            return []
         if not data.get("success"):
             return []
-        students = data.get("data", {}).get("students", [])
-        return [{"student_no": s["student_no"], "name": s["name"]} for s in students]
+        students = data.get("data", {}).get("students", []) or []
+        out = []
+        for s in students:
+            if not isinstance(s, dict):
+                continue
+            no = s.get("student_no", s.get("no"))
+            name = s.get("name", s.get("student_name"))
+            if name is None:
+                continue
+            out.append({"student_no": no, "name": str(name)})
+        return out
     except Exception as e:
-        log_daemon(f"早读学生列表获取失败: {e}")
+        log_daemon(f"早读学生列表异常: {type(e).__name__}: {e}")
         return []
 
 
+def open_morning_reading() -> bool:
+    """打开早晚读内嵌浏览器（独立进程，不带任何凭据参数）。"""
+    from src.floating_button import open_morning_browser
 
-def _ensure_update_dir() -> None:
-    os.makedirs(UPDATE_DIR, exist_ok=True)
+    return open_morning_browser()
+
+
+# ── 状态文件 ──────────────────────────────────────────
+_state_lock = threading.RLock()
 
 
 def load_state() -> dict:
@@ -528,43 +548,55 @@ def load_state() -> dict:
         _ensure_update_dir()
         if os.path.isfile(STATE_FILE):
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
     except Exception:
         pass
     return {}
 
 
 def save_state(state: dict) -> None:
-    """原子写入：先写 .tmp，再 os.replace 覆盖，避免断电/并发导致 JSON 损坏。"""
+    """原子写入 + 加锁（多个线程都会读改写，不加锁会互相覆盖）。"""
     try:
-        _ensure_update_dir()
-        tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, STATE_FILE)
+        with _state_lock:
+            _ensure_update_dir()
+            tmp = STATE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, STATE_FILE)
     except Exception as e:
-        try:
-            log_daemon(f"状态保存失败: {e}")
-        except Exception:
-            pass
+        log_daemon(f"状态保存失败: {e}")
 
 
-def set_daemon_status(activity: str, progress: float = 0, detail: str = "", download_tag: str = "") -> None:
-    state = load_state()
-    state["daemon"] = {
-        "activity": activity, "progress": progress, "detail": detail,
-        "timestamp": time.time(), "pid": os.getpid(),
-    }
-    if download_tag:
-        state["daemon"]["download_tag"] = download_tag
-    elif "download_tag" in state.get("daemon", {}):
-        state["daemon"].pop("download_tag", None)
-    save_state(state)
+def update_state(patch: dict) -> dict:
+    """加锁的"读-改-写"，供多个线程安全地改状态。"""
+    with _state_lock:
+        state = load_state()
+        state.update(patch or {})
+        save_state(state)
+        return state
+
+
+def set_daemon_status(activity: str, progress: float = 0, detail: str = "",
+                      download_tag: str = "") -> None:
+    with _state_lock:
+        state = load_state()
+        daemon = {
+            "activity": activity,
+            "progress": float(progress),
+            "detail": detail,
+            "timestamp": time.time(),
+            "pid": os.getpid(),
+        }
+        if download_tag:
+            daemon["download_tag"] = download_tag
+        state["daemon"] = daemon
+        save_state(state)
 
 
 def get_daemon_status() -> dict | None:
-    state = load_state()
-    daemon = state.get("daemon")
+    daemon = load_state().get("daemon")
     if not daemon:
         return None
     if time.time() - daemon.get("timestamp", 0) > 300:
@@ -573,78 +605,48 @@ def get_daemon_status() -> dict | None:
 
 
 def is_daemon_running() -> bool:
+    """只查询，不创建互斥量（创建会让正在启动的 daemon 误判）。"""
     try:
-        kernel32 = ctypes.windll.kernel32
-        SYNCHRONIZE = 0x00100000
-        kernel32.OpenMutexW.restype = ctypes.c_void_p
-        handle = kernel32.OpenMutexW(SYNCHRONIZE, False, DAEMON_MUTEX)
+        _kernel32.OpenMutexW.restype = ctypes.c_void_p
+        handle = _kernel32.OpenMutexW(0x00100000, False, DAEMON_MUTEX)
         if handle:
-            kernel32.CloseHandle(handle)
+            _kernel32.CloseHandle(handle)
             return True
     except Exception:
         pass
     return False
 
 
+# ── 命令通道 ──────────────────────────────────────────
 def send_command(cmd: str, **params) -> None:
     try:
-        _ensure_update_dir()
-        data = {"cmd": cmd, "timestamp": time.time()}
-        data.update(params)
-        with open(COMMAND_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f)
+        with _state_lock:
+            _ensure_update_dir()
+            data = {"cmd": cmd, "timestamp": time.time()}
+            data.update(params)
+            tmp = COMMAND_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, COMMAND_FILE)
     except Exception:
         pass
 
 
 def poll_command() -> dict | None:
     try:
-        if os.path.isfile(COMMAND_FILE):
+        with _state_lock:
+            if not os.path.isfile(COMMAND_FILE):
+                return None
             with open(COMMAND_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             os.remove(COMMAND_FILE)
-            return data
+        return data if isinstance(data, dict) else None
     except Exception:
-        pass
-    return None
+        return None
 
 
-def get_latest_version_info() -> dict | None:
-    # 优先用 API
-    try:
-        ctx = ssl.create_default_context()
-        req = urllib.request.Request(
-            GITHUB_API_URL,
-            headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json"},
-        )
-        with urllib.request.urlopen(req, timeout=30, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        tag = data.get("tag_name", "")
-        version = tag.lstrip("vV")
-        for asset in data.get("assets", []):
-            name = asset.get("name", "")
-            if name.startswith("CountdownDesktop_Setup_") and name.endswith(".exe"):
-                return {
-                    "version": version, "url": asset["browser_download_url"],
-                    "size": asset.get("size", 0), "name": name,
-                    "release_notes": data.get("body", ""),
-                    "sha256": asset.get("digest", ""),
-                }
-    except Exception:
-        pass
-    # API 限流时 fallback：302 重定向获取版本号
-    version = _get_latest_tag_via_redirect("tgcz2011/countdown-desktop")
-    if version:
-        name = f"CountdownDesktop_Setup_{version}.exe"
-        url = f"https://github.com/tgcz2011/countdown-desktop/releases/download/v{version}/{name}"
-        return {"version": version, "url": url, "size": 0, "name": name,
-                "release_notes": "", "sha256": ""}
-    return None
-
-
+# ── 下载 ──────────────────────────────────────────────
 def sha256_of(file_path: str) -> str:
-    """计算文件 SHA-256（十六进制小写）。"""
-    import hashlib
     h = hashlib.sha256()
     with open(file_path, "rb") as f:
         while True:
@@ -656,7 +658,7 @@ def sha256_of(file_path: str) -> str:
 
 
 def verify_sha256(file_path: str, expected: str) -> bool:
-    """校验文件 SHA-256。expected 为空/缺失时跳过（旧 release 无 digest 字段兼容）。"""
+    """expected 为空时跳过（旧 release 没有 digest 字段）。"""
     expected = (expected or "").strip().lower().removeprefix("sha256:")
     if not expected:
         return True
@@ -666,62 +668,19 @@ def verify_sha256(file_path: str, expected: str) -> bool:
         return False
 
 
-def _download_single(url: str, dest_path: str, timeout: int, tag: str = "", cancel_event=None) -> bool:
-    """从单个URL下载文件到dest_path。cancel_event被设置时提前退出。"""
-    tmp_path = dest_path + ".part"
+def _installer_files(dest_path: str):
+    """安装包相关的所有文件（含 aria2 分片/控制文件）。"""
+    base = os.path.basename(dest_path)
     try:
-        ctx = ssl.create_default_context()
-        req = urllib.request.Request(url, headers={"User-Agent": "idiot-launch-updater"})
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
-            total = int(resp.headers.get("Content-Length", 0))
-            downloaded = 0
-            last_report = 0
-            with open(tmp_path, "wb") as f:
-                while True:
-                    if cancel_event and cancel_event.is_set():
-                        return False
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total > 0 and downloaded - last_report >= 512 * 1024:
-                        last_report = downloaded
-                        pct = min(99, int(downloaded * 100 / total))
-                        if tag:
-                            try:
-                                _st = load_state()
-                                key = f"{tag}_download"
-                                _st[key] = {"version": _st.get(key, {}).get("version", ""),
-                                            "progress": pct, "status": "downloading"}
-                                save_state(_st)
-                            except Exception:
-                                pass
-                        set_daemon_status("downloading", pct, f"正在下载... {pct}%", download_tag=tag)
-        if cancel_event and cancel_event.is_set():
-            try: os.remove(tmp_path)
-            except OSError: pass
-            return False
-        if total > 0 and downloaded < total:
-            try: os.remove(tmp_path)
-            except OSError: pass
-            return False
-        if os.path.isfile(dest_path):
-            os.remove(dest_path)
-        os.rename(tmp_path, dest_path)
-        return os.path.isfile(dest_path)
-    except Exception:
-        try:
-            if os.path.isfile(tmp_path):
-                os.remove(tmp_path)
-        except OSError:
-            pass
-        return False
+        for name in os.listdir(UPDATE_DIR):
+            if name == base or name.startswith(base + "."):
+                yield os.path.join(UPDATE_DIR, name)
+    except OSError:
+        return
 
 
-def _remove_installer(dest_path: str):
-    """安全删除安装包及其 .aria2 控制文件（避免断点续传状态残留）。"""
-    for p in (dest_path, dest_path + ".aria2"):
+def _remove_installer(dest_path: str) -> None:
+    for p in list(_installer_files(dest_path)):
         try:
             if os.path.isfile(p):
                 os.remove(p)
@@ -729,330 +688,529 @@ def _remove_installer(dest_path: str):
             pass
 
 
+def cleanup_stale_downloads(keep_path: str = "") -> int:
+    """清理 data 目录里的下载残留：断点分片、过期安装包、旧 CD 安装包。
+
+    历史问题：每失败一次下载就在 D 盘留下几十 MB 的 .part 文件，
+    加上每个版本一个安装包，实测能堆到 300MB+ 且永不回收。
+    """
+    removed = 0
+    now = time.time()
+    keep = os.path.basename(keep_path) if keep_path else ""
+    try:
+        for name in os.listdir(UPDATE_DIR):
+            path = os.path.join(UPDATE_DIR, name)
+            if not os.path.isfile(path):
+                continue
+            stale_part = (name.endswith(".part") or name.endswith(".aria2")
+                          or ".part" in name)
+            legacy_cd = name.startswith("CountdownDesktop_Setup_")
+            old_launcher = (name.startswith(LAUNCHER_SETUP_PREFIX)
+                            and name.endswith(".exe") and name != keep)
+            if not (stale_part or legacy_cd or old_launcher):
+                continue
+            if keep and name.startswith(keep + "."):
+                # 当前正在续传的分片，保留
+                continue
+            try:
+                # 分片文件可能正在被 aria2 使用：只清理 1 小时以上没动过的
+                if stale_part and now - os.path.getmtime(path) < 3600:
+                    continue
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    if removed:
+        log_daemon(f"清理下载残留 {removed} 个文件")
+    return removed
+
+
 def download_installer(url: str, dest_path: str, tag: str = "") -> bool:
-    """使用 aria2 多源分块下载（16连接/源，自动多源负载均衡）"""
+    """aria2 多源分块下载（16 连接/源），失败重试 3 轮。"""
     from src.aria2_downloader import download_with_aria2
     from src.telemetry import report_event
+
     _ensure_update_dir()
-
-    # 构造所有镜像源的完整 URL，aria2 会自动从多个源并行下载
-    urls = []
-    for mirror in DOWNLOAD_MIRRORS:
-        full_url = mirror + url if mirror else url
-        urls.append(full_url)
-
+    urls = [(m + url) if m else url for m in DOWNLOAD_MIRRORS]
     start_time = time.time()
 
     def _progress(percent, speed):
-        speed_kb = speed // 1024
-        set_daemon_status("downloading", percent, f"下载中 {percent}% ({speed_kb} KB/s)")
+        set_daemon_status(
+            "downloading", float(percent),
+            f"下载中 {percent}% ({speed // 1024} KB/s)", download_tag=tag)
 
     for attempt in range(DOWNLOAD_RETRY):
-        log_daemon(f"aria2 下载尝试 ({attempt+1}/{DOWNLOAD_RETRY})，共 {len(urls)} 个源，16连接/源")
-
-        ok = download_with_aria2(urls, dest_path, progress_callback=_progress, timeout=900)
-
+        log_daemon(f"aria2 下载尝试 ({attempt + 1}/{DOWNLOAD_RETRY})，{len(urls)} 个源")
+        ok = download_with_aria2(urls, dest_path,
+                                 progress_callback=_progress, timeout=DOWNLOAD_TIMEOUT)
         if ok and os.path.isfile(dest_path):
             duration = int(time.time() - start_time)
             size_mb = round(os.path.getsize(dest_path) / 1024 / 1024, 1)
-            log_daemon(f"下载成功: {os.path.basename(dest_path)}，{size_mb}MB，耗时 {duration}s")
-            report_event("download_success", {"version": tag, "duration": duration, "size_mb": size_mb})
+            log_daemon(f"下载成功: {os.path.basename(dest_path)}，{size_mb}MB，{duration}s")
+            report_event("download_success",
+                         {"version": tag, "duration": duration, "size_mb": size_mb,
+                          "attempt": attempt + 1})
             return True
-
-        log_daemon(f"aria2 下载失败，重试 {attempt+1}/{DOWNLOAD_RETRY}")
-        report_event("download_failure", {"version": tag, "attempt": attempt + 1})
+        log_daemon(f"aria2 下载失败（第 {attempt + 1} 轮）")
+        report_event("download_failure",
+                     {"version": tag, "attempt": attempt + 1, "mirrors": len(urls)})
         if attempt < DOWNLOAD_RETRY - 1:
             time.sleep(15)
-
     set_daemon_status("idle", 0, "下载失败，稍后重试")
     return False
 
 
-def _acquire_daemon_mutex():
+# ── 更新检查 ──────────────────────────────────────────
+def _http_json(url: str, timeout: int = 10, headers: dict = None) -> object | None:
     try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateMutexW.restype = ctypes.c_void_p
-        handle = kernel32.CreateMutexW(None, False, DAEMON_MUTEX)
-        if kernel32.GetLastError() == 183:
-            if handle:
-                kernel32.CloseHandle(handle)
-            return None
-        return handle
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "idiot-launch-updater",
+                     "Accept": "application/vnd.github+json", **(headers or {})})
+        with urllib.request.urlopen(
+                req, timeout=timeout, context=ssl.create_default_context()) as resp:
+            return json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
 
 
-def signal_daemon_quit() -> bool:
-    """通知 daemon 优雅退出（设置命名事件）。成功返回 True。"""
+def _auth_headers() -> dict:
+    return {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+
+
+def _get_latest_tag_via_redirect(repo: str) -> str | None:
+    """GitHub API 限流时用 302 重定向拿最新 tag（不限流）。"""
     try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenEventW.restype = ctypes.c_void_p
-        EVENT_MODIFY_STATE = 0x0002
-        handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, DAEMON_QUIT_EVENT)
-        if not handle:
-            return False
-        kernel32.SetEvent(handle)
-        kernel32.CloseHandle(handle)
-        return True
-    except Exception:
-        return False
+        req = urllib.request.Request(
+            f"https://github.com/{repo}/releases/latest",
+            headers={"User-Agent": "idiot-launch-updater"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            final = resp.geturl()
+        import re
 
-
-def _create_quit_event():
-    """daemon 启动时创建命名事件（自动重置）。返回 handle 或 None。"""
-    try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateEventW.restype = ctypes.c_void_p
-        # bManualReset=False（自动重置）, bInitialState=False
-        handle = kernel32.CreateEventW(None, False, False, DAEMON_QUIT_EVENT)
-        return handle if handle else None
-    except Exception:
-        return None
-
-
-def _wait_quit_or_sleep(quit_event, ms: int) -> bool:
-    """等待退出事件或超时。返回 True=收到退出信号，False=超时。"""
-    if not quit_event:
-        time.sleep(ms / 1000.0)
-        return False
-    try:
-        WAIT_OBJECT_0 = 0
-        WAIT_TIMEOUT = 258
-        result = ctypes.windll.kernel32.WaitForSingleObject(quit_event, ms)
-        return result == WAIT_OBJECT_0
-    except Exception:
-        time.sleep(ms / 1000.0)
-        return False
-
-
-def acquire_gui_mutex():
-    """GUI 单实例：获取互斥量。成功返回 handle，已存在返回 None。"""
-    try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateMutexW.restype = ctypes.c_void_p
-        handle = kernel32.CreateMutexW(None, False, GUI_SINGLE_MUTEX)
-        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            if handle:
-                kernel32.CloseHandle(handle)
-            return None
-        return handle
-    except Exception:
-        return None
-
-
-def signal_show_window() -> bool:
-    """通知已有 GUI 实例显示窗口。成功返回 True。"""
-    try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.OpenEventW.restype = ctypes.c_void_p
-        EVENT_MODIFY_STATE = 0x0002
-        handle = kernel32.OpenEventW(EVENT_MODIFY_STATE, False, GUI_SHOW_EVENT)
-        if not handle:
-            return False
-        kernel32.SetEvent(handle)
-        kernel32.CloseHandle(handle)
-        return True
-    except Exception:
-        return False
-
-
-def create_show_window_event():
-    """GUI 实例创建显示窗口事件（自动重置）。返回 handle 或 None。"""
-    try:
-        kernel32 = ctypes.windll.kernel32
-        kernel32.CreateEventW.restype = ctypes.c_void_p
-        handle = kernel32.CreateEventW(None, False, False, GUI_SHOW_EVENT)
-        return handle if handle else None
-    except Exception:
-        return None
-
-
-def check_show_window_event(event_handle) -> bool:
-    """非阻塞检查显示窗口事件是否被触发。返回 True=需要显示窗口。"""
-    if not event_handle:
-        return False
-    try:
-        WAIT_OBJECT_0 = 0
-        result = ctypes.windll.kernel32.WaitForSingleObject(event_handle, 0)
-        return result == WAIT_OBJECT_0
-    except Exception:
-        return False
-
-
-            # CD 已合并：def _wait_and_install(installer_path: str, version: str, state: dict) -> None:
-    deadline = time.time() + 2 * 3600
-    while time.time() < deadline:
-        if not is_running():
-            break
-        set_daemon_status("waiting", 0, f"等待 Countdown Desktop 退出以安装 v{version}")
-        time.sleep(10)
-    if is_running():
-        set_daemon_status("idle", 0, "Countdown Desktop 仍在运行，更新保留到下次")
-        return
-    set_daemon_status("installing", 50, f"正在安装 Countdown Desktop v{version}...")
-    try:
-        ok = install_from_path(installer_path)
-        if not ok:
-            set_daemon_status("idle", 0, "安装失败，稍后重试")
-            return
-        state.pop("pending_installer", None)
-        state.pop("pending_version", None)
-        state["download_complete"] = False
-        state["last_check"] = time.time()
-        save_state(state)
-        try:
-            os.remove(installer_path)
-        except OSError:
-            pass
-        set_daemon_status("idle", 0, f"已更新到 Countdown Desktop v{version}")
-        log_daemon(f"Countdown Desktop 已更新到 v{version}")
+        m = re.search(r"/releases/tag/([^/]+)$", final)
+        if m:
+            return m.group(1).lstrip("vV")
     except Exception as e:
-        set_daemon_status("idle", 0, f"安装异常: {e}")
-        log_daemon(f"安装异常: {e}")
+        log_daemon(f"GitHub 重定向取版本失败: {type(e).__name__}")
+    return None
 
 
-def get_daemon_status_detail(state: dict) -> str:
-    if state.get("pending_installer") and state.get("download_complete"):
-        ver = state.get("pending_version", "?")
-        return f"已下载 Countdown Desktop v{ver}，等待退出后安装"
-    if state.get("pending_launcher_path"):
-        ver = state.get("pending_launcher_version", "?")
-        return f"已下载 Idiot Launch v{ver}，空闲时自动更新"
-    return "后台运行中"
+def get_latest_launcher_info() -> dict | None:
+    """查最新版本。返回 None 表示"没有更新或查不到"（调用方无需区分）。"""
+    current_is_beta = is_beta_version(LAUNCHER_VERSION)
+    channel = "beta" if current_is_beta else "stable"
+
+    # 方案 1：Supabase（不限流，优先）
+    try:
+        url = (f"{SUPABASE_URL}/rest/v1/latest_version"
+               f"?channel=eq.{channel}&is_latest=eq.true"
+               f"&select=version,download_url,sha256,release_notes")
+        data = _http_json(url, timeout=8, headers={
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
+        })
+        if isinstance(data, list) and data:
+            latest = data[0]
+            version = str(latest.get("version", ""))
+            if version and compare_versions(version, LAUNCHER_VERSION) > 0:
+                return {
+                    "version": version,
+                    "url": latest.get("download_url", ""),
+                    "size": 0,
+                    "name": f"{LAUNCHER_SETUP_PREFIX}{version}.exe",
+                    "release_notes": latest.get("release_notes", ""),
+                    "sha256": latest.get("sha256", ""),
+                }
+            return None  # Supabase 有数据但已是最新（不再打 GitHub API）
+    except Exception as e:
+        log_daemon(f"Supabase 查询异常: {type(e).__name__}: {e}")
+
+    # 方案 2：GitHub /tags
+    tags = _http_json(LAUNCHER_TAGS_API, timeout=10, headers=_auth_headers())
+    if isinstance(tags, list):
+        best_tag, best_version = None, None
+        for t in tags:
+            if not isinstance(t, dict):
+                continue
+            version = str(t.get("name", "")).lstrip("vV")
+            if not version or compare_versions(version, LAUNCHER_VERSION) <= 0:
+                continue
+            if not current_is_beta and is_beta_version(version):
+                continue
+            if best_version is None or compare_versions(version, best_version) > 0:
+                best_version, best_tag = version, t.get("name")
+        if best_tag and best_version:
+            rel = _http_json(
+                f"https://api.github.com/repos/tgcz2011/idiot-launch/releases/tags/{best_tag}",
+                timeout=10, headers=_auth_headers())
+            expected = f"{LAUNCHER_SETUP_PREFIX}{best_version}.exe"
+            if isinstance(rel, dict):
+                for asset in rel.get("assets", []) or []:
+                    if asset.get("name") == expected:
+                        return {
+                            "version": best_version,
+                            "url": asset["browser_download_url"],
+                            "size": asset.get("size", 0),
+                            "name": expected,
+                            "release_notes": rel.get("body", ""),
+                            "sha256": asset.get("digest", ""),
+                        }
+            # release 查不到就按命名规则直接拼下载地址
+            return {
+                "version": best_version, "size": 0, "name": expected,
+                "url": (f"https://github.com/tgcz2011/idiot-launch/releases/download/"
+                        f"{best_tag}/{expected}"),
+                "release_notes": "", "sha256": "",
+            }
+
+    # 方案 3：/releases（beta 版需要）
+    if current_is_beta:
+        releases = _http_json(
+            "https://api.github.com/repos/tgcz2011/idiot-launch/releases?per_page=20",
+            timeout=10, headers=_auth_headers())
+        if isinstance(releases, list):
+            for rel in releases:
+                if not isinstance(rel, dict) or rel.get("draft"):
+                    continue
+                version = str(rel.get("tag_name", "")).lstrip("vV")
+                if not version or compare_versions(version, LAUNCHER_VERSION) <= 0:
+                    continue
+                expected = f"{LAUNCHER_SETUP_PREFIX}{version}.exe"
+                for asset in rel.get("assets", []) or []:
+                    if asset.get("name") == expected:
+                        return {
+                            "version": version,
+                            "url": asset["browser_download_url"],
+                            "size": asset.get("size", 0),
+                            "name": expected,
+                            "release_notes": rel.get("body", ""),
+                            "sha256": asset.get("digest", ""),
+                        }
+                break
+
+    # 方案 4：302 重定向（仅正式版）
+    if not current_is_beta:
+        version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
+        if version and compare_versions(version, LAUNCHER_VERSION) > 0:
+            name = f"{LAUNCHER_SETUP_PREFIX}{version}.exe"
+            return {
+                "version": version, "size": 0, "name": name,
+                "url": (f"https://github.com/tgcz2011/idiot-launch/releases/download/"
+                        f"v{version}/{name}"),
+                "release_notes": "", "sha256": "",
+            }
+    return None
+
+
+def _cleanup_stale_launcher_pending(state: dict) -> dict:
+    path = state.get("pending_launcher_path")
+    version = state.get("pending_launcher_version")
+    if path and version and compare_versions(version, LAUNCHER_VERSION) <= 0:
+        _remove_installer(path)
+        state.pop("pending_launcher_path", None)
+        state.pop("pending_launcher_version", None)
+        state.pop("launcher_download", None)
+        save_state(state)
+    return state
+
+
+def pending_update_info() -> dict | None:
+    """已下载好、可以直接安装的更新。"""
+    with _state_lock:
+        state = _cleanup_stale_launcher_pending(load_state())
+    path = state.get("pending_launcher_path")
+    version = state.get("pending_launcher_version")
+    if not path or not version or not os.path.isfile(path):
+        return None
+    if os.path.getsize(path) < LAUNCHER_MIN_SIZE:
+        return None
+    if compare_versions(version, LAUNCHER_VERSION) <= 0:
+        return None
+    return {"version": version, "path": path,
+            "size": os.path.getsize(path),
+            "release_notes": state.get("launcher_release_notes", "")}
+
+
+def has_pending_launcher_update() -> bool:
+    return pending_update_info() is not None
+
+
+# ── 下载线程 ──────────────────────────────────────────
+_launcher_download_thread = None
+_launcher_download_lock = threading.Lock()
+
+
+def _launcher_download_worker(url: str, dest: str, version: str,
+                              release_notes: str, expected_sha256: str = "") -> None:
+    update_state({"launcher_download": {
+        "version": version, "progress": 0.0, "status": "downloading",
+        "installer": dest, "release_notes": release_notes}})
+
+    ok = download_installer(url, dest, tag="launcher")
+    if not ok:
+        with _state_lock:
+            st = load_state()
+            st["launcher_download"] = {"version": version, "progress": 0.0,
+                                       "status": "failed"}
+            st["download_failures"] = int(st.get("download_failures", 0)) + 1
+            st["download_failed_at"] = time.time()
+            save_state(st)
+        set_daemon_status("idle", 0, "更新下载失败，稍后重试")
+        return
+
+    if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
+        _remove_installer(dest)
+        set_daemon_status("idle", 0, "下载文件不完整，已删除")
+        return
+
+    if not verify_sha256(dest, expected_sha256):
+        log_daemon(f"SHA-256 校验失败，删除安装包: {os.path.basename(dest)}")
+        set_daemon_status("idle", 0, "更新包校验失败，已拒绝更新，将重新下载")
+        _remove_installer(dest)
+        return
+
+    if compare_versions(version, LAUNCHER_VERSION) <= 0:
+        log_daemon(f"下载完成但当前已是 v{LAUNCHER_VERSION}，跳过")
+        _remove_installer(dest)
+        with _state_lock:
+            st = load_state()
+            st.pop("launcher_download", None)
+            save_state(st)
+        set_daemon_status("idle", 0, "已是最新版本")
+        return
+
+    with _state_lock:
+        st = load_state()
+        st["pending_launcher_path"] = dest
+        st["pending_launcher_version"] = version
+        st["launcher_release_notes"] = release_notes
+        st["launcher_download"] = {"version": version, "progress": 100.0,
+                                   "status": "complete", "installer": dest,
+                                   "release_notes": release_notes}
+        st["download_failures"] = 0
+        save_state(st)
+    set_daemon_status("idle", 0, f"已下载 v{version}，可一键更新")
+    log_daemon(f"v{version} 下载完成（SHA-256 通过），等待安装")
+    notify_tray("更新已就绪", f"傻瓜启动器 v{version} 已下载完成，可一键更新。")
+    from src.telemetry import report_event
+
+    report_event("update_ready", {"from_version": LAUNCHER_VERSION, "to_version": version})
+
+
+def _check_and_download_launcher_update() -> None:
+    global _launcher_download_thread
+    if not getattr(sys, "frozen", False):
+        return
+    if not is_auto_update_enabled():
+        return
+
+    with _state_lock:
+        state = _cleanup_stale_launcher_pending(load_state())
+
+    if pending_update_info():
+        return
+
+    now = time.time()
+    # 连续下载失败时退避，避免在断网的教室网络里一直空转
+    failures = int(state.get("download_failures", 0))
+    if failures >= MAX_DOWNLOAD_FAILURES:
+        backoff = min(6 * 3600, 600 * failures)
+        if now - state.get("download_failed_at", 0) < backoff:
+            return
+
+    if now - state.get("launcher_last_check", 0) < CHECK_INTERVAL:
+        return
+    if _launcher_download_thread and _launcher_download_thread.is_alive():
+        return
+
+    set_daemon_status("checking", 0, "正在检查更新...")
+    t0 = time.time()
+    latest = get_latest_launcher_info()
+    duration = round(time.time() - t0, 1)
+    log_daemon(f"更新检查完成 {duration}s: {'有新版本 ' + latest['version'] if latest else '无新版本'}")
+
+    from src.telemetry import report_event
+
+    report_event("update_check", {
+        "has_update": bool(latest),
+        "latest_version": latest["version"] if latest else None,
+        "duration": duration,
+    })
+
+    with _state_lock:
+        st = load_state()
+        st["launcher_last_check"] = now
+        if latest:
+            st["latest_seen_version"] = latest["version"]
+        save_state(st)
+
+    if not latest:
+        set_daemon_status("idle", 0, "已是最新版本")
+        return
+
+    dest = os.path.join(UPDATE_DIR, f"{LAUNCHER_SETUP_PREFIX}{latest['version']}.exe")
+    if os.path.isfile(dest) and not os.path.isfile(dest + ".aria2"):
+        if (os.path.getsize(dest) >= LAUNCHER_MIN_SIZE
+                and verify_sha256(dest, latest.get("sha256", ""))):
+            with _state_lock:
+                st = load_state()
+                st["pending_launcher_path"] = dest
+                st["pending_launcher_version"] = latest["version"]
+                st["launcher_release_notes"] = latest.get("release_notes", "")
+                save_state(st)
+            return
+        log_daemon("已有安装包校验失败，删除后重新下载")
+        _remove_installer(dest)
+
+    log_daemon(f"发现新版本 {latest['version']}，后台下载")
+    with _launcher_download_lock:
+        if _launcher_download_thread and _launcher_download_thread.is_alive():
+            return
+        _launcher_download_thread = threading.Thread(
+            target=_launcher_download_worker,
+            args=(latest["url"], dest, latest["version"],
+                  latest.get("release_notes", ""), latest.get("sha256", "")),
+            daemon=True, name="launcher-update-download")
+        _launcher_download_thread.start()
+
+
+# ── 安装更新（不再使用 VBS） ───────────────────────────
+# 旧方案用 wscript + VBS 脚本替换文件，问题是：
+#   1) 脚本是 daemon 的子进程，安装包里的 taskkill /T 会把脚本自己一起杀掉，
+#      结果 result 文件永远停在 status=running，校验/重启/清理全部不执行；
+#   2) 静默安装完全没有界面，被 SmartScreen 拦下时用户什么都看不到。
+# 现在直接调安装包本身：
+#   * 用户点"一键更新" → /SILENT（安装包自带进度条，看得见）
+#   * 空闲自动更新     → /VERYSILENT（完全无窗口）
+#   * /AutoUpdate=1 让安装脚本在装完后自动把程序重新拉起来
+#   * 启动安装包后立刻 os._exit，避免自己占着文件让安装失败
+INSTALLER_COMMON_FLAGS = ["/SUPPRESSMSGBOXES", "/NORESTART", "/AutoUpdate=1"]
+
+
+def start_update_installer(installer: str, silent: bool = False) -> bool:
+    """启动安装包。silent=True 完全无界面，False 显示安装包自带的进度条。"""
+    if not installer or not os.path.isfile(installer):
+        return False
+    mode = "/VERYSILENT" if silent else "/SILENT"
+    try:
+        proc = subprocess.Popen(
+            [installer, mode, *INSTALLER_COMMON_FLAGS],
+            creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+            close_fds=True,
+        )
+    except Exception as e:
+        log_daemon(f"启动更新安装包失败: {type(e).__name__}: {e}")
+        return False
+
+    log_daemon(f"更新安装包已启动（{mode}）: {os.path.basename(installer)}")
+    # 给安装包 2 秒确认还活着：被安全软件拦掉/参数错误会立刻退出
+    for _ in range(20):
+        time.sleep(0.1)
+        if proc.poll() is not None:
+            if proc.returncode != 0:
+                log_daemon(f"安装包异常退出，返回码 {proc.returncode}，放弃本次更新")
+                return False
+            break
+    return True
+
+
+def exit_for_update() -> None:
+    """安装包需要独占文件，必须让整个进程（所有线程）立刻退出。"""
+    from src.telemetry import report_event, flush
+
+    try:
+        report_event("update_install", {
+            "from_version": LAUNCHER_VERSION,
+            "to_version": load_state().get("pending_launcher_version", "?"),
+        })
+        flush(timeout=2.0)
+    except Exception:
+        pass
+    log_daemon("退出当前进程，交由安装包完成更新")
+    os._exit(0)
+
+
+def apply_launcher_update_if_pending(force: bool = False) -> bool:
+    """有待更新的安装包时启动它。返回 True 表示调用方应立即退出。
+
+    force=True：用户点击「一键更新」→ 立即执行
+    force=False：daemon 循环调用 → 只有连续 3 次确认空闲才执行
+    """
+    if not getattr(sys, "frozen", False):
+        return False
+    info = pending_update_info()
+    if not info:
+        return False
+
+    if not force:
+        if not is_auto_update_enabled():
+            return False
+        threshold = idle_threshold_seconds()
+        idle_ok = True
+        for _ in range(3):
+            if get_idle_seconds() < threshold:
+                idle_ok = False
+                break
+            time.sleep(2)
+        if not idle_ok:
+            return False
+        log_daemon(f"空闲确认通过，静默更新到 v{info['version']}")
+        set_daemon_status("updating", 0, f"正在静默更新到 v{info['version']}...")
+        silent = True
+        notify_tray("正在自动更新", f"傻瓜启动器将更新到 v{info['version']}，屏幕可能闪一下。")
+    else:
+        log_daemon(f"用户触发一键更新到 v{info['version']}")
+        set_daemon_status("updating", 0, f"正在更新到 v{info['version']}...")
+        silent = False
+
+    if not start_update_installer(info["path"], silent=silent):
+        set_daemon_status("idle", 0, "更新程序启动失败，可稍后重试")
+        return False
+    return True
+
+
+def apply_launcher_update_now() -> bool:
+    return apply_launcher_update_if_pending(force=True)
+
+
+def apply_launcher_update_idle() -> bool:
+    return apply_launcher_update_if_pending(force=False)
+
+
+# ── daemon ────────────────────────────────────────────
+def signal_daemon_quit() -> bool:
+    event = _event_open(DAEMON_QUIT_EVENT)
+    if not event:
+        return False
+    try:
+        _kernel32.SetEvent(event)
+        return True
+    finally:
+        _kernel32.CloseHandle(event)
 
 
 def _handle_daemon_command(cmd: dict) -> None:
     action = cmd.get("cmd", "")
     log_daemon(f"收到命令: {action}")
     if action == "check_updates":
-        state = load_state()
-        state["last_check"] = 0
-        state["launcher_last_check"] = 0
-        save_state(state)
+        update_state({"launcher_last_check": 0})
         set_daemon_status("checking", 0, "正在手动检查更新...")
     elif action == "apply_launcher_update_now":
-        apply_launcher_update_now()
+        # 由 API 层负责退出进程，这里只启动安装包
+        if apply_launcher_update_now():
+            log_daemon("一键更新已启动")
 
 
-# Countdown Desktop 更新后台线程（单实例）：下载/等待退出/安装全部在线程内执行，
-# daemon 主循环（快捷方式守护、命令响应、Idiot Launch 更新）永不被下载或等待阻塞。
-
-
-# Countdown Desktop 已合并到本项目，不再单独更新
-
-def daemon_run() -> int:
-    mutex = _acquire_daemon_mutex()
-    if mutex is None:
-        log_daemon("daemon 已在运行，退出")
-        return 0
-    log_daemon(f"daemon 启动 (pid={os.getpid()}, v{LAUNCHER_VERSION})")
-
-    # 检查上次更新结果
-    result_file = os.path.join(UPDATE_DIR, "update_result.txt")
-    try:
-        if os.path.isfile(result_file):
-            with open(result_file, "r", encoding="utf-8") as f:
-                content = f.read()
-            log_daemon(f"上次更新结果: {content.strip()}")
-            # 读取后删除，避免重复报告
-            os.remove(result_file)
-    except Exception:
-        pass
-
-    set_daemon_status("starting", 0, "守护进程启动")
-    try:
-        from src.telemetry import report_event
-        report_event("launch")
-    except Exception:
-        pass
-    quit_event = _create_quit_event()
-    # 启动时重置检查时间，使重启后立即检查更新（不受 6 小时间隔限制）
-    try:
-        _st = load_state()
-        _st["launcher_last_check"] = 0
-        _st["last_check"] = 0
-        save_state(_st)
-    except Exception:
-        pass
-    try:
-        _morning_periods_last_check = 0
-        while True:
-            try:
-                state = load_state()
-                # 快捷方式守护（流氓软件模式）：每 30 秒检查一次 D 盘根目录 + 桌面，缺失即重建
-                # 必须在任何阻塞操作（如下载）之前执行，否则下载期间快捷方式不会恢复
-                ensure_shortcuts()
-                # 定期刷新早读时间段（每10分钟），确保悬浮球能正常工作
-                if time.time() - _morning_periods_last_check > 600:
-                    _morning_periods_last_check = time.time()
-                    refresh_morning_periods()
-                cmd = poll_command()
-                if cmd:
-                    _handle_daemon_command(cmd)
-                # 空闲时静默自我更新（5 分钟无操作）
-                if apply_launcher_update_idle():
-                    return 0
-                _check_and_download_launcher_update()
-                # Countdown Desktop 更新（后台线程：下载/等待退出/安装 都不阻塞主循环）
-                # CD 已合并，不再单独更新：_check_and_start_countdown_update()
-                # 不覆盖后台正在进行的下载/安装/等待状态
-                st = load_state().get("daemon", {}).get("activity", "")
-                if st not in ("downloading", "updating", "installing", "waiting", "checking"):
-                    set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
-                # 30 秒休眠，分成 6 次 5 秒，期间可响应退出事件和命令
-                for _ in range(6):
-                    if _wait_quit_or_sleep(quit_event, 5000):
-                        log_daemon("收到退出事件，daemon 优雅退出")
-                        return 0
-                    cmd = poll_command()
-                    if cmd:
-                        _handle_daemon_command(cmd)
-                        st = load_state().get("daemon", {}).get("activity", "")
-                        if st not in ("downloading", "updating", "installing", "waiting", "checking"):
-                            set_daemon_status("idle", 0, get_daemon_status_detail(load_state()))
-            except Exception as e:
-                log_daemon(f"daemon 主循环异常: {type(e).__name__}: {e}")
-                set_daemon_status("idle", 0, f"守护进程异常恢复: {type(e).__name__}")
-                time.sleep(5)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        set_daemon_status("stopped", 0, "守护进程已停止")
-        log_daemon("daemon 退出")
-        if quit_event:
-            try:
-                ctypes.windll.kernel32.CloseHandle(quit_event)
-            except Exception:
-                pass
-        if mutex:
-            try:
-                ctypes.windll.kernel32.CloseHandle(mutex)
-            except Exception:
-                pass
-    return 0
-
-
-def start_daemon() -> bool:
-    if is_daemon_running():
-        return False
-    if getattr(sys, "frozen", False):
-        exe = sys.executable
-        creationflags = 0x00000008 | 0x08000000
-        subprocess.Popen([exe, "--daemon"], creationflags=creationflags, close_fds=True)
-    else:
-        run_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run.py")
-        args = [sys.executable, run_py, "--daemon"]
-        creationflags = 0x00000008 | 0x08000000
-        subprocess.Popen(args, creationflags=creationflags, close_fds=True)
-    time.sleep(1)
-    return is_daemon_running()
-
-
-def _create_shortcut(target: str, shortcut_path: str, icon_path: str = "", description: str = "") -> bool:
-    # 优先用 win32com 进程内创建（不弹任何窗口，消除 PowerShell 闪窗）
+def _create_shortcut(target: str, shortcut_path: str, icon_path: str = "",
+                     description: str = "") -> bool:
+    """创建 .lnk。优先 pywin32（不弹窗），失败再退到 PowerShell。"""
     try:
         import pythoncom
         from win32com.client import Dispatch
+
         pythoncom.CoInitialize()
         try:
             shell = Dispatch("WScript.Shell")
@@ -1064,571 +1222,266 @@ def _create_shortcut(target: str, shortcut_path: str, icon_path: str = "", descr
             if description:
                 shortcut.Description = description
             shortcut.Save()
-            return os.path.isfile(shortcut_path)
+            if os.path.isfile(shortcut_path):
+                return True
         finally:
             pythoncom.CoUninitialize()
-    except Exception:
-        pass
-    # 兜底：PowerShell（pywin32 不可用时）
+    except Exception as e:
+        log_daemon(f"pywin32 创建快捷方式失败({shortcut_path}): {type(e).__name__}")
+
+    # 兜底：PowerShell。路径用单引号包裹并转义，避免中文/引号路径出错。
+    def _q(p: str) -> str:
+        return "'" + p.replace("'", "''") + "'"
+
     try:
-        ps_script = f'''$ws = New-Object -ComObject WScript.Shell
-$s = $ws.CreateShortcut("{shortcut_path}")
-$s.TargetPath = "{target}"
-$s.WorkingDirectory = "{os.path.dirname(target)}"
-'''
-        if icon_path:
-            ps_script += f'$s.IconLocation = "{icon_path},0"\n'
-        if description:
-            ps_script += f'$s.Description = "{description}"\n'
-        ps_script += "$s.Save()\n"
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_script],
-            capture_output=True, timeout=15,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+        script = (
+            "$ws = New-Object -ComObject WScript.Shell\n"
+            f"$s = $ws.CreateShortcut({_q(shortcut_path)})\n"
+            f"$s.TargetPath = {_q(target)}\n"
+            f"$s.WorkingDirectory = {_q(os.path.dirname(target))}\n"
         )
+        if icon_path:
+            script += f"$s.IconLocation = {_q(icon_path + ',0')}\n"
+        if description:
+            script += f"$s.Description = {_q(description)}\n"
+        script += "$s.Save()\n"
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
+            capture_output=True, timeout=20,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
         return result.returncode == 0 and os.path.isfile(shortcut_path)
-    except Exception:
+    except Exception as e:
+        log_daemon(f"创建快捷方式失败({shortcut_path}): {type(e).__name__}: {e}")
         return False
 
 
 def ensure_shortcuts() -> None:
+    """保证 D 盘根目录 + 桌面（优先公共桌面）各有一个快捷方式。
+
+    注意：这是作者有意为之的"流氓软件模式"（见 README），用于对抗冰点还原，
+    不是 bug —— 老师/管理员删掉图标后 30 秒内会被重建。
+    """
     if not getattr(sys, "frozen", False):
         return
-    # 优先指向安装版（D:\IdiotLaunch\IdiotLaunch.exe），便携版跑 daemon 时也能把快捷方式指向已安装版本
     target = LAUNCHER_INSTALL_EXE if os.path.isfile(LAUNCHER_INSTALL_EXE) else sys.executable
     if not os.path.isfile(target):
         return
-    icon = target
-    desc = "傻瓜启动器 - 教室倒计时一键启动"
     locations = []
     if os.path.isdir("D:\\"):
         locations.append(r"D:\傻瓜启动器.lnk")
-    # 桌面只创建一个：优先公共桌面（所有用户可见），失败则用户桌面
     public_desktop = r"C:\Users\Public\Desktop"
     user_desktop = os.path.join(os.environ.get("USERPROFILE", ""), "Desktop")
-    desktop_lnk = None
     if os.path.isdir(public_desktop):
-        desktop_lnk = os.path.join(public_desktop, "傻瓜启动器.lnk")
+        locations.append(os.path.join(public_desktop, "傻瓜启动器.lnk"))
     elif os.path.isdir(user_desktop):
-        desktop_lnk = os.path.join(user_desktop, "傻瓜启动器.lnk")
-    if desktop_lnk:
-        locations.append(desktop_lnk)
+        locations.append(os.path.join(user_desktop, "傻瓜启动器.lnk"))
+
     for lnk in locations:
         try:
-            if not os.path.isfile(lnk):
-                if _create_shortcut(target, lnk, icon, desc):
-                    try:
-                        subprocess.run(["ie4uinit.exe", "-show"], capture_output=True, timeout=5,
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
-                    except Exception:
-                        pass
+            if os.path.isfile(lnk):
+                continue
+            if _create_shortcut(target, lnk, target, "傻瓜启动器 - 教室倒计时一键启动"):
+                try:
+                    subprocess.run(
+                        ["ie4uinit.exe", "-show"], capture_output=True, timeout=5,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+                except Exception:
+                    pass
         except Exception as e:
-            log_daemon(f"创建快捷方式失败({lnk}): {e}")
+            log_daemon(f"创建快捷方式异常({lnk}): {type(e).__name__}: {e}")
 
 
-def _get_latest_tag_via_redirect(repo: str) -> str | None:
-    """通过 GitHub releases/latest 的 302 重定向获取最新 tag，绕过 API 限流。
-    未认证 API 限 60 次/小时/IP，教室共用 IP 易被限流；重定向不限流。"""
+# 托盘气泡通知（由 backend_server 注入实现）
+_notifier = None
+
+
+def set_notifier(fn) -> None:
+    global _notifier
+    _notifier = fn
+
+
+def notify_tray(title: str, message: str) -> None:
     try:
-        url = f"https://github.com/{repo}/releases/latest"
-        req = urllib.request.Request(url, headers={"User-Agent": "idiot-launch-updater"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            final = resp.geturl()
-        # final 形如 https://github.com/tgcz2011/idiot-launch/releases/tag/v1.8.0.2
-        import re
-        m = re.search(r"/releases/tag/([^/]+)$", final)
-        if m:
-            return m.group(1).lstrip("vV")
-    except Exception as e:
-        log_daemon(f"GitHub重定向获取最新版本失败: {e}")
-    return None
-
-
-def get_build_type() -> str:
-    """读取安装时写入的 build_type 标记：compressed 或 store。不存在则默认 compressed。"""
-    try:
-        marker = os.path.join(LAUNCHER_INSTALL_DIR, "build_type.txt")
-        if os.path.isfile(marker):
-            with open(marker, "r", encoding="utf-8") as f:
-                t = f.read().strip().lower()
-                if t in ("compressed", "store"):
-                    return t
+        if _notifier:
+            _notifier(title, message)
     except Exception:
         pass
-    return "compressed"
 
 
-def get_latest_launcher_info() -> dict | None:
-    build_type = get_build_type()
-    suffix = "_store" if build_type == "store" else ""
-    current_is_beta = is_beta_version(LAUNCHER_VERSION)
-    channel = "beta" if current_is_beta else "stable"
+def daemon_run() -> int:
+    """后台守护主循环。整个函数只在"进程级单实例"下运行。"""
+    mutex = _mutex_acquire(DAEMON_MUTEX)
+    if mutex is None:
+        log_daemon("daemon 已在运行，退出")
+        return 0
+    log_daemon(f"daemon 启动 (pid={os.getpid()}, v{LAUNCHER_VERSION})")
 
-    # 方案1（首选）：查 Supabase latest_version 表，不依赖 GitHub API，不会限流
+    set_daemon_status("starting", 0, "守护进程启动")
+    from src.telemetry import report_event
+
+    report_event("app_launch", {
+        "pid": os.getpid(),
+        "frozen": bool(getattr(sys, "frozen", False)),
+        "auto_update": is_auto_update_enabled(),
+    })
+
+    quit_event = _event_create(DAEMON_QUIT_EVENT)
+
+    # 启动后 10 分钟内已经检查过就不再重复检查（避免频繁开关程序刷接口）
+    with _state_lock:
+        st = load_state()
+        if time.time() - st.get("launcher_last_check", 0) > STARTUP_CHECK_GRACE:
+            st["launcher_last_check"] = 0
+        save_state(st)
+
+    _last_cleanup = 0.0
+    _morning_periods_last_check = 0.0
     try:
-        ctx = ssl.create_default_context()
-        supabase_url = "https://tiofmybnepcheudgfysa.supabase.co"
-        supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRpb2ZteWJuZXBjaGV1ZGdmeXNhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA5NjYyMjYsImV4cCI6MjEwNjU0MjIyNn0.6CTEoVO9QrmBmxkUxNqgWhx6vQ1I-ikI9yy8rImVAA8"
-        req = urllib.request.Request(
-            f"{supabase_url}/rest/v1/latest_version?channel=eq.{channel}&is_latest=eq.true&select=version,download_url,sha256,release_notes",
-            headers={"apikey": supabase_key, "Authorization": f"Bearer {supabase_key}"},
-        )
-        with urllib.request.urlopen(req, timeout=8, context=ctx) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if data and isinstance(data, list) and len(data) > 0:
-            latest = data[0]
-            version = latest.get("version", "")
-            if version and compare_versions(version, LAUNCHER_VERSION) > 0:
-                name = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
-                return {
-                    "version": version,
-                    "url": latest.get("download_url", ""),
-                    "size": 0,
-                    "name": name,
-                    "release_notes": latest.get("release_notes", ""),
-                    "sha256": latest.get("sha256", ""),
-                }
-            return None  # Supabase 有数据但当前已是最新
-    except Exception as e:
-        log_daemon(f"Supabase查询失败: {e}")
-        pass  # Supabase 查询失败，fallback 到 GitHub API
-
-    # 方案2：用 GitHub /tags API 获取所有 tag，找到版本号最大的，再查对应 release 的 assets
-    try:
-        ctx = ssl.create_default_context()
-        req = urllib.request.Request(
-            "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30",
-            headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
-                     **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
-        )
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-            tags = json.loads(resp.read().decode("utf-8"))
-        # 找到版本号最大的 tag（beta 版可以更新到更新的 beta 或正式版）
-        best_tag = None
-        best_version = None
-        for t in tags:
-            tag = t.get("name", "")
-            version = tag.lstrip("vV")
-            if not version:
-                continue
-            # 跳过比当前版本旧的
-            if compare_versions(version, LAUNCHER_VERSION) <= 0:
-                continue
-            # beta 版可以更新到 beta 或正式版；正式版只能更新到正式版
-            tag_is_beta = is_beta_version(version)
-            if not current_is_beta and tag_is_beta:
-                continue
-            if best_version is None or compare_versions(version, best_version) > 0:
-                best_version = version
-                best_tag = tag
-        # 找到最新版本后，查对应 release 的 assets
-        if best_tag and best_version:
+        while True:
             try:
-                req2 = urllib.request.Request(
-                    f"https://api.github.com/repos/tgcz2011/idiot-launch/releases/tags/{best_tag}",
-                    headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
-                             **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
-                )
-                with urllib.request.urlopen(req2, timeout=10, context=ctx) as resp2:
-                    rel = json.loads(resp2.read().decode("utf-8"))
-                for asset in rel.get("assets", []):
-                    name = asset.get("name", "")
-                    expected = f"{LAUNCHER_SETUP_PREFIX}{best_version}{suffix}.exe"
-                    if name == expected:
-                        return {
-                            "version": best_version, "url": asset["browser_download_url"],
-                            "size": asset.get("size", 0), "name": name,
-                            "release_notes": rel.get("body", ""),
-                            "sha256": asset.get("digest", ""),
-                        }
+                ensure_shortcuts()
+
+                now = time.time()
+                if now - _last_cleanup > 3600:
+                    _last_cleanup = now
+                    keep = ""
+                    info = pending_update_info()
+                    if info:
+                        keep = os.path.basename(info["path"])
+                    cleanup_stale_downloads(keep_path=keep)
+
+                if now - _morning_periods_last_check > 600:
+                    _morning_periods_last_check = now
+                    refresh_morning_periods()
+
+                cmd = poll_command()
+                if cmd:
+                    _handle_daemon_command(cmd)
+
+                if apply_launcher_update_idle():
+                    exit_for_update()
+
+                _check_and_download_launcher_update()
+
+                activity = load_state().get("daemon", {}).get("activity", "")
+                if activity not in ("downloading", "updating", "installing", "waiting", "checking"):
+                    set_daemon_status("idle", 0, get_daemon_status_detail())
+
+                for _ in range(6):
+                    if _wait_event(quit_event, 5000):
+                        log_daemon("收到退出事件，daemon 优雅退出")
+                        return 0
+                    cmd = poll_command()
+                    if cmd:
+                        _handle_daemon_command(cmd)
+                        activity = load_state().get("daemon", {}).get("activity", "")
+                        if activity not in ("downloading", "updating", "installing",
+                                            "waiting", "checking"):
+                            set_daemon_status("idle", 0, get_daemon_status_detail())
+            except Exception as e:
+                log_daemon(f"daemon 主循环异常: {type(e).__name__}: {e}")
+                set_daemon_status("idle", 0, f"守护进程异常恢复: {type(e).__name__}")
+                time.sleep(5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        set_daemon_status("stopped", 0, "守护进程已停止")
+        log_daemon("daemon 退出")
+        if quit_event:
+            try:
+                _kernel32.CloseHandle(quit_event)
             except Exception:
-                # release 不存在时，直接构造下载 URL
-                name = f"{LAUNCHER_SETUP_PREFIX}{best_version}{suffix}.exe"
-                url = f"https://github.com/tgcz2011/idiot-launch/releases/download/{best_tag}/{name}"
-                return {"version": best_version, "url": url, "size": 0, "name": name,
-                        "release_notes": "", "sha256": ""}
-    except Exception:
-        pass
-
-    # 方案2（fallback）：用 /releases API
-    if current_is_beta:
-        try:
-            ctx = ssl.create_default_context()
-            req = urllib.request.Request(
-                "https://api.github.com/repos/tgcz2011/idiot-launch/releases?per_page=20",
-                headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
-                         **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
-            )
-            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-                releases = json.loads(resp.read().decode("utf-8"))
-            for rel in releases:
-                if rel.get("draft"):
-                    continue
-                tag = rel.get("tag_name", "")
-                version = tag.lstrip("vV")
-                if compare_versions(version, LAUNCHER_VERSION) <= 0:
-                    continue
-                for asset in rel.get("assets", []):
-                    name = asset.get("name", "")
-                    expected = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
-                    if name == expected:
-                        return {
-                            "version": version, "url": asset["browser_download_url"],
-                            "size": asset.get("size", 0), "name": name,
-                            "release_notes": rel.get("body", ""),
-                            "sha256": asset.get("digest", ""),
-                        }
-        except Exception:
-            pass
-
-    # 方案3（fallback）：正式版用 /releases/latest
-    if not current_is_beta:
-        try:
-            ctx = ssl.create_default_context()
-            req = urllib.request.Request(
-                LAUNCHER_GITHUB_API,
-                headers={"User-Agent": "idiot-launch-updater", "Accept": "application/vnd.github+json",
-                         **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {})},
-            )
-            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            tag = data.get("tag_name", "")
-            version = tag.lstrip("vV")
-            for asset in data.get("assets", []):
-                name = asset.get("name", "")
-                expected = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
-                if name == expected:
-                    return {
-                        "version": version, "url": asset["browser_download_url"],
-                        "size": asset.get("size", 0), "name": name,
-                        "release_notes": data.get("body", ""),
-                        "sha256": asset.get("digest", ""),
-                    }
-        except Exception:
-            pass
-
-    # 方案4（fallback）：用 302 重定向获取版本号（仅正式版）
-    if not current_is_beta:
-        version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
-        if version:
-            name = f"{LAUNCHER_SETUP_PREFIX}{version}{suffix}.exe"
-            url = f"https://github.com/tgcz2011/idiot-launch/releases/download/v{version}/{name}"
-            return {"version": version, "url": url, "size": 0, "name": name,
-                    "release_notes": "", "sha256": ""}
-    return None
-
-
-def _cleanup_stale_launcher_pending(state: dict) -> dict:
-    path = state.get("pending_launcher_path")
-    version = state.get("pending_launcher_version")
-    if path and version:
-        if compare_versions(version, LAUNCHER_VERSION) <= 0:
-            try:
-                if os.path.isfile(path):
-                    os.remove(path)
-            except OSError:
                 pass
-            state.pop("pending_launcher_path", None)
-            state.pop("pending_launcher_version", None)
-            state.pop("launcher_download", None)  # 同步清除下载状态
-            save_state(state)
-    return state
+        if mutex:
+            try:
+                _kernel32.CloseHandle(mutex)
+            except Exception:
+                pass
+    return 0
 
 
-def has_pending_launcher_update() -> bool:
-    if not getattr(sys, "frozen", False):
-        return False
-    state = load_state()
-    state = _cleanup_stale_launcher_pending(state)
-    path = state.get("pending_launcher_path")
-    version = state.get("pending_launcher_version")
-    if not path or not version or not os.path.isfile(path):
-        return False
-    if os.path.getsize(path) < LAUNCHER_MIN_SIZE:
-        return False
-    return compare_versions(version, LAUNCHER_VERSION) > 0
+def get_daemon_status_detail() -> str:
+    info = pending_update_info()
+    if info:
+        return f"v{info['version']} 已下载，可一键更新"
+    return "后台运行中"
 
 
-def apply_launcher_update_if_pending(force: bool = False) -> bool:
-    """安装包模式静默自我更新：仅当电脑空闲（>=10 分钟无操作）且有待更新安装包时触发。
-    流程：生成 VBS → 杀进程 → 静默运行安装包(/VERYSILENT) → 启动新 daemon → 清理 → 自删除。
-    返回 True 表示已触发（调用方应退出当前进程），False 表示条件不满足。
-    """
-    if not getattr(sys, "frozen", False):
-        return False
-    if not has_pending_launcher_update():
-        return False
-    state = load_state()
-    installer = state.get("pending_launcher_path")
-    pending_ver = state.get("pending_launcher_version")
-    if not installer or not os.path.isfile(installer):
-        return False
-    if not force:
-        # 连续检查 3 次空闲（间隔 2 秒），避免检测到空闲后用户刚好开始操作的竞态
-        idle_ok = True
-        for _ in range(3):
-            if get_idle_seconds() < IDLE_THRESHOLD:
-                idle_ok = False
-                break
-            time.sleep(2)
-        if not idle_ok:
-            return False  # 电脑使用中，等 daemon 空闲时再更新
-        idle = get_idle_seconds()
-        log_daemon(f"空闲 {int(idle)}s >= {IDLE_THRESHOLD}s（连续3次确认），触发静默安装更新 {LAUNCHER_VERSION} -> v{pending_ver}")
-        set_daemon_status("updating", 0, f"空闲中静默更新到 v{pending_ver}...")
-    else:
-        log_daemon(f"用户触发立即更新 {LAUNCHER_VERSION} -> v{pending_ver}")
-        set_daemon_status("updating", 0, f"正在更新到 v{pending_ver}...")
+# ── 其它工具 ──────────────────────────────────────────
+def disk_free_gb(path: str = LAUNCHER_INSTALL_DIR) -> float | None:
     try:
-        from src.telemetry import report_event
-        report_event("update_install", {"from_version": LAUNCHER_VERSION, "to_version": pending_ver, "force": force})
+        return round(shutil.disk_usage(path).free / 1024 ** 3, 1)
     except Exception:
-        pass
-    installed_exe = LAUNCHER_INSTALL_EXE
-    import tempfile
-    result_file = os.path.join(UPDATE_DIR, "update_result.txt")
-    force_flag = "1" if force else "0"
-    vbs_content = f'''Option Explicit
-Dim fso, shell, installer, installedExe, i, wmi, procs, ret, resultPath
-Set fso = CreateObject("Scripting.FileSystemObject")
-Set shell = CreateObject("WScript.Shell")
-installer = "{installer}"
-installedExe = "{installed_exe}"
-resultPath = "{result_file}"
-
-' 写结果文件的辅助函数
-Sub WriteResult(status, msg)
-    On Error Resume Next
-    Dim f
-    Set f = fso.CreateTextFile(resultPath, True)
-    f.WriteLine "status=" & status
-    f.WriteLine "message=" & msg
-    f.WriteLine "timestamp=" & Now()
-    f.Close
-    On Error GoTo 0
-End Sub
-
-WriteResult "running", "开始更新 {LAUNCHER_VERSION} -> v{pending_ver}"
-
-' 1. 先通知 daemon 优雅退出（命名事件）
-On Error Resume Next
-shell.Run Chr(34) & installedExe & Chr(34) & " --quit-daemon", 0, True
-On Error GoTo 0
-WScript.Sleep 2000
-
-' 2. 强制结束所有 IdiotLaunch 进程（含子进程 /T，确保 GUI/daemon/早读浏览器全部退出）
-On Error Resume Next
-shell.Run "taskkill /F /IM IdiotLaunch.exe /T", 0, True
-shell.Run "taskkill /F /IM IdiotLaunchBackend.exe /T", 0, True
-On Error GoTo 0
-WScript.Sleep 1500
-
-' 3. 静默运行安装包（完全无窗口，等待安装完成），检查退出码
-On Error Resume Next
-ret = shell.Run(Chr(34) & installer & Chr(34) & " /VERYSILENT /SUPPRESSMSGBOXES /NORESTART", 0, True)
-On Error GoTo 0
-If ret <> 0 Then
-    WriteResult "failed", "安装包执行失败，退出码=" & ret & "（安装包已保留，可手动安装）"
-    WScript.Quit ret
-End If
-
-' 4. 验证安装成功（检查可执行文件存在）
-If Not fso.FileExists(installedExe) Then
-    WriteResult "failed", "安装完成但找不到程序文件: " & installedExe
-    WScript.Quit 1
-End If
-
-WriteResult "success", "安装成功，正在启动 v{pending_ver}"
-
-' 5. 启动新程序（force 时启动 GUI，否则只启动 daemon）
-On Error Resume Next
-If "{force_flag}" = "1" Then
-    shell.Run Chr(34) & installedExe & Chr(34), 1, False
-Else
-    shell.Run Chr(34) & installedExe & Chr(34) & " --daemon", 0, False
-End If
-On Error GoTo 0
-
-' 6. 清理下载的安装包（安装成功才删）
-On Error Resume Next
-fso.DeleteFile installer, True
-On Error GoTo 0
-
-' 7. 自删除
-On Error Resume Next
-fso.DeleteFile WScript.ScriptFullName, True
-On Error GoTo 0
-'''
-    vbs_path = os.path.join(tempfile.gettempdir(), "idiot_launch_install_update.vbs")
-    try:
-        with open(vbs_path, "wb") as f:
-            f.write(b"\xff\xfe")
-            f.write(vbs_content.encode("utf-16-le"))
-    except OSError:
-        set_daemon_status("idle", 0, "静默更新脚本生成失败，稍后重试")
-        return False
-    try:
-        subprocess.Popen(
-            ["wscript.exe", "//B", "//Nologo", vbs_path],
-            creationflags=0x08000000, close_fds=True,
-        )
-    except Exception:
-        set_daemon_status("idle", 0, "静默更新启动失败，稍后重试")
-        return False
-    log_daemon("静默安装更新 VBS 已启动，进程即将退出")
-    sys.exit(0)
-
-def apply_launcher_update_now() -> bool:
-    """立即更新 Idiot Launch（不等待空闲时间）。供 GUI"一键更新"按钮调用。"""
-    return apply_launcher_update_if_pending(force=True)
-
-
-def apply_launcher_update_idle() -> bool:
-    """daemon 循环入口：空闲时静默安装更新。逻辑与 apply_launcher_update_if_pending 相同。"""
-    return apply_launcher_update_if_pending()
-
-# 后台下载线程（单实例，避免下载阻塞 daemon 循环：快捷方式守护、命令响应、Countdown 更新检查都不被下载拖住）
-_launcher_download_thread = None
-_launcher_download_lock = threading.Lock()
-
-
-def _launcher_download_worker(url: str, dest: str, version: str, release_notes: str,
-                                expected_sha256: str = "") -> None:
-    # 立即标记为待更新（下载中）
-    try:
-        _st = load_state()
-        _st["launcher_download"] = {"version": version, "progress": 0, "status": "downloading",
-                                    "installer": dest, "release_notes": release_notes}
-        save_state(_st)
-    except Exception:
-        pass
-    ok = download_installer(url, dest, tag="launcher")
-    if not ok:
         try:
-            _st = load_state()
-            _st["launcher_download"] = {"version": version, "progress": 0, "status": "failed"}
-            save_state(_st)
+            return round(shutil.disk_usage(os.path.splitdrive(path)[0] + "\\").free
+                         / 1024 ** 3, 1)
         except Exception:
-            pass
-        set_daemon_status("idle", 0, "Idiot Launch 更新下载失败，稍后重试")
-        return
-    if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
-        try:
-            _remove_installer(dest)
-        except OSError:
-            pass
-        return
-    # SHA-256 校验：对不上就删除并拒绝更新（不写 pending）
-    if not verify_sha256(dest, expected_sha256):
-        log_daemon(f"SHA-256 校验失败，删除安装包并拒绝更新: {os.path.basename(dest)}")
-        set_daemon_status("idle", 0, "更新包校验失败，已拒绝更新，将重新下载")
-        try:
-            _remove_installer(dest)
-        except OSError:
-            pass
-        return
-    state = load_state()
-    # 下载完成后再次检查当前版本：如果已经更新到同版本或更新版，不设置 pending
-    if compare_versions(version, LAUNCHER_VERSION) <= 0:
-        log_daemon(f"下载完成但当前已是 v{LAUNCHER_VERSION}（>= v{version}），跳过更新")
-        try:
-            _remove_installer(dest)
-        except OSError:
-            pass
-        state = load_state()
-        state.pop("launcher_download", None)
-        save_state(state)
-        set_daemon_status("idle", 0, "已是最新版本")
-        return
-    state["pending_launcher_path"] = dest
-    state["pending_launcher_version"] = version
-    state["launcher_release_notes"] = release_notes
-    state["launcher_download"] = {"version": version, "progress": 100, "status": "complete",
-                                  "installer": dest, "release_notes": release_notes}
-    save_state(state)
-    set_daemon_status("idle", 0, f"已下载 Idiot Launch v{version}（校验通过），空闲时自动更新")
-    log_daemon(f"Idiot Launch v{version} 下载完成（SHA-256 校验通过），空闲时自动更新")
+            return None
 
 
-def _check_and_download_launcher_update() -> None:
-    global _launcher_download_thread
-    if not getattr(sys, "frozen", False):
-        return
-    state = load_state()
-    state = _cleanup_stale_launcher_pending(state)
-    now = time.time()
-    pending_path = state.get("pending_launcher_path")
-    pending_ver = state.get("pending_launcher_version")
-    if pending_path and pending_ver and os.path.isfile(pending_path):
-        if compare_versions(pending_ver, LAUNCHER_VERSION) > 0:
-            return
-    last_check = state.get("launcher_last_check", 0)
-    if now - last_check < CHECK_INTERVAL:
-        return
-    # 已有后台下载线程在跑则跳过本轮（不重复下载、不阻塞循环）
-    if _launcher_download_thread and _launcher_download_thread.is_alive():
-        return
-    set_daemon_status("checking", 0, "正在检查 Idiot Launch 更新...")
-    _t0 = time.time()
-    latest = get_latest_launcher_info()
-    check_duration = round(time.time() - _t0, 1)
-    log_daemon(f"更新检查完成，耗时 {check_duration}s，结果: {'有新版本' if latest else '无新版本'}")
+def open_folder(path: str) -> bool:
     try:
-        from src.telemetry import report_event
-        report_event("update_check", {
-            "has_update": bool(latest),
-            "latest_version": latest["version"] if latest else None,
-            "duration": check_duration,
-        })
+        os.startfile(path)  # noqa: S606 - 仅用于打开本地已知目录
+        return True
     except Exception:
-        pass
-    state["launcher_last_check"] = now
-    save_state(state)
-    if not latest:
-        set_daemon_status("idle", 0, "已是最新版本")
-        return
-    is_installed_mode = (os.path.isfile(LAUNCHER_INSTALL_EXE)
-                         and os.path.abspath(sys.executable) == os.path.abspath(LAUNCHER_INSTALL_EXE))
-    if compare_versions(latest["version"], LAUNCHER_VERSION) <= 0 and is_installed_mode:
-        return  # 安装版且无新版本
-    if compare_versions(latest["version"], LAUNCHER_VERSION) <= 0 and not is_installed_mode:
-        # 便携版（单文件）无新版本：检查是否需要迁移到安装版
-        installed_ver = get_file_version(LAUNCHER_INSTALL_EXE)
-        if installed_ver and compare_versions(installed_ver, latest["version"]) >= 0:
-            return  # 安装版已是最新，无需迁移
-        log_daemon("便携版运行中，迁移到安装版")
-    log_daemon(f"发现 Idiot Launch 新版本 {latest['version']}，后台线程下载安装包")
-    dest_name = f"IdiotLaunch_Setup_{latest['version']}.exe"
-    dest = os.path.join(UPDATE_DIR, dest_name)
-    aria2_control = dest + ".aria2"
-    # 断点续传：如果 .aria2 控制文件存在，说明上次下载未完成，直接续传（不删除）
-    if os.path.isfile(dest) and not os.path.isfile(aria2_control):
-        # 没有控制文件，说明是完整下载，检查哈希
-        if (latest.get("size", 0) > 0
-                and os.path.getsize(dest) == latest["size"]
-                and os.path.getsize(dest) >= LAUNCHER_MIN_SIZE
-                and verify_sha256(dest, latest.get("sha256", ""))):
-            state["pending_launcher_path"] = dest
-            state["pending_launcher_version"] = latest["version"]
-            state["launcher_release_notes"] = latest.get("release_notes", "")
-            save_state(state)
-            return
-        # 已存在但哈希校验失败（文件可能被破坏）：删除后重新下载
-        log_daemon(f"已存在的安装包哈希校验失败，删除后重新下载: {os.path.basename(dest)}")
-        try:
-            _remove_installer(dest)
-        except OSError:
-            pass
-    elif os.path.isfile(dest) and os.path.isfile(aria2_control):
-        log_daemon(f"检测到未完成的下载，断点续传: {os.path.basename(dest)}")
-    with _launcher_download_lock:
-        if _launcher_download_thread and _launcher_download_thread.is_alive():
-            return
-        _launcher_download_thread = threading.Thread(
-            target=_launcher_download_worker,
-            args=(latest["url"], dest, latest["version"], latest.get("release_notes", ""),
-                  latest.get("sha256", "")),
-            daemon=True,
-            name="launcher-update-download",
-        )
-        _launcher_download_thread.start()
+        return False
+
+
+def launcher_install_exists() -> bool:
+    return os.path.isfile(LAUNCHER_INSTALL_EXE)
+
+
+def data_dir() -> str:
+    return UPDATE_DIR
+
+
+__all__ = [
+    "APP_NAME", "LAUNCHER_VERSION", "UPDATE_DIR", "SETTINGS_FILE",
+    "load_settings", "save_settings", "is_telemetry_enabled", "is_auto_update_enabled",
+    "parse_version", "compare_versions", "is_beta_version",
+    "log_daemon", "load_state", "save_state", "update_state",
+    "set_daemon_status", "get_daemon_status", "send_command", "poll_command",
+    "launch_countdown", "launch_custom", "launch_settings",
+    "is_running", "quit_countdown",
+    "load_morning_config", "save_morning_config", "is_morning_logged_in",
+    "verify_morning_login", "get_morning_students", "open_morning_reading",
+    "refresh_morning_periods",
+    "get_latest_launcher_info", "pending_update_info", "has_pending_launcher_update",
+    "start_update_installer", "exit_for_update",
+    "apply_launcher_update_if_pending", "apply_launcher_update_now",
+    "apply_launcher_update_idle", "cleanup_stale_downloads",
+    "daemon_run", "signal_daemon_quit", "set_notifier", "notify_tray",
+    "ensure_shortcuts", "disk_free_gb", "open_folder", "data_dir",
+    "launcher_install_exists", "get_file_version", "get_installed_version",
+]
+
+
+def get_file_version(path: str) -> str | None:
+    """读任意 exe 的 FileVersion（a.b.c.d），失败返回 None。"""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(path, None)
+        if size <= 0:
+            return None
+        res = ctypes.create_string_buffer(size)
+        ctypes.windll.version.GetFileVersionInfoW(path, None, size, res)
+        val = ctypes.c_void_p()
+        length = ctypes.c_uint()
+        if ctypes.windll.version.VerQueryValueW(res, "\\", ctypes.byref(val), ctypes.byref(length)):
+            class VS_FIXEDFILEINFO(ctypes.Structure):
+                _fields_ = [("dwSignature", ctypes.c_uint32), ("dwStrucVersion", ctypes.c_uint32),
+                            ("dwFileVersionMS", ctypes.c_uint32), ("dwFileVersionLS", ctypes.c_uint32),
+                            ("dwProductVersionMS", ctypes.c_uint32), ("dwProductVersionLS", ctypes.c_uint32)]
+
+            info = ctypes.cast(val, ctypes.POINTER(VS_FIXEDFILEINFO)).contents
+            return "{}.{}.{}.{}".format(
+                (info.dwFileVersionMS >> 16) & 0xFFFF, info.dwFileVersionMS & 0xFFFF,
+                (info.dwFileVersionLS >> 16) & 0xFFFF, info.dwFileVersionLS & 0xFFFF)
+    except Exception:
+        return None
+
+
+def get_installed_version() -> str | None:
+    """已安装的启动器版本（读 PE 版本号）。"""
+    return get_file_version(LAUNCHER_INSTALL_EXE)

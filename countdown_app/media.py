@@ -75,16 +75,33 @@ class _FileHandler(BaseHTTPRequestHandler):
         size = os.path.getsize(path)
         start, end = 0, size - 1
         ranged = self.headers.get("Range")
+        partial = False
         if ranged and ranged.startswith("bytes="):
             try:
-                spec = ranged[6:].split(",")[0]
+                spec = ranged[6:].split(",")[0].strip()
                 a, b = spec.split("-", 1)
-                start = int(a) if a else 0
-                end = int(b) if b else size - 1
-                end = min(end, size - 1)
+                if not a:
+                    # 后缀范围 "bytes=-500"：最后 500 字节。
+                    # Chromium 读 MP4 尾部 moov 就用这种写法，之前被当成 0-500 返回，
+                    # 结果本地 mp4 播不出来（黑屏）。
+                    length = int(b)
+                    length = min(length, size)
+                    start = max(0, size - length)
+                    end = size - 1
+                else:
+                    start = int(a)
+                    end = int(b) if b else size - 1
+                    end = min(end, size - 1)
+                if start > end or start >= size:
+                    self.send_response(416)
+                    self.send_header("Content-Range", "bytes */%d" % size)
+                    self.end_headers()
+                    return
+                partial = True
             except ValueError:
                 start, end = 0, size - 1
-        self.send_response(206 if ranged else 200)
+                partial = False
+        self.send_response(206 if partial else 200)
         ext = os.path.splitext(path)[1].lower()
         mime = {".mp4": "video/mp4", ".webm": "video/webm", ".mkv": "video/x-matroska",
                 ".mov": "video/quicktime", ".m4v": "video/mp4", ".ogv": "video/ogg",
@@ -95,7 +112,7 @@ class _FileHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
-        if ranged:
+        if partial:
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
         self.end_headers()
         with open(path, "rb") as f:
@@ -105,7 +122,10 @@ class _FileHandler(BaseHTTPRequestHandler):
                 chunk = f.read(min(1 << 20, left))
                 if not chunk:
                     break
-                self.wfile.write(chunk)
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break  # 播放器主动断开是正常的
                 left -= len(chunk)
 
 
@@ -134,15 +154,20 @@ def resolve(source: str):
     """
     from . import config
     source = source.strip()
-    if source.startswith(("http://", "https://")):
+    if source.lower().startswith(("http://", "https://")):
         return guess_kind(source), source, None
     if os.path.isfile(source):
         local = LocalSource(source)
         return guess_kind(local.url), local.url, local
-    if "\\" in source or ":" in source or "/" in source.split(".")[0]:
-        log.warning("local source missing, fallback default: %s", source)
-        return "page", config.DEFAULT_URL, None
-    if len(source) > 3 and "." in source.split("/")[0]:
+    # 只在"看起来真的是域名/网址"时才补 https。
+    # 原来把 "video.mp4" 这种相对路径也补成 https://video.mp4，
+    # 结果整屏显示 Chromium 的错误页。
+    looks_like_host = ("." in source.split("/")[0]
+                       and " " not in source
+                       and not source.lower().endswith(
+                           (".mp4", ".webm", ".mkv", ".mov", ".m4v", ".gif",
+                            ".png", ".jpg", ".jpeg", ".bmp", ".webp", ".avi")))
+    if looks_like_host and "\\" not in source:
         return guess_kind("https://" + source), "https://" + source, None
-    log.warning("source unusable, fallback to default: %s", source)
+    log.warning("local source missing, fallback default: %s", source)
     return "page", config.DEFAULT_URL, None

@@ -11,8 +11,13 @@
 5. SetWindowLongPtrW 的样式值需转有符号 32 位整数，否则 ctypes 溢出
 """
 import ctypes
+import logging
 import os
 from ctypes import wintypes
+
+# 历史 bug：本文件里 3 处 log.warning 从来没定义过 log，
+# 一旦走到"恢复壁纸"的失败分支就抛 NameError（桌面白屏反而修不回来）。
+log = logging.getLogger("countdown.win32")
 
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
@@ -204,16 +209,18 @@ def last_input_idle_seconds() -> float:
     return delta / 1000.0
 
 
-def set_autostart(enable: bool, exe_path: str) -> None:
-    """HKCU Run 开机自启。"""
+def set_autostart(enable: bool, exe_path: str, args: str = "") -> None:
+    """HKCU Run 开机自启。[args] 会附加在可执行文件后面。"""
     import winreg
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
                          r"Software\Microsoft\Windows\CurrentVersion\Run",
                          0, winreg.KEY_SET_VALUE)
     try:
         if enable:
-            winreg.SetValueEx(key, "CountdownDesktop", 0, winreg.REG_SZ,
-                              '"%s"' % exe_path)
+            cmd = '"%s"' % exe_path
+            if args:
+                cmd += " " + args
+            winreg.SetValueEx(key, "CountdownDesktop", 0, winreg.REG_SZ, cmd)
         else:
             try:
                 winreg.DeleteValue(key, "CountdownDesktop")

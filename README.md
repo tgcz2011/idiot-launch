@@ -1,216 +1,195 @@
-# Idiot Launch（傻瓜启动器）
+# 傻瓜启动器（Idiot Launch）
 
-专为学校电脑设计的一键启动器：大按钮 + 侧边栏分类导航，点击即用，零配置。
+给学校教室电脑用的"一键启动器"：老师双击一个图标，点一下就能启动**中考/高考倒计时壁纸**、
+打开**早晚读**网页、用**倒计时/秒表**，还有**随机抽学生**。
 
-## 功能
+针对学校环境做的取舍：
 
-- **倒计时**（中考倒计时 / 高考倒计时）— 直接启动内置的 Countdown Desktop（已合并进本项目），按考试类型显示动态壁纸
-- **自定义壁纸&屏保** — 启动用户自己配置的壁纸和屏保
-- **关闭倒计时** — 通过命名事件通知 Countdown Desktop 优雅退出；未运行时按钮自动变灰不可点击
-- **壁纸&屏保设置** — 一键唤起 Countdown Desktop 设置窗口（特供版，不含更新模块）
-- **早晚读** — 应用内嵌浏览器打开 `https://zztool.free.nf/morning-reading`，支持班级登录自动进入、悬浮球快捷入口
-- **早读设置** — 年级/班级/密码登录（先校验后保存）、持久/非持久登录、退出登录
-- **倒计时 / 秒表** — Material Three 风格滚轮选择器，支持全屏模式、结束铃声、记次
-- **随机抽学生** — 早读登录后可随机抽取学生（可自定义人数）
-- **自动更新** — 守护进程常驻后台，空闲时静默更新；多镜像源 + 哈希校验
+- **必须装在 D 盘**（`D:\IdiotLaunch`）：教室电脑普遍有冰点还原，装 C 盘重启就没了。
+- **安装过程不问你任何问题**：双击安装包就直接装完，不选目录、不点"下一步"。
+- **装完自动创建快捷方式**，而且被删掉后 30 秒内会自动重建（用来对抗冰点还原）。
+- **不需要管理员权限**，不需要额外装 Python 或运行库。
 
-Countdown Desktop 代码已合并进本项目（特供版），不再单独安装、不再独立更新。
+---
 
-## 下载与安装
+## 一、安装
 
-**推荐使用安装包**（`IdiotLaunch_Setup_*.exe`）：
+1. 打开 [Releases](https://github.com/tgcz2011/idiot-launch/releases)，下载最新一版里的
+   `IdiotLaunch_Setup_<版本>.exe`（约 200 MB）。
+2. 双击它。**不需要选安装位置**，会自动装到 `D:\IdiotLaunch`，并显示进度条。
+3. 装完会自动打开程序，桌面和 D 盘根目录会出现「傻瓜启动器」图标。
 
-1. 从 [Releases](https://github.com/tgcz2011/idiot-launch/releases) 下载 `IdiotLaunch_Setup_*.exe`。
-2. 双击打开，安装程序自动开始（无需点击"下一步"），仅显示原生进度条。
-3. 自动安装到 `D:\IdiotLaunch`，并在 **D 盘根目录**和**桌面**创建快捷方式。
-4. 安装完成后自动启动。
-安装后目录结构：
+> **如果 Windows 提示"已保护你的电脑"**：点「更多信息」→「仍要运行」。
+> 本项目没有购买代码签名证书，所以第一次运行会有这个提示。安装后程序在本地运行，
+> 后续自动更新不会再弹（安装包自身在后台静默运行）。
 
-```
-D:\IdiotLaunch\
-├── IdiotLaunch.exe          # 启动器主程序
-├── _internal\               # Python 运行时 + 资源（含 Countdown Desktop 合并代码）
-│   ├── python314.dll
-│   ├── _tkinter.pyd
-│   ├── countdown_app\       # Countdown Desktop（特供版）
-│   └── assets\              # 图标、铃声、语言文件
-└── data\                    # 运行数据（state.json、daemon.log、早读配置、下载的更新包）
-```
+> **如果提示"未检测到 D 盘"**：这台电脑必须有 D 盘才能用（设计如此）。
+> 可以先在磁盘管理里把某个分区改成 D，或者让管理员处理。
 
-D 盘根目录仅保留一个 `傻瓜启动器.lnk` 快捷方式，不再散落其他文件夹。
+---
 
-> **唯一正式产物是安装包**（v1.5.0.0 起）`IdiotLaunch_Setup_<版本>.exe`：自动安装到 D 盘、创建快捷方式、基本不触发 SmartScreen。
-> 自 v1.5.0.0 起 **GitHub Release 不再发布单文件版**（`IdiotLaunch.exe` 仅作为安装包内部 payload 存在）；
-> 旧单文件用户仍可在空闲时自动迁移到安装版，存量兼容。
-> **v1.7.0.0 起采用 PyInstaller onedir 模式**：安装后 `D:\IdiotLaunch\` 下包含 `IdiotLaunch.exe` + `_internal\` 子目录（Python 运行时、内嵌安装包、图标资源），目录结构与传统安装软件一致，启动更快（无需每次解压到临时目录），且安装后的文件无互联网下载标记，不触发 SmartScreen。
+## 二、怎么用
 
-## 自动更新机制
+打开后左侧有四个页面：
 
-### 守护进程常驻（前后端分离）
+| 页面 | 能做什么 |
+|------|----------|
+| **壁纸** | 中考 / 高考倒计时壁纸、自定义壁纸&屏保、壁纸设置、关闭壁纸 |
+| **工具** | 倒计时、秒表（独立小窗口，可置顶、可全屏，支持空格开始/暂停、Esc 退出全屏） |
+| **早读** | 登录班级账号后：打开早晚读、随机抽学生 |
+| **设置** | 主题（浅色/深色/跟随系统）、自动更新、匿名统计开关、查看后台行为、打开数据/日志目录、彻底退出 |
 
-v1.3.0.0 起采用前后端分离架构：
+几个常用操作：
 
-- **前端（GUI）**：用户交互界面，关闭后不影响后台。
-- **后端（Daemon）**：无窗口守护进程，启动器打开时自动启动，**关闭后继续常驻后台**，单实例运行（命名互斥量 `IdiotLaunch_Daemon_Single`）。
-- **通信**：通过 `D:\IdiotLaunch\data\` 下的文件进行 IPC（`state.json` 状态、`command.json` 命令）。
+- **倒计时**：先点「45 分钟」这类预设按钮立即开始，也可以自己拨小时/分钟。
+  时间到了会响铃并自动转为正计时。
+- **关闭壁纸**：点「关闭壁纸」，桌面会恢复成原来的壁纸（按钮是灰的就说明当前没有壁纸在运行）。
+- **早晚读登录**：年级 + 班级号 + 密码（初始密码是 `admin` + 班级号，例如 1 班是 `admin01`）。
+  登录信息保存在 D 盘，"记住登录"不勾选则关机后失效。
 
-频繁打开/关闭启动器不会中断更新流程，daemon 一直在后台运行。
+### 关闭窗口 ≠ 退出程序
 
-### Countdown Desktop（已合并，无需单独更新）
+点右上角的 ✕ **只是把窗口收进托盘**，程序还在后台跑（它要负责自动更新和早晚读悬浮球）。
+第一次这样关窗时会有提示告诉你怎么找回来：
 
-自 v1.9.0.0 起，Countdown Desktop 的代码已直接合并进本项目（`countdown_app/` 目录），共享同一个 Python 运行时：
+- **想重新打开**：双击桌面的「傻瓜启动器」图标，或者右键任务栏右下角的托盘图标 → 打开主界面。
+- **想彻底退出**：右键托盘图标 → **退出（结束后台）**，或者「设置 → 彻底退出程序」。
+  （会一起关掉后台更新、悬浮球、早晚读窗口，并恢复桌面壁纸。）
 
-1. **不再单独安装**：启动中考/高考/壁纸设置即用同一个 `IdiotLaunch.exe`，带 `--countdown-app` 参数启动。
-2. **不再单独更新**：内嵌特供版在设置"关于"页已移除更新模块，标注"已由傻瓜启动器统一管理"。
-3. **配置存 D 盘**：通过环境变量 `COUNTDOWN_CONFIG_DIR=D:\IdiotLaunch\data\countdown` 规避冰点还原。
-4. **统一管理**：启动时传入 `--auto-check-update off`，由 Idiot Launch 统一管理更新，避免重复检查。
+### 卸载
 
-### Idiot Launch 自身自动更新
+开始菜单搜索「傻瓜启动器」→ 右键 → 卸载（或「设置 → 应用 → 已安装的应用」）。
+**卸载会清除全部数据**：程序、后台组件、`D:\IdiotLaunch` 下的配置/日志/缓存的更新包、
+桌面和 D 盘快捷方式、以及壁纸的开机自启项。
 
-1. **后台下载**：daemon 同时检查自身最新 Release，下载到 `D:\IdiotLaunch\data\IdiotLaunch_v<版本>.exe`。
-2. **多镜像源 + 动态超时 + SHA-256 校验**：与 Countdown Desktop 更新使用同一套成熟机制（7 镜像源 fallback、动态超时 1x/2x/3x、SHA-256 校验）。
-3. **空闲时静默更新（v1.3.1.0）**：daemon 每 30 秒检测系统空闲时间（`GetLastInputInfo` API），当电脑 **10 分钟无键盘/鼠标操作**时，自动触发静默更新：优雅关闭所有 IdiotLaunch 进程 → 静默安装新版 → 只重启 daemon（不启动 GUI，不打扰用户）→ VBS 自删除。整个过程无窗口、无弹窗。
-4. **一键更新（v1.8.1.5）**：更新详情对话框里有绿色"立即更新"按钮，下载完成后点击即可立即更新并重启 GUI，不再需要等 10 分钟空闲。
-5. **启动时更新（兜底）**：若电脑一直处于使用状态从未空闲，下次启动时仍会检测并应用更新，作为兜底机制。
-6. **自适应文件名**：老师可把 exe 改名为任何名字（如"点我.exe"），更新后仍保留该名字。
-7. **失败安全**：替换前先备份旧版，替换失败则自动恢复；无论成功失败都启动 daemon，不会丢失程序。
+---
 
-### 更新状态指示器
+## 三、自动更新
 
-GUI 右上角有一个小圆圈，实时显示 daemon 活动状态：
+程序**不需要你管更新**，但你有完全的控制权：
 
-- ⚪ 灰色 — 空闲 / 无更新
-- 🟠 橙色 — 正在检查更新
-- 🔵 蓝色 — 正在下载更新
-- 🟣 紫色 — 正在安装更新
-- 🟪 深紫 — 静默自我更新中
-- 🟢 绿色 — 有更新待应用
+- 进入主界面时，上方横幅会显示当前状态：
+  - **「当前已是最新版本 vX」** —— 没事发生，可以点右边「检查更新」手动查。
+  - **「正在后台下载 vX」** —— 新版本正在悄悄下载（不影响你上课）。
+  - **「可一键更新至 vX」** —— 安装包已经下载好了，点「一键更新」即可。
+- 点「一键更新」后：程序会自己关闭 → 屏幕上出现**安装进度条**（安装包自带的）→
+  装完自动重新打开。大约 1-3 分钟。请挑下课/空闲时间点。
+- 如果一直没人点：当电脑**连续 10 分钟没有任何键盘鼠标操作**时，程序会自己静默完成更新
+  （完全无窗口）；如果在用电脑，它会一直等，不会打断上课。
+- 不想让它自动装：**设置 → 自动更新** 关掉即可，之后只有你点「一键更新」才会装。
+- 更新包下载走多个镜像源，并做 SHA-256 校验；校验不过会拒绝安装并重新下载。
 
-点击圆圈弹出详情窗口：当前版本、待更新版本、更新日志、daemon 状态、下载源信息，并可手动触发"立即检查更新"。
+---
 
-### 快捷方式自动重建（流氓软件模式）
+## 四、程序在后台做了什么（请老师/网管知情）
 
-启动器每次启动时自动检查以下位置的快捷方式，不存在则立即重建：
+这些都是有意设计的，设置页里也原样写着：
 
-- `D:\傻瓜启动器.lnk`（D 盘根目录）
-- 当前用户桌面
-- 公共桌面（`C:\Users\Public\Desktop`）
+1. **关闭窗口后继续驻留托盘**，后台守护进程负责更新检查、快捷方式守护、早晚读悬浮球。
+2. **定时检查更新**（约每小时一次，启动时如果距上次超过 10 分钟也会查一次）。
+3. **快捷方式自动重建**：桌面和 `D:\傻瓜启动器.lnk` 被删掉后 30 秒内自动补回。
+4. **班级密码保存在 D 盘**：`D:\IdiotLaunch\data\morning_config.json`。
+   密码做过混淆（不是明文），但同一台电脑的其他账号可以还原出来。
+   公用电脑建议不要勾选"记住登录"。
+5. **匿名运行统计（可关闭）**：上报程序版本、Windows 版本、错误类型/位置，
+   用于判断"是所有人都遇到还是个别电脑"。
+   **不包含**班级、姓名、密码、文件内容等任何个人信息。
+   设置页可以一键关闭（关闭后不再上报）。
+6. **所有数据都在 `D:\IdiotLaunch\data`**，C 盘被还原不会影响。
+   其中包括下载好的更新安装包（安装完成后自动清理，避免占满 D 盘）。
 
-即使冰点还原清除了快捷方式，下次启动也会自动加回来。
+---
 
-## 为什么需要这个启动器？
+## 五、出问题了怎么办
 
-学校电脑普遍安装**冰点还原（Deep Freeze）**，C 盘每次重启后恢复原状：
+先看 **设置 → 打开日志目录**，把 `daemon.log` / `ui.log` 发给管理员。
+完整的排查手册见 [docs/疑难排查.md](docs/疑难排查.md)，隐私与数据说明见
+[docs/隐私与数据.md](docs/隐私与数据.md)（程序里"设置 → 程序在后台做了什么"写的是同样的内容）。
+常见现象：
 
-1. 传统软件装在 C 盘 → 重启后丢失，每次都要重装。
-2. 本启动器将一切数据**安装到 D 盘**（`D:\IdiotLaunch`），重启后依然存在。
-3. 学生只需双击一个图标，点对应按钮即可，无需知道安装路径、命令行参数等技术细节。
+| 现象 | 原因 / 处理 |
+|------|-------------|
+| 双击图标没反应 | 程序可能已经在后台运行（双击会把它调出来）。仍无反应就看任务管理器有没有 `IdiotLaunch.exe`，然后看 `ui.log`。 |
+| 提示"后台服务未运行" | 界面能开但功能不通。点横幅上的「重试」；仍不行就重启电脑或重新安装。 |
+| 按钮一直是灰的 | 灰按钮下面一般写了原因（例如"需要先登录早晚读账号"）。「关闭壁纸」是灰的 = 当前没有壁纸在跑。 |
+| 倒计时壁纸不出现 | 打开「设置 → 打开日志目录」看 `daemon.log`。学校网络不通时壁纸页面会加载失败，需要能访问 `zztool.free.nf`。 |
+| 早晚读登录提示"无法连接" | 是网络/服务器问题，不是密码问题——错误提示会区分这两种情况。 |
+| 早晚读窗口盖住了课件 | 点窗口右上角「置顶：开」切换成「置顶：关」。 |
+| 桌面壁纸变成纯色/白屏 | 点「关闭壁纸」让它恢复；仍不正常就右键桌面 → 个性化，重新选一张壁纸。 |
 
-## 运行环境
+---
 
-- Windows 10 / 11（x64）
-- D 盘可用（安装约 300 MB，含 Countdown Desktop 合并代码 + PySide6 浏览器运行时）
-- 无需管理员权限（安装包 `PrivilegesRequired=lowest`）
+## 六、开发者
 
-## 使用方法
-
-1. 双击桌面或 D 盘根目录的「傻瓜启动器」快捷方式。
-2. 左侧分类导航选择功能（倒计时 / 工具 / 早读 / 设置），右侧大按钮点击即用：
-   - 「中考倒计时」/「高考倒计时」→ 启动对应倒计时动态壁纸
-   - 「关闭倒计时」→ 通知 Countdown Desktop 优雅退出，恢复桌面
-   - 「早晚读」→ 内嵌浏览器打开早晚读网页（登录后自动进入班级页面）
-   - 「倒计时」/「秒表」→ Material 风格计时工具（支持全屏）
-   - 「随机抽学生」→ 早读登录后随机抽取学生
-3. 右上角小圆圈显示更新状态，点击查看详情。
-
-> 首次点击倒计时按钮时启动内置 Countdown Desktop（约数秒），无安装等待。
-
-## 工作原理
-
-```
-用户点击按钮
-    │
-    ├─ 倒计时按钮 → IdiotLaunch.exe --countdown-app --exam zhongkao|gaokao
-    │                （已有实例则通过命名事件切换考试类型）
-    ├─ 壁纸设置   → IdiotLaunch.exe --countdown-app --settings（不启动壁纸）
-    ├─ 早晚读     → IdiotLaunch.exe --morning-browser（PySide6 内嵌浏览器，独立进程）
-    └─ 关闭倒计时 → OpenEvent(CountdownDesktop_Quit) + SetEvent（优雅退出）
-       未运行时按钮自动变灰禁用（轮询互斥量 CountdownDesktop_Single）
-
-后台 Daemon（常驻）
-    │
-    ├─ 每 1 小时检查 Idiot Launch 自身更新 → 多镜像下载 → 空闲 5 分钟静默安装
-    ├─ 文件 IPC：state.json（状态）+ command.json（GUI→daemon 命令）
-    └─ 日志：D:\IdiotLaunch\data\daemon.log（自动轮转 100KB）
-```
-
-## 开发与构建
-
-技术栈：Python + tkinter（标准库，零第三方运行时依赖）+ PyInstaller 打包 + Inno Setup 安装包。
-
-```powershell
-# 本地一键构建（自动 venv + 下载安装包 + PyInstaller + Inno Setup）
-.\build.ps1 -Version 1.3.0.0
-
-# 或分步
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-# 手动下载安装包到 installer\ 目录
-.\.venv\Scripts\python.exe -m PyInstaller --noconfirm IdiotLaunch.spec
-& "C:\Program Files\Inno Setup 6\ISCC.exe" IdiotLaunch.iss
-```
-
-构建产物（v1.5.0.0 起）：
-- `dist\IdiotLaunch_Setup_<版本>.exe` — 安装包（50 MB，唯一正式交付形式，自动安装到 D:\IdiotLaunch）
-- `dist\IdiotLaunch.exe` — 仅安装包内部 payload（48 MB，不再单独发布）
-
-发布：推送 tag `v<版本>`，GitHub Actions 自动构建并创建 Release（同时上传两个文件）。
-
-## 项目结构（V3：Flutter 前端 + Python 后端）
+技术栈：**Flutter 3.47（前端）+ Python 3.12（后端，HTTP API + 守护进程）+ PyInstaller + Inno Setup**。
 
 ```
 idiot-launch/
-├── flutter_app/            Flutter 前端（Material 3 + NavigationRail）
-│   ├── lib/
-│   │   ├── main.dart       主界面（侧边栏导航 + 更新指示器 + 对话框）
-│   │   ├── api.dart        API 封装（自动读端口/启后端/HTTP 调用）
-│   │   └── timer_page.dart 倒计时/秒表（CupertinoPicker + 全屏 + 铃声）
-│   ├── pubspec.yaml        依赖（http/window_manager/audioplayers）
-│   └── windows/            Windows 平台配置（BINARY_NAME=IdiotLaunch）
-├── src/                    Python 后端
-│   ├── backend_server.py   HTTP API 服务器（127.0.0.1:随机端口 + daemon 后台线程）
-│   ├── core.py             核心逻辑：启动/退出/自动更新/daemon/快捷方式/多源下载
-│   ├── morning_api_client.py  早读 API（AES-128 自动过 InfinityFree JS challenge）
-│   ├── morning_browser.py  早读内嵌浏览器（PySide6/pywebview，独立进程）
-│   └── floating_button.py  早读悬浮球（tkinter，独立进程）
-├── countdown_app/          Countdown Desktop 源码（已合并，共享 Python 运行时）
-├── run.py                  入口（--server=后端API，--daemon=守护，--countdown-app=CD，--morning-browser=早读）
-├── assets/                 图标/铃声等资源
-├── backend.spec            PyInstaller 后端打包规格（onedir，console=False）
-├── IdiotLaunch.iss         Inno Setup 安装脚本（Flutter 产物→{app}，后端→{app}\backend）
-├── requirements.txt        Python 依赖（PySide6/pywebview/pyinstaller/pystray 等）
-├── .github/workflows/release.yml   tag→Flutter build + PyInstaller + Inno Setup→Release
-├── README.md / HANDOFF.md  文档（每次更新强制同步）
-└── LICENSE                 GPL-3.0
+├─ flutter_app/            Flutter 前端（Material 3 + NavigationRail）
+│  ├─ lib/main.dart        主界面：更新横幅 / 设置 / 早读 / 工具入口
+│  ├─ lib/timer_page.dart  倒计时 & 秒表子窗口
+│  ├─ lib/sub_window.dart  子窗口的原生控制（非阻塞 FFI）
+│  ├─ lib/api.dart         后端 API 封装
+│  ├─ lib/theme.dart       浅色/深色主题
+│  └─ lib/format.dart      时间格式化（有单元测试）
+├─ src/                    Python 后端
+│  ├─ backend_server.py    HTTP API + 托盘 + 悬浮球 + daemon 线程
+│  ├─ core.py              版本/更新/状态/设置/日志/早读/壁纸启动
+│  ├─ morning_config.py    早读账号配置（加解密 + 原子写）
+│  ├─ morning_api_client.py  早读 API（自动过 InfinityFree JS 挑战）
+│  ├─ morning_browser.py   早晚读内嵌浏览器（PySide6）
+│  ├─ floating_button.py   早晚读悬浮球
+│  ├─ aria2_downloader.py  aria2 JSON-RPC 多源下载
+│  └─ telemetry.py         匿名统计（可关闭，有每日额度上限）
+├─ countdown_app/          Countdown Desktop（壁纸/屏保，已合并）
+├─ tools/                  版本号/元数据/图标生成 + 单元测试
+├─ build.ps1               本地一键构建
+├─ backend.spec            PyInstaller 规格
+└─ IdiotLaunch.iss         Inno Setup 安装脚本
 ```
 
-### 前后端通信
+### 构建
 
-- 后端启动时写入端口文件 `D:\IdiotLaunch\data\backend_port`
-- Flutter 前端读取端口文件，通过 `http://127.0.0.1:<port>/api/*` 调用后端
-- 后端未运行时，前端自动启动 `IdiotLaunchBackend.exe --server`
-- 后端常驻后台，频繁开关前端不中断更新/守护进程
+```powershell
+.\build.ps1                                  # 用当前版本号构建安装包
+.\build.ps1 -Version 3.0.0.0-beta27          # 先同步版本号再构建
+```
 
-## 版本号规则
+产物：`dist\IdiotLaunch_Setup_<版本>.exe`。
 
-`a.b.c.d`：d=小改动/修复，c=小添加，b=大改，a=大添加；去掉点后数值严格递增。
+### 测试
 
-## 内嵌组件
+```powershell
+python tools/test_core.py            # 后端单元测试
+cd flutter_app; flutter analyze; flutter test   # 前端静态检查 + 单元测试
+```
 
-| 组件 | 版本 | 来源 |
-|------|------|------|
-| Countdown Desktop 安装包 | v3.2.1.1 | [tgcz2011/countdown-desktop](https://github.com/tgcz2011/countdown-desktop) |
+### 发布
 
-## License
+```powershell
+python tools/bump_version.py 3.0.0.0-beta27   # 同步 core.py / .iss / pubspec / PE 元数据
+git add -A; git commit -m "chore: 升版本号到 3.0.0.0-beta27"
+git tag v3.0.0.0-beta27; git push origin main v3.0.0.0-beta27
+```
 
-GPL-3.0，见 [LICENSE](LICENSE)。
+CI 会校验 **tag 与 `src/core.py` 里的 `LAUNCHER_VERSION` 一致**（不一致直接失败，
+避免发出"客户端永远收不到更新"的版本），然后跑测试、构建、发布 Release，
+并把版本号/下载地址/SHA-256 写进 Supabase 的 `latest_version` 表（客户端从这里查更新）。
+
+### 关键约定
+
+- **版本号唯一来源**是 `src/core.py` 的 `LAUNCHER_VERSION`，其它地方由 `tools/bump_version.py` 生成，
+  PE 元数据由 `tools/gen_version_info.py` 生成（`version_info*.txt` 不入库，避免历史版本号残留）。
+- **数据目录固定 `D:\IdiotLaunch\data`**，代码里不要写死到别处。
+- 子窗口（倒计时/秒表）是同一进程里的多个 Flutter 引擎：**不要从 Dart 线程对别的线程的窗口
+  调用 `SendMessage` 或不带 `SWP_ASYNCWINDOWPOS` 的 `SetWindowPos`**，会互相等待导致界面"未响应"。
+  统一走 `lib/sub_window.dart`。
+
+---
+
+## 七、许可与第三方组件
+
+本项目以 **GPL-3.0** 授权开源，见 [LICENSE](LICENSE)。
+内嵌/依赖的第三方组件与许可见 [assets/THIRD_PARTY_NOTICES.txt](assets/THIRD_PARTY_NOTICES.txt)，
+其中壁纸嵌入实现参考了 [Lively Wallpaper](https://github.com/rocksdanister/lively)（GPL-3.0），
+自研的 Countdown Desktop 特供版同为本项目一部分。

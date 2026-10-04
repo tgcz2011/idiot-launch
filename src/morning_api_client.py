@@ -176,7 +176,7 @@ def aes128_decrypt_block(cipher: bytes, key: bytes) -> bytes:
 
 def _solve_challenge_cookie(html: str):
     """从挑战页提取并解出 __test cookie 值；非挑战页返回 None。"""
-    m = re.search(r'c=toNumbers\("([0-9a-f]{32,})"\)', html)
+    m = re.search(r'c=toNumbers\("([0-9a-fA-F]{32})"\)', html)
     if not m:
         return None
     c = bytes.fromhex(m.group(1))
@@ -191,23 +191,42 @@ def _solve_challenge_cookie(html: str):
 def _load_cache():
     try:
         with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
 
 
 def _save_cache(cache):
     try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+        tmp = CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cache, f)
+        os.replace(tmp, CACHE_FILE)
     except Exception:
         pass  # 缓存写失败不影响功能
+
+
+def clear_cache():
+    """清空 token/cookie 缓存（退出登录、改密码时调用）。
+
+    历史问题：退出登录只删配置文件，token（2 小时）和挑战 cookie（6 小时）
+    还留在 D 盘，等于没有真正退出。
+    """
+    for path in (CACHE_FILE, CACHE_FILE + ".tmp"):
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
 
 
 # ---------- 自动过挑战的 HTTP 会话 ----------
 class ApiSession:
     def __init__(self, base: str, use_file_cache: bool = True):
         self.base = base
+        self.use_file_cache = use_file_cache
         self.cookie = None
         self.cache = _load_cache() if use_file_cache else {}
         c = self.cache.get("cookie")
@@ -242,7 +261,8 @@ class ApiSession:
                 return body
             self.cookie = cookie
             self.cache["cookie"] = {"value": cookie, "expires_ts": time.time() + _COOKIE_MAX_AGE}
-            _save_cache(self.cache)
+            if self.use_file_cache:
+                _save_cache(self.cache)
             if "i=1" not in url:
                 url = url + ("&" if "?" in url else "?") + "i=1"
         raise RuntimeError("连续 3 次请求仍被 InfinityFree 挑战拦截，请稍后再试")
@@ -251,6 +271,7 @@ class ApiSession:
 # ---------- API 客户端 ----------
 class ApiClient:
     def __init__(self, base: str = DEFAULT_BASE, use_file_cache: bool = True):
+        self.use_file_cache = use_file_cache
         self.session = ApiSession(base, use_file_cache)
         self.cache = self.session.cache
 
@@ -258,9 +279,23 @@ class ApiClient:
     def calc_token(seed: str, username: str, password: str) -> str:
         return hashlib.sha256(f"{username}:{password}:{seed}".encode()).hexdigest()
 
+    @staticmethod
+    def _token_key(identity: str, username: str, password: str) -> str:
+        """缓存 key 必须带上密码指纹。
+
+        历史 bug：key 只有 "用户名:身份"，密码打错一次也会把 token 写进缓存，
+        之后即使输入正确密码，也会在一小时内一直提示"账号或密码错误"。
+        """
+        fp = hashlib.sha256(password.encode("utf-8")).hexdigest()[:10]
+        return f"{username}:{identity}:{fp}"
+
+    def _persist(self):
+        if self.use_file_cache:
+            _save_cache(self.cache)
+
     def _cached_token(self, identity: str, username: str, password: str):
         """取缓存 token；无缓存/跨小时/超时则 get_seed 重算。返回 token。"""
-        key = f"{username}:{identity}"
+        key = self._token_key(identity, username, password)
         now = time.time()
         t = self.cache.get("tokens", {}).get(key)
         if t and t.get("slot") == datetime.now().strftime("%Y%m%d%H") \
@@ -270,7 +305,7 @@ class ApiClient:
             {"action": "get_seed", "identity": identity}))
         data = json.loads(body)
         if not data.get("success"):
-            raise RuntimeError(f"get_seed 失败: {data}")
+            raise RuntimeError("获取登录种子失败")
         seed = data["data"]["seed"]
         token = self.calc_token(seed, username, password)
         self.cache.setdefault("tokens", {})[key] = {
@@ -278,37 +313,46 @@ class ApiClient:
             "token": token,
             "ts": now,
         }
-        _save_cache(self.cache)
+        self._persist()
         return token
 
     def call(self, action: str, username: str, password: str, identity: str,
-             extra: dict | None = None, method: str = "GET") -> dict:
-        """调用端点：带缓存 token 请求；401（跨小时轮换）时自动重取 token 重试一次。
+             extra: dict | None = None, method: str = "GET"):
+        """调用端点。返回 (ok, data, error_message)。
 
-        普通调用只有 1 次 HTTP 往返，速度与直接调 API 基本一致。
+        ok=False 时 error_message 是可以直接显示给老师的中文原因；
+        网络/服务端异常不再抛给上层（历史实现把它们混成"账号或密码错误"）。
         """
         base_params = {"username": username, "action": action}
         if extra:
             base_params.update(extra)
-
-        token = self._cached_token(identity, username, password)
-        data = self._parse_json(self._raw_call(base_params, token, method))
-
-        # 401 → token 跨小时失效，强制刷新重试一次
-        if not data.get("success") and data.get("code") == 401:
-            key = f"{username}:{identity}"
-            self.cache.get("tokens", {}).pop(key, None)
+        try:
             token = self._cached_token(identity, username, password)
             data = self._parse_json(self._raw_call(base_params, token, method))
-        return data
+            # 401 → token 跨小时失效，强制刷新重试一次
+            if not data.get("success") and data.get("code") == 401:
+                self.cache.get("tokens", {}).pop(
+                    self._token_key(identity, username, password), None)
+                self._persist()
+                token = self._cached_token(identity, username, password)
+                data = self._parse_json(self._raw_call(base_params, token, method))
+            return True, data, ""
+        except urllib.error.HTTPError as e:
+            return False, {}, f"服务器返回 HTTP {e.code}，请稍后重试"
+        except urllib.error.URLError as e:
+            return False, {}, f"无法连接早读服务器（{getattr(e, 'reason', e)}）"
+        except RuntimeError as e:
+            return False, {}, str(e)
+        except Exception as e:
+            return False, {}, f"请求失败：{type(e).__name__}"
 
     @staticmethod
     def _parse_json(body: str) -> dict:
         try:
             return json.loads(body)
         except json.JSONDecodeError:
-            snippet = body[:200].replace("\n", " ")
-            raise RuntimeError(f"服务端返回了非 JSON 响应（可能是临时故障或挑战异常）：{snippet}")
+            snippet = body[:80].replace("\n", " ").replace("\r", " ")
+            raise RuntimeError(f"服务器返回了非 JSON 内容：{snippet}")
 
     def _raw_call(self, base_params: dict, token: str, method: str) -> str:
         params = dict(base_params)
@@ -351,7 +395,10 @@ def main(argv=None):
         extra["grade_class"] = args.grade_class
 
     method = "POST" if args.action in ("add_record", "cancel_record", "penalize") else "GET"
-    data = client.call(args.action, args.user, args.password, args.identity, extra, method)
+    ok, data, err = client.call(args.action, args.user, args.password, args.identity, extra, method)
+    if not ok:
+        print(f"错误: {err}", file=sys.stderr)
+        sys.exit(1)
     if args.raw:
         print(json.dumps(data, ensure_ascii=False))
     else:

@@ -1,0 +1,61 @@
+傻瓜启动器（Idiot Launch）— 第三方组件与许可
+=================================================
+本文件随程序一起安装（位于 <安装目录>\backend\_internal\assets\THIRD_PARTY_NOTICES.txt）。
+
+一、本项目自身
+------------
+傻瓜启动器（Idiot Launch）— GPL-3.0
+Copyright (C) 2026 tgcz2011
+完整许可证文本见仓库根目录 LICENSE 文件。
+
+二、随程序一起分发的第三方组件
+----------------------------
+
+1) aria2 (aria2c.exe)
+   - 位置：assets/aria2c.exe（后端运行时资源）
+   - 版本：1.37.0
+   - 许可：GNU GPL v2 或更新版本（GPL-2.0-or-later）
+   - 项目主页：https://aria2.github.io/
+   - 说明：用于多源分块下载更新包。源码可从项目主页获取。
+   - 本项目以 GPL-3.0 发布，与 GPL-2.0-or-later 兼容。
+
+2) Qt for Python (PySide6) / Qt 6
+   - 许可：LGPL-3.0（PySide6 用于动态链接 Qt 库）
+   - 项目主页：https://www.qt.io/qt-for-python
+   - 说明：早晚读内嵌浏览器与 Countdown Desktop 界面使用。
+     以动态链接（未修改）方式使用，符合 LGPL-3.0 要求；
+     用户可用官方 PySide6 替换安装目录中的对应库文件。
+
+3) Noto Sans SC（思源黑体简体中文）
+   - 位置：flutter_app/assets/fonts/NotoSansSC-{Regular,Bold}.otf
+   - 许可：SIL Open Font License 1.1（OFL-1.1）
+   - 版权：Copyright 2014-2021 Adobe (http://www.adobe.com/)
+   - 许可全文：https://scripts.sil.org/OFL
+
+4) pywebview
+   - 许可：BSD-3-Clause — https://github.com/r0x0r/pywebview
+
+5) pystray
+   - 许可：LGPL-3.0 — https://github.com/moses-palmer/pystray
+
+6) Pillow
+   - 许可：MIT-CMU (HPND) — https://python-pillow.org/
+
+7) pywin32
+   - 许可：PSF-2.0 — https://github.com/mhammond/pywin32
+
+8) Flutter / Dart 运行库与插件
+   - flutter_windowmanager / desktop_multi_window / audioplayers / http 等
+   - 许可：BSD-3-Clause（各插件仓库 LICENSE 文件为准）
+
+三、致谢与参考实现
+----------------
+- 壁纸嵌入（WorkerW / Progman 定位、桌面重绘）实现学习并借鉴了
+  Lively Wallpaper（GPL-3.0）— https://github.com/rocksdanister/lively
+  感谢作者 rocksdanister 及社区贡献者。
+- 早期界面设计与需求来自一线老师的实际使用反馈。
+
+四、说明
+-------
+本项目开源免费。若需要上述任一组件的完整源码或再分发，请通过仓库
+Issues 联系作者：https://github.com/tgcz2011/idiot-launch/issues

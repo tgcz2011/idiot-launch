@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
 class CustomTitleBar extends StatelessWidget {
@@ -12,7 +12,9 @@ class CustomTitleBar extends StatelessWidget {
       height: 32,
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.2), width: 1)),
+        border: Border(
+            bottom: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant, width: 1)),
       ),
       child: Row(
         children: [
@@ -55,17 +57,27 @@ class TitleBarButton extends StatelessWidget {
   final IconData icon;
   final VoidCallback onPressed;
   final bool isClose;
-  const TitleBarButton({required this.icon, required this.onPressed, this.isClose = false});
+  const TitleBarButton(
+      {super.key,
+      required this.icon,
+      required this.onPressed,
+      this.isClose = false});
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 46,
-      height: 32,
-      child: InkWell(
-        onTap: onPressed,
-        hoverColor: isClose ? Colors.red.withOpacity(0.8) : Colors.grey.withOpacity(0.15),
-        child: Icon(icon, size: 16, color: isClose ? null : Colors.grey[700]),
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: isClose ? '关闭窗口（最小化到托盘）' : '',
+      child: SizedBox(
+        width: 48,
+        height: 34,
+        child: InkWell(
+          onTap: onPressed,
+          hoverColor: isClose
+              ? scheme.error.withValues(alpha: 0.85)
+              : scheme.onSurface.withValues(alpha: 0.08),
+          child: Icon(icon, size: 18, color: isClose ? null : scheme.onSurfaceVariant),
+        ),
       ),
     );
   }

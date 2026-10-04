@@ -13,7 +13,7 @@ v3.2.0.0 起新增「倒计时」页：高考/中考/自定义 三态切换（�
 import logging
 import os
 
-from PySide6.QtCore import QUrl, QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
                                QFormLayout, QGroupBox, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
@@ -153,7 +153,10 @@ class SettingsDialog(QDialog):
         self.cmb_exam = QComboBox()
         for key in config.EXAM_TYPES:
             self.cmb_exam.addItem(config.EXAM_LABELS[key], key)
-        self.cmb_exam.currentIndexChanged.connect(self._on_exam_changed)
+        self.cmb_exam.currentIndexChanged.connect(
+            # 只关心"用户切换了类型"，忽略回调带回的 index：
+            # 高考是第 0 项，直接用 index 当 bool 会导致选高考时不自动勾选（历史 bug）
+            lambda *_: self._on_exam_changed(True))
         form.addRow("类型", self.cmb_exam)
         self.lbl_exam_hint = QLabel(
             "高考 / 中考：壁纸与屏保统一使用对应倒计时页面（高考为原默认链接）。\n"
@@ -243,7 +246,8 @@ class SettingsDialog(QDialog):
         form.addRow("声音", self.chk_ss_mute)
         row_ss = QHBoxLayout()
         self.btn_test = QPushButton("立即测试屏保")
-        self.btn_test.clicked.connect(lambda: self.app.start_screensaver())
+        self.btn_test.setToolTip("保存前也可以先看看屏保效果")
+        self.btn_test.clicked.connect(self._on_test_screensaver)
         row_ss.addWidget(self.btn_test)
         form.addRow(row_ss)
         layout.addWidget(grp)
@@ -312,68 +316,23 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return page
 
-    # ---------------- 更新 ----------------
-    def about_page_labels(self):
-        """关于页内全部 QLabel（测试与文案检查用）。"""
-        page = self._pages.get("about", (None, None))[0]
-        return page.findChildren(QLabel)
+    # ---------------- 屏保测试 ----------------
+    def _on_test_screensaver(self) -> None:
+        """立即测试屏保。
 
-    def _on_check_update(self) -> None:
-        self.btn_check_update.setEnabled(False)
-        self.lbl_update.setText("正在检查更新…")
-        self.updater.check()
+        原实现直接调 start_screensaver()，但未勾选"启用屏保"时那个函数会静默
+        return，用户点了没反应，以为按钮坏了。这里先说清楚原因。
+        """
+        from PySide6.QtWidgets import QMessageBox
 
-    def _on_check_finished(self, has_update: bool, latest: str, notes: str) -> None:
-        self.btn_check_update.setEnabled(True)
-        if has_update:
-            self.btn_update_now.setEnabled(True)
-            text = "发现新版本 v%s，可一键更新（下载后自动静默安装并重启）" % latest
-            if notes:
-                text += "\n更新说明：" + notes
-            self.lbl_update.setText(text)
-        elif latest:
-            self.lbl_update.setText("已是最新版本（v%s）" % latest)
-        else:
-            self.lbl_update.setText("检查更新失败，请稍后重试或直接打开发布页")
-
-    def _on_update_now(self) -> None:
-        self.btn_update_now.setEnabled(False)
-        self.lbl_update.setText("正在下载更新…")
-        self.updater.download()
-
-    def _on_download_progress(self, received: int, total: int) -> None:
-        pct = int(received * 100 / total) if total else 0
-        self.lbl_update.setText("正在下载更新… %d%%（%.1f / %.1f MB）"
-                                % (pct, received / 1048576.0, total / 1048576.0))
-
-    def _on_download_finished(self, ok: bool, payload: str) -> None:
-        if not ok:
-            self.lbl_update.setText("下载失败：%s。可打开发布页手动下载。" % payload)
-            self.btn_update_now.setEnabled(True)
+        if not self.chk_ss.isChecked():
+            QMessageBox.information(
+                self, "屏幕保护未启用",
+                "当前没有勾选「启用屏保」。\n\n"
+                "可以先勾选它再点测试；测试会全屏显示屏保内容，"
+                "动一下鼠标或按键盘就会退出。")
             return
-        self._update_installer_path = payload
-        try:
-            from .update import make_update_bat, run_update_bat
-            bat = make_update_bat(payload)
-            run_update_bat(bat)
-            self.lbl_update.setText("更新包已就绪，正在退出程序并安装新版本…")
-            # 给标签一点刷新时间，然后退出主程序（批处理负责杀进程+静默安装+重启）
-            from PySide6.QtCore import QTimer
-            QTimer.singleShot(800, self.app.quit)
-        except Exception as e:
-            log.exception("prepare update failed")
-            self.lbl_update.setText("准备更新失败：%s" % e)
-            self.btn_update_now.setEnabled(True)
-
-    def _on_open_release(self) -> None:
-        from PySide6.QtGui import QDesktopServices
-        from .update import REPO_PAGE
-        QDesktopServices.openUrl(QUrl(REPO_PAGE + "/releases"))
-
-    def _on_auto_update_toggled(self, checked: bool) -> None:
-        from . import config
-        self.app.cfg["auto_check_update"] = bool(checked)
-        config.save(self.app.cfg)
+        self.app.start_screensaver()
 
     # ---------------- 文件选择 ----------------
     def _pick(self, line_edit) -> None:
@@ -459,8 +418,11 @@ class SettingsDialog(QDialog):
     # ---------------- 按钮 ----------------
     def accept(self) -> None:  # 保存
         changed = self.save_all()
-        self.app.restart_wallplayer_if_needed(changed)
+        # 先关窗再重启播放器：stop_wallpaper 里要等子进程退出（最长 3 秒 + 屏保 3 秒），
+        # 放在关窗之前会让"保存"看起来卡死（历史体验问题）。
         super().accept()
+        if changed:
+            QTimer.singleShot(0, lambda: self.app.restart_wallplayer_if_needed(True))
 
     def reject(self) -> None:  # 取消/关闭
         super().reject()

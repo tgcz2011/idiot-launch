@@ -1,4 +1,4 @@
-#include <flutter/dart_project.h>
+﻿#include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
@@ -25,9 +25,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
-  Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
-  if (!window.Create(L"idiot_launch", origin, size)) {
+  // 与 Dart 侧 WindowOptions 保持一致，避免启动瞬间先大后小的闪烁
+  Win32Window::Point origin(120, 80);
+  Win32Window::Size size(860, 620);
+  if (!window.Create(L"傻瓜启动器", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

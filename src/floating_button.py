@@ -1,81 +1,79 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+"""早读悬浮球。
+
+只在早读/晚读时间段内出现，始终置顶，点击打开早晚读浏览器。
+改进点（对照原实现）：
+  * 透明色键画真正的圆形（原来背景和圆同色，看起来是个方块）；
+  * 左键拖动可换位置并限制在屏幕内，右键弹菜单（可以隐藏/打开）；
+  * 拖动距离很小才算"点击"，不会再出现"想拖动结果打开浏览器"。
 """
-早读悬浮按钮。
-在早读/晚读时间段内显示在屏幕上方，始终置顶，点击打开早读浏览器窗口。
-"""
-import time
-import json
+import ctypes
 import os
 import subprocess
 import sys
+import time
 
-from src.morning_browser import load_morning_config, PERSISTENT_CONFIG_PATH, TEMP_CONFIG_PATH
+from src import morning_config
+
+DATA_DIR = morning_config.DATA_DIR
+MORNING_BROWSER_PID = os.path.join(DATA_DIR, "morning_browser.pid")
 
 
 def resource_path(relative: str) -> str:
-    """定位资源文件（开发态 / PyInstaller onedir）。"""
-    import sys as _sys
-    base = getattr(_sys, "_MEIPASS", None)
+    base = getattr(sys, "_MEIPASS", None)
     if base:
         return os.path.join(base, relative)
     return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), relative)
 
 
-def is_in_reading_period(config):
-    """判断当前是否在早读/晚读时间段内。"""
-    periods = config.get("periods", {})
+def _parse_time(time_str) -> int:
+    try:
+        parts = str(time_str).split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+    except Exception:
+        return -1
+
+
+def is_in_reading_period(config) -> bool:
+    periods = (config or {}).get("periods") or {}
     if not periods:
         return False
-
     now = time.localtime()
-    current_minutes = now.tm_hour * 60 + now.tm_min
-
-    # 早读
-    morning = periods.get("morning", {})
-    if morning:
-        start = _parse_time(morning.get("start", "06:20"))
-        end = _parse_time(morning.get("end", "07:00"))
-        if start <= current_minutes <= end:
+    current = now.tm_hour * 60 + now.tm_min
+    for key in ("morning", "evening"):
+        seg = periods.get(key) or {}
+        start = _parse_time(seg.get("start", ""))
+        end = _parse_time(seg.get("end", ""))
+        if start >= 0 and end >= 0 and start <= current <= end:
             return True
-
-    # 晚读
-    evening = periods.get("evening", {})
-    if evening:
-        start = _parse_time(evening.get("start", "17:45"))
-        end = _parse_time(evening.get("end", "18:15"))
-        if start <= current_minutes <= end:
-            return True
-
     return False
 
 
-def _parse_time(time_str):
-    """解析 HH:MM 格式为分钟数。"""
-    try:
-        parts = time_str.split(":")
-        return int(parts[0]) * 60 + int(parts[1])
-    except Exception:
-        return 0
-
-
 class FloatingButton:
-    """早读悬浮按钮：仅显示应用图标（手指点击图案）。"""
+    """早读悬浮球。"""
+
+    SIZE = 56
 
     def __init__(self, root, on_click=None):
-        import tkinter as tk  # 延迟导入，避免后端（无 tkinter）导入本模块时崩溃
+        import tkinter as tk
+
         self._tk = tk
         self.root = root
         self.on_click = on_click
         self.win = None
         self._visible = False
-        self._drag_start_x = 0
-        self._drag_start_y = 0
-        self._check_interval = 30000  # 30秒检查一次时间段
         self._icon = None
+        self._canvas = None
+        self._bg = "#2F6B4F"
+        self._hover = "#3A8A65"
+        self._key = "#FF00FE"  # 透明色键
+        self._drag_dx = 0
+        self._drag_dy = 0
+        self._moved = 0
 
+    # ---- 图标 ----
     def _load_icon(self):
-        """加载悬浮球图标 PNG（应用图标，透明底）。"""
         if self._icon is not None:
             return self._icon
         for name in ("floating_icon.png", "floating_icon_64.png", "icon_source.png"):
@@ -88,172 +86,201 @@ class FloatingButton:
                     continue
         return None
 
+    # ---- 窗口 ----
     def _create_window(self):
-        """创建悬浮按钮窗口：圆形图标，无文字。"""
+        size = self.SIZE
         self.win = self._tk.Toplevel(self.root)
         self.win.overrideredirect(True)
         self.win.attributes("-topmost", True)
-        self.win.configure(bg="#2F6B4F")
+        self.win.configure(bg=self._key)
+        try:
+            self.win.attributes("-transparentcolor", self._key)
+        except Exception:
+            pass  # 个别系统不支持色键，退化成方形也不算致命
 
-        # 圆形容器（Canvas 画圆 + 图标）
-        size = 56
         canvas = self._tk.Canvas(self.win, width=size, height=size,
-                           bg="#2F6B4F", highlightthickness=0)
+                                 bg=self._key, highlightthickness=0)
         canvas.pack()
-        canvas.create_oval(2, 2, size - 2, size - 2, fill="#2F6B4F", outline="")
-
+        canvas.create_oval(2, 2, size - 2, size - 2, fill=self._bg, outline="",
+                           tags="ball")
         icon = self._load_icon()
         if icon:
             canvas.create_image(size // 2, size // 2, image=icon)
+        canvas.create_text(size // 2, size - 9, text="早读", fill="#FFFFFF",
+                           font=("Microsoft YaHei", 8), tags="label")
 
-        # 默认位置：屏幕右上角
         sw = self.win.winfo_screenwidth()
-        x = sw - size - 24
-        y = 80
-        self.win.geometry(f"{size}x{size}+{x}+{y}")
+        self.win.geometry(f"{size}x{size}+{sw - size - 24}+80")
 
-        # 点击事件
-        canvas.bind("<Button-1>", self._on_click)
-
-        # 右键拖动
-        canvas.bind("<ButtonPress-3>", self._start_drag)
-        canvas.bind("<B3-Motion>", self._on_drag)
-
-        # hover 效果（圆变色）
-        canvas.bind("<Enter>", lambda e: self._set_canvas_color(canvas, "#3a8a65"))
-        canvas.bind("<Leave>", lambda e: self._set_canvas_color(canvas, "#2F6B4F"))
+        canvas.bind("<ButtonPress-1>", self._on_press)
+        canvas.bind("<B1-Motion>", self._on_motion)
+        canvas.bind("<ButtonRelease-1>", self._on_release)
+        canvas.bind("<Button-3>", self._show_menu)
+        canvas.bind("<Enter>", lambda e: self._paint(self._hover))
+        canvas.bind("<Leave>", lambda e: self._paint(self._bg))
         self._canvas = canvas
 
-    def _set_canvas_color(self, canvas, color):
-        canvas.itemconfigure(1, fill=color)
-        canvas.configure(bg=color)
+    def _paint(self, color: str):
+        try:
+            self._canvas.itemconfigure("ball", fill=color)
+            self._canvas.configure(bg=color if color != self._bg else self._key)
+        except Exception:
+            pass
 
-    def _on_click(self, event):
-        """点击按钮。"""
+    # ---- 交互 ----
+    def _on_press(self, event):
+        self._drag_dx = event.x_root - self.win.winfo_x()
+        self._drag_dy = event.y_root - self.win.winfo_y()
+        self._moved = 0
+
+    def _on_motion(self, event):
+        x = event.x_root - self._drag_dx
+        y = event.y_root - self._drag_dy
+        self._moved += abs(event.x_root - (self.win.winfo_x() + self._drag_dx))
+        # 限制在屏幕内，避免拖出去再也找不到
+        sw = self.win.winfo_screenwidth()
+        sh = self.win.winfo_screenheight()
+        x = max(0, min(x, sw - self.SIZE))
+        y = max(0, min(y, sh - self.SIZE))
+        self.win.geometry(f"+{x}+{y}")
+
+    def _on_release(self, event):
+        # 位移很小才算点击（阈值 6px）
+        if self._moved < 6 and self.on_click:
+            self.on_click()
+
+    def _show_menu(self, event):
+        menu = self._tk.Menu(self.win, tearoff=0)
+        menu.add_command(label="打开早晚读", command=self._click)
+        menu.add_command(label="隐藏悬浮球（下次启动恢复）", command=self.hide)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _click(self):
         if self.on_click:
             self.on_click()
 
-    def _start_drag(self, event):
-        """开始拖动（右键）。"""
-        self._drag_start_x = event.x_root - self.win.winfo_x()
-        self._drag_start_y = event.y_root - self.win.winfo_y()
-
-    def _on_drag(self, event):
-        """拖动中。"""
-        x = event.x_root - self._drag_start_x
-        y = event.y_root - self._drag_start_y
-        self.win.geometry(f"+{x}+{y}")
-
+    # ---- 显示/隐藏 ----
     def show(self):
-        """显示悬浮按钮。"""
         if self._visible:
             return
         self._visible = True
         self._create_window()
-        self._schedule_check()
 
     def hide(self):
-        """隐藏悬浮按钮。"""
         self._visible = False
         if self.win:
-            self.win.destroy()
+            try:
+                self.win.destroy()
+            except Exception:
+                pass
             self.win = None
 
-    def _schedule_check(self):
-        """定期检查时间段。"""
-        if not self._visible:
-            return
-        config = load_morning_config()
-        if not is_in_reading_period(config):
-            self.hide()
-            return
-        self.root.after(self._check_interval, self._schedule_check)
-
     def update_visibility(self):
-        """根据时间段更新可见性。"""
-        config = load_morning_config()
-        if is_in_reading_period(config):
+        if is_in_reading_period(morning_config.load()):
             if not self._visible:
                 self.show()
-        else:
-            if self._visible:
-                self.hide()
+        elif self._visible:
+            self.hide()
 
 
-def open_morning_browser(config=None):
-    """打开早读浏览器窗口（单开：已运行则激活，未运行则启动）。
-    已登录（配置含年级/班级/密码）则自动登录；未登录则直接打开网页首页。
-    """
-    if config is None:
-        config = load_morning_config()
-
-    # 单开检测：检查 PID 文件
-    pid_file = r"D:\IdiotLaunch\data\morning_browser.pid"
+# ── 打开早晚读浏览器 ──────────────────────────────────
+def _process_alive(pid: int) -> bool:
     try:
-        if os.path.isfile(pid_file):
-            existing_pid = int(open(pid_file).read().strip())
-            # 用 ctypes 检测进程是否存在
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, existing_pid)
-            if handle:
-                kernel32.CloseHandle(handle)
-                # 进程存在，激活窗口到前台
-                import ctypes
-                user32 = ctypes.windll.user32
-                # 枚举窗口找到早读浏览器窗口并激活
-                EnumWindows = user32.EnumWindows
-                EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-                GetWindowTextLength = user32.GetWindowTextLengthW
-                GetWindowText = user32.GetWindowTextW
-                GetWindowThreadProcessId = user32.GetWindowThreadProcessId
-                IsWindowVisible = user32.IsWindowVisible
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        h = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+    except Exception:
+        pass
+    return False
 
-                found_hwnd = []
 
-                def callback(hwnd, lParam):
-                    if not IsWindowVisible(hwnd):
+def _focus_browser_window(pid: int) -> bool:
+    """把已有早晚读窗口提到前台。"""
+    user32 = ctypes.windll.user32
+    found = []
+
+    def _cb(hwnd, _):
+        try:
+            wpid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+            if wpid.value != pid:
+                return True
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            if "早晚读" in buf.value:
+                found.append(hwnd)
+                return False
+        except Exception:
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(
+            ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(_cb),
+            None)
+        if found:
+            user32.ShowWindowAsync(found[0], 9)  # SW_RESTORE
+            user32.SetForegroundWindow(found[0])
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def open_morning_browser(config=None) -> bool:
+    """打开早晚读浏览器（单开：已运行则激活）。
+
+    不再把配置（含密码）拼到命令行：Windows 上任何进程都能看到别的进程
+    命令行，等于把班级密码广播出去。子进程直接读 D 盘配置文件。
+    """
+    # 1. 已有实例 → 激活
+    try:
+        if os.path.isfile(MORNING_BROWSER_PID):
+            with open(MORNING_BROWSER_PID, "r", encoding="utf-8") as f:
+                pid = int(f.read().strip())
+            if pid and _process_alive(pid):
+                if _focus_browser_window(pid):
+                    return True
+                # 进程在但没有窗口（还在启动），等一会儿再看
+                for _ in range(10):
+                    time.sleep(0.3)
+                    if _focus_browser_window(pid):
                         return True
-                    pid = ctypes.c_ulong()
-                    GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                    if pid.value == existing_pid:
-                        length = GetWindowTextLength(hwnd)
-                        if length > 0:
-                            buf = ctypes.create_unicode_buffer(length + 1)
-                            GetWindowText(hwnd, buf, length + 1)
-                            if "早晚读" in buf.value or "morning" in buf.value.lower():
-                                found_hwnd.append(hwnd)
-                                return False
-                    return True
-
-                EnumWindows(EnumWindowsProc(callback), 0)
-                if found_hwnd:
-                    hwnd = found_hwnd[0]
-                    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-                    user32.SetForegroundWindow(hwnd)
-                    return True
     except Exception:
         pass
 
-    # 启动独立进程
-    run_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run.py")
-    config_json = json.dumps(config, ensure_ascii=False)
-
-    if getattr(sys, "frozen", False):
-        exe = sys.executable
-        creationflags = 0x00000008 | 0x08000000
-        proc = subprocess.Popen([exe, "--morning-browser", config_json],
-                                creationflags=creationflags, close_fds=True)
-    else:
-        creationflags = 0x00000008 | 0x08000000
-        proc = subprocess.Popen([sys.executable, run_py, "--morning-browser", config_json],
-                                creationflags=creationflags, close_fds=True)
-
-    # 写入 PID 文件
+    # 2. 启动新进程
+    run_py = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "run.py")
+    creationflags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
     try:
-        os.makedirs(os.path.dirname(pid_file), exist_ok=True)
-        with open(pid_file, "w") as f:
+        if getattr(sys, "frozen", False):
+            proc = subprocess.Popen([sys.executable, "--morning-browser"],
+                                    creationflags=creationflags, close_fds=True)
+        else:
+            proc = subprocess.Popen([sys.executable, run_py, "--morning-browser"],
+                                    creationflags=creationflags, close_fds=True)
+    except Exception as e:
+        try:
+            from src.core import log_daemon
+
+            log_daemon(f"启动早晚读浏览器失败: {type(e).__name__}: {e}")
+        except Exception:
+            pass
+        return False
+
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(MORNING_BROWSER_PID, "w", encoding="utf-8") as f:
             f.write(str(proc.pid))
     except Exception:
         pass

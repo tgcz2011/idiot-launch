@@ -13,7 +13,18 @@ build/
 dist/
 *.spec.bak
 
-# 内嵌安装包（二进制大文件，不入库；构建时自动下载）
+# 构建时生成的 PE 版本元数据（唯一来源是 src/core.py 的 LAUNCHER_VERSION，
+# 由 tools/bump_version.py 生成；不入库以免出现"元数据停留在旧版本"的问题）
+version_info.txt
+version_info_backend.txt
+
+# CI 生成的 Release 说明
+release_body.md
+
+# 下载残留（aria2 分片/控制文件）
+*.aria2
+
+# 内嵌安装包（二进制大文件，不入库；由更新机制下载）
 installer/*.exe
 
 # IDE
@@ -29,6 +40,10 @@ Desktop.ini
 
 # 日志
 *.log
+
+# 测试缓存
+.pytest_cache/
+.mypy_cache/
 
 # 构建时注入的密钥（不入库）
 src/_secrets.py

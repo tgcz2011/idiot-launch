@@ -5,11 +5,6 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: '版本号（a.b.c.d 或 a.b.c.d-betaN）'
-        required: true
-        default: '3.0.0.0-beta1'
 
 permissions:
   contents: write
@@ -17,6 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -32,14 +28,47 @@ jobs:
           flutter-version: '3.47.5'
           channel: 'stable'
 
+      - name: Read version and verify it matches the tag
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path "src\core.py" -Pattern 'LAUNCHER_VERSION\s*=\s*"([^"]+)"'
+          if (-not $m) { throw "src/core.py 里找不到 LAUNCHER_VERSION" }
+          $ver = $m.Matches[0].Groups[1].Value
+          Write-Host "LAUNCHER_VERSION = $ver"
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}".TrimStart('v')
+            if ($tag -ne $ver) {
+              throw "tag ($tag) 与 src/core.py 的 LAUNCHER_VERSION ($ver) 不一致。请先跑 tools/bump_version.py 再打 tag。"
+            }
+          }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Generate PE version metadata
+        shell: pwsh
+        run: |
+          python tools/gen_version_info.py "${{ steps.ver.outputs.version }}" "IdiotLaunch.exe" "傻瓜启动器"
+          python tools/gen_version_info.py "${{ steps.ver.outputs.version }}" "IdiotLaunchBackend.exe" "傻瓜启动器后端" "version_info_backend.txt"
+
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Python unit tests
+        run: python tools/test_core.py
+
       - name: Flutter pub get
         working-directory: flutter_app
         run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: flutter_app
+        run: flutter analyze
+
+      - name: Flutter test
+        working-directory: flutter_app
+        run: flutter test
 
       - name: Build Python backend (PyInstaller)
         env:
@@ -72,9 +101,9 @@ jobs:
       - name: Install Inno Setup
         shell: pwsh
         run: |
-          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            choco install innosetup -y --no-progress
+          $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            choco install innosetup --version=6.4.3 -y --no-progress
           }
 
       - name: Build Inno Setup installer
@@ -82,71 +111,58 @@ jobs:
         run: |
           $iscc = Get-ChildItem "C:\Program Files*\Inno Setup*\ISCC.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           if (-not $iscc) { throw "ISCC.exe not found" }
+          Write-Host "使用 $iscc"
           & $iscc "IdiotLaunch.iss"
           if ($LASTEXITCODE -ne 0) { throw "Inno Setup build failed" }
-          $setups = Get-ChildItem "dist\*.exe"
-          foreach ($s in $setups) {
-            Write-Host "Installer: $($s.FullName) ($([math]::Round($s.Length / 1MB, 1)) MB)"
-          }
 
       - name: Compute installer SHA-256
-        shell: pwsh
         id: hash
+        shell: pwsh
         run: |
-          $setup = Get-ChildItem "dist\*.exe" | Select-Object -First 1
-          $hash = Get-FileHash -Path $setup.FullName -Algorithm SHA256
-          Write-Host "SHA256: $($hash.Hash)"
-          "sha256=$($hash.Hash)" >> $env:GITHUB_OUTPUT
+          $expected = "dist\IdiotLaunch_Setup_${{ steps.ver.outputs.version }}.exe"
+          if (-not (Test-Path $expected)) { throw "安装包不存在: $expected" }
+          $hash = (Get-FileHash -Path $expected -Algorithm SHA256).Hash
+          Write-Host "SHA256: $hash"
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "$hash  IdiotLaunch_Setup_${{ steps.ver.outputs.version }}.exe" |
+            Set-Content -Path "dist\IdiotLaunch_Setup_${{ steps.ver.outputs.version }}.exe.sha256" -Encoding ascii
 
       - name: Generate release body
-        shell: pwsh
         id: body
+        shell: pwsh
         run: |
-          $launcherVer = (Select-String -Path "src\core.py" -Pattern 'LAUNCHER_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
-          $isBeta = $launcherVer -match 'beta|alpha|rc|pre'
-          $betaNote = if ($isBeta) { "`n`n> **注意：这是 Beta 测试版本，可能不稳定。生产环境请使用正式版。`n" } else { "" }
+          $ver = "${{ steps.ver.outputs.version }}"
+          $isBeta = $ver -match 'beta|alpha|rc|pre'
+          $betaNote = if ($isBeta) { "`n> **这是 Beta 测试版本，可能不稳定。生产环境请使用正式版。**`n" } else { "" }
           $body = @"
-          ## Idiot Launch ${{ github.ref_name }}
-
-          傻瓜式启动器，一键启动中考/高考倒计时或早晚读网页。
+          ## 傻瓜启动器 $ver
           $betaNote
-          ### V3 架构升级
-          - **Flutter 前端 + Python 后端**前后端分离架构
-          - Material 3 侧边栏 UI，更美观流畅
-          - 倒计时/秒表纯前端实现，响应更快
-          - 后端常驻提供 API，频繁开关不中断
+          ### 安装
+          1. 下载下面的 ``IdiotLaunch_Setup_$ver.exe``
+          2. 双击即可，无需选择安装位置（固定装在 D:\IdiotLaunch，避开冰点还原）
+          3. 装完自动启动，桌面和 D 盘根目录会出现「傻瓜启动器」图标
 
-          ### 功能
-          - **中考倒计时**：启动 Countdown Desktop（`--exam zhongkao`）
-          - **高考倒计时**：启动 Countdown Desktop（`--exam gaokao`）
-          - **早晚读**：内嵌浏览器打开，支持登录持久化
-          - **壁纸&屏保设置**：一键唤起 Countdown Desktop 设置窗口
-          - **倒计时/秒表**：Material 3 滚轮选择器，全屏，结束铃声
-          - **随机抽学生**：早读登录后可用
-          - Countdown Desktop 已合并到本项目，不再需要独立安装
-          - 启动器自身自动更新（空闲5分钟自动升级）
-          - 多镜像源下载 fallback + SHA-256 校验
-          - D盘根目录+桌面快捷方式自动重建
-          - 系统托盘图标，GUI 单实例
-
-          ### 适用场景
-          学校机房（C 盘冰点还原，安装到 D 盘持久化）
+          ### 更新说明
+          - 关闭窗口 = 最小化到托盘（右键托盘图标可以重新打开或彻底退出）
+          - 顶部横幅出现「可一键更新至 vX」时点一下即可更新，会显示安装进度
+          - 设置页新增深色主题、自动更新/遥测开关和后台行为说明
 
           ### 校验和（SHA-256）
-          - 安装包哈希：`${{ steps.hash.outputs.sha256 }}`
-          - 本机更新时对下载的安装包做 SHA-256 校验，哈希不一致会拒绝更新并重新下载
+          ``${{ steps.hash.outputs.sha256 }}``
+          可在命令行用 ``certutil -hashfile IdiotLaunch_Setup_$ver.exe SHA256`` 核对。
           "@
           [System.IO.File]::WriteAllText("release_body.md", $body, (New-Object System.Text.UTF8Encoding $false))
-          Write-Host "Release body generated (v$launcherVer, beta=$isBeta)"
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: Idiot Launch ${{ github.ref_name }}
+          name: 傻瓜启动器 ${{ steps.ver.outputs.version }}
           body_path: release_body.md
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
-          files: dist/*.exe
+          files: |
+            dist/IdiotLaunch_Setup_*.exe
+            dist/IdiotLaunch_Setup_*.exe.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -157,11 +173,12 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           SHA256: ${{ steps.hash.outputs.sha256 }}
         run: |
-          $launcherVer = (Select-String -Path "src\core.py" -Pattern 'LAUNCHER_VERSION\s*=\s*"([^"]+)"').Matches.Groups[1].Value
-          $isBeta = $launcherVer -match 'beta|alpha|rc|pre'
+          if (-not $env:SUPABASE_SERVICE_KEY) { Write-Host "没有配置 SUPABASE_SERVICE_KEY，跳过"; exit 0 }
+          $ver = "${{ steps.ver.outputs.version }}"
+          $isBeta = $ver -match 'beta|alpha|rc|pre'
           $channel = if ($isBeta) { "beta" } else { "stable" }
-          $setupName = "IdiotLaunch_Setup_$launcherVer.exe"
-          $downloadUrl = "https://github.com/tgcz2011/idiot-launch/releases/download/v$launcherVer/$setupName"
+          $setupName = "IdiotLaunch_Setup_$ver.exe"
+          $downloadUrl = "https://github.com/tgcz2011/idiot-launch/releases/download/${{ github.ref_name }}/$setupName"
           $supabaseUrl = "https://tiofmybnepcheudgfysa.supabase.co"
           $headers = @{
             "apikey" = $env:SUPABASE_SERVICE_KEY
@@ -169,18 +186,16 @@ jobs:
             "Content-Type" = "application/json"
             "Prefer" = "return=minimal"
           }
-          # 1. 将旧版本标记为非最新
           try {
             Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/latest_version?channel=eq.$channel" -Method Patch -Headers $headers -Body (@{is_latest = $false} | ConvertTo-Json) | Out-Null
           } catch { Write-Host "No old versions to update" }
-          # 2. 插入新版本
           $body = @{
-            version = $launcherVer
+            version = $ver
             channel = $channel
             download_url = $downloadUrl
             sha256 = $env:SHA256
-            release_notes = "Idiot Launch v$launcherVer"
+            release_notes = "傻瓜启动器 v$ver"
             is_latest = $true
           } | ConvertTo-Json
           Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/latest_version" -Method Post -Headers $headers -Body $body | Out-Null
-          Write-Host "Supabase updated: $channel -> $launcherVer"
+          Write-Host "Supabase updated: $channel -> $ver"

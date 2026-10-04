@@ -422,23 +422,6 @@ class App:
         log.info("switch-exam event signaled: %s", overrides)
 
     @staticmethod
-    def _signal_switch_exam(overrides: dict) -> None:
-        """已有实例运行时：写命令文件 + 发命名事件，通知其切换考试类型。"""
-        import json as _json
-        try:
-            with open(SWITCH_CMD_FILE, "w", encoding="utf-8") as f:
-                _json.dump(overrides, f)
-        except Exception:
-            log.exception("write switch cmd file failed")
-        h = ctypes.windll.kernel32.OpenEventW(EVENT_MODIFY_STATE, False, SWITCH_EXAM_EVENT_NAME)
-        if not h:
-            log.warning("switch-exam event not found, running instance may be old version")
-            return
-        ctypes.windll.kernel32.SetEvent(h)
-        ctypes.windll.kernel32.CloseHandle(h)
-        log.info("switch-exam event signaled: %s", overrides)
-
-    @staticmethod
     def _wait_mutex(timeout: float) -> bool:
         """轮询等待互斥量释放。"""
         from . import win32
@@ -580,10 +563,17 @@ class App:
         if enable == bool(self.cfg.get("run_at_startup")):
             self.act_startup.setChecked(enable)
             return
-        exe = sys.executable if getattr(sys, "frozen", False) else os.path.abspath(
-            os.path.join(_base_dir(), "run.py"))
+        # 打包后 sys.executable 是 IdiotLaunchBackend.exe，必须带上 --countdown-app，
+        # 否则开机只会启动一个"不知道该干什么"的后端组件（历史 bug：开机弹提示框）。
+        if getattr(sys, "frozen", False):
+            exe = sys.executable
+            args = "--countdown-app"
+        else:
+            exe = sys.executable
+            args = '"%s" --countdown-app' % os.path.abspath(
+                os.path.join(_base_dir(), "run.py"))
         try:
-            win32.set_autostart(enable, exe)
+            win32.set_autostart(enable, exe, args)
         except OSError:
             log.exception("set_autostart failed")
             enable = bool(self.cfg.get("run_at_startup"))

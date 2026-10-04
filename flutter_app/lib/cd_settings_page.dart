@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
-import 'api.dart';
 
-/// Countdown Desktop 设置界面（Flutter 重写版）
-/// 左侧导航 + 右侧内容区 + 底部保存/取消
+import 'api.dart';
+import 'app_log.dart';
+
+/// 壁纸 & 屏保设置（Flutter 版）。
+///
+/// 注意：这里改的是 countdown_app 的 config.json。如果壁纸正在运行，
+/// 改动要等壁纸重启后才生效，保存后会明确提示用户。
 class CdSettingsDialog extends StatefulWidget {
   const CdSettingsDialog({super.key});
 
@@ -14,19 +18,20 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
   final ApiService _api = ApiService();
   int _selectedPage = 0;
   bool _loading = true;
+  bool _saving = false;
   String? _error;
 
-  // 配置数据
-  Map<String, dynamic> _config = {};
-  Map<String, String> _examLabels = {};
-  Map<String, String> _fitLabels = {};
+  Map<String, dynamic> _config = <String, dynamic>{};
+  Map<String, String> _examLabels = <String, String>{};
+  Map<String, String> _fitLabels = <String, String>{};
   String _cdVersion = '';
+  String _defaultUrl = '';
+  bool _running = false;
 
-  // 编辑控制器
-  final _wallUrlCtrl = TextEditingController();
-  final _ssUrlCtrl = TextEditingController();
+  final TextEditingController _wallUrlCtrl = TextEditingController();
+  final TextEditingController _ssUrlCtrl = TextEditingController();
 
-  static const _navItems = [
+  static const List<(String, IconData)> _navItems = <(String, IconData)>[
     ('倒计时', Icons.timer_outlined),
     ('动态壁纸', Icons.wallpaper_outlined),
     ('屏幕保护', Icons.screen_lock_portrait_outlined),
@@ -47,122 +52,174 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
     super.dispose();
   }
 
+  // ---- 读取配置时的兜底：任何一段缺失都补上默认值，避免显示 (null) ----
+  Map<String, dynamic> _section(String key) {
+    final v = _config[key];
+    if (v is Map) {
+      final m = v.cast<String, dynamic>();
+      _config[key] = m;
+      return m;
+    }
+    final created = <String, dynamic>{};
+    _config[key] = created;
+    return created;
+  }
+
   Future<void> _loadConfig() async {
     try {
       final r = await _api.getCdConfig();
+      final cfg = Map<String, dynamic>.from(
+          (r['config'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{});
       setState(() {
-        _config = Map<String, dynamic>.from(r['config'] ?? {});
-        _examLabels = Map<String, String>.from(r['exam_labels'] ?? {});
-        _fitLabels = Map<String, String>.from(r['fit_labels'] ?? {});
-        _cdVersion = r['cd_version'] ?? '';
-        _wallUrlCtrl.text = _config['wallpaper']?['url'] ?? '';
-        _ssUrlCtrl.text = _config['screensaver']?['url'] ?? '';
+        _config = cfg;
+        _examLabels = Map<String, String>.from(
+            (r['exam_labels'] as Map?)?.cast<String, String>() ?? <String, String>{});
+        _fitLabels = Map<String, String>.from(
+            (r['fit_labels'] as Map?)?.cast<String, String>() ?? <String, String>{});
+        _cdVersion = ApiService.asString(r['cd_version']);
+        _defaultUrl = ApiService.asString(r['default_url']);
+        _running = ApiService.asBool(r['running']);
+        _wallUrlCtrl.text = ApiService.asString(_section('wallpaper')['url']);
+        _ssUrlCtrl.text = ApiService.asString(_section('screensaver')['url']);
         _loading = false;
       });
-    } catch (e) {
+    } catch (e, s) {
+      AppLog.error('读取壁纸配置失败', e, s);
       setState(() {
-        _error = e.toString();
+        _error = '读取设置失败：$e';
         _loading = false;
       });
     }
   }
 
-  bool get _isCustomExam => _config['exam_type'] == 'custom';
+  bool get _isCustomExam => ApiService.asString(_config['exam_type']) == 'custom';
 
   void _setExamType(String value) {
     setState(() {
       _config['exam_type'] = value;
-      if (value != 'custom') {
-        // 预设模式：URL 跟随预设
-        final defaultUrl = value == 'zhongkao'
-            ? 'https://zztool.free.nf/countdown-junior'
-            : 'https://zztool.free.nf/countdown';
-        _wallUrlCtrl.text = defaultUrl;
-        _ssUrlCtrl.text = defaultUrl;
-        _config['wallpaper']?['url'] = defaultUrl;
-        _config['screensaver']?['url'] = defaultUrl;
-      }
+      if (value == 'custom') return;
+      // 预设模式：地址跟随预设（用后端返回的默认地址，不在这里硬编码）
+      final preset = _defaultUrl.isNotEmpty ? _defaultUrl : _wallUrlCtrl.text;
+      final url = value == 'zhongkao'
+          ? (preset.contains('countdown')
+              ? preset.replaceFirst(RegExp(r'countdown[^/]*$'), 'countdown-junior')
+              : preset)
+          : preset;
+      _wallUrlCtrl.text = url;
+      _ssUrlCtrl.text = url;
+      _section('wallpaper')['url'] = url;
+      _section('screensaver')['url'] = url;
     });
   }
 
   Future<void> _save() async {
+    setState(() => _saving = true);
     try {
-      // 同步 URL 输入框到配置
-      _config['wallpaper']?['url'] = _wallUrlCtrl.text.trim();
-      _config['screensaver']?['url'] = _ssUrlCtrl.text.trim();
-      await _api.saveCdConfig(_config);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('设置已保存')),
-        );
-        Navigator.pop(context, true);
+      _section('wallpaper')['url'] = _wallUrlCtrl.text.trim();
+      _section('screensaver')['url'] = _ssUrlCtrl.text.trim();
+      final r = await _api.saveCdConfig(_config);
+      if (!mounted) return;
+      if (!ApiService.asBool(r['success'])) {
+        _showSnack('保存失败：${ApiService.asString(r['error'])}', error: true);
+        return;
       }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('保存失败：$e')),
-        );
-      }
+      final needRestart = ApiService.asBool(r['restart_required']);
+      Navigator.pop(context, true);
+      // 提示放在主界面（弹窗已经关了）
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.showSnackBar(SnackBar(
+        content: Text(needRestart
+            ? '设置已保存。壁纸正在运行，重新启动壁纸后生效。'
+            : '设置已保存'),
+      ));
+    } catch (e, s) {
+      AppLog.error('保存壁纸配置失败', e, s);
+      if (mounted) _showSnack('保存失败：$e', error: true);
+    } finally {
+      if (mounted) setState(() => _saving = false);
     }
+  }
+
+  void _showSnack(String msg, {bool error = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      backgroundColor: error ? Theme.of(context).colorScheme.error : null,
+    ));
   }
 
   @override
   Widget build(BuildContext context) {
+    final size = MediaQuery.sizeOf(context);
+    final width = (size.width - 60).clamp(320.0, 720.0);
+    final height = (size.height - 80).clamp(320.0, 560.0);
     return Dialog(
-      insetPadding: const EdgeInsets.symmetric(horizontal: 40, vertical: 24),
-      child: Container(
-        width: 680,
-        height: 480,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(12),
-          color: Theme.of(context).colorScheme.surface,
-        ),
+      insetPadding: const EdgeInsets.all(20),
+      child: SizedBox(
+        width: width,
+        height: height,
         child: Column(
-          children: [
-            // 标题栏
+          children: <Widget>[
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 12, 8),
+              padding: const EdgeInsets.fromLTRB(20, 14, 10, 10),
               child: Row(
-                children: [
-                  Text('壁纸&屏保设置', style: Theme.of(context).textTheme.titleLarge),
+                children: <Widget>[
+                  Text('壁纸 & 屏保设置',
+                      style: Theme.of(context).textTheme.titleLarge),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(Icons.close, size: 20),
+                    icon: const Icon(Icons.close, size: 22),
+                    tooltip: '关闭',
                     onPressed: () => Navigator.pop(context),
                   ),
                 ],
               ),
             ),
             const Divider(height: 1),
-            // 主体：左侧导航 + 右侧内容
             Expanded(
               child: _loading
                   ? const Center(child: CircularProgressIndicator())
                   : _error != null
-                      ? Center(child: Text('加载失败：$_error'))
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Text(_error!, textAlign: TextAlign.center),
+                          ),
+                        )
                       : Row(
-                          children: [
+                          children: <Widget>[
                             _buildNav(),
                             const VerticalDivider(width: 1),
                             Expanded(child: _buildPage()),
                           ],
                         ),
             ),
-            // 底部按钮
             const Divider(height: 1),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
+                children: <Widget>[
+                  if (_running)
+                    Expanded(
+                      child: Text('壁纸正在运行：部分设置需要重新启动壁纸后生效',
+                          style: TextStyle(
+                              fontSize: 13,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                    )
+                  else
+                    const Spacer(),
                   TextButton(
-                    onPressed: () => Navigator.pop(context),
+                    onPressed: _saving ? null : () => Navigator.pop(context),
                     child: const Text('取消'),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   FilledButton(
-                    onPressed: _loading ? null : _save,
-                    child: const Text('保存'),
+                    onPressed: (_loading || _saving) ? null : _save,
+                    child: _saving
+                        ? const SizedBox(
+                            width: 20, height: 20,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.white))
+                        : const Text('保存'),
                   ),
                 ],
               ),
@@ -174,8 +231,9 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
   }
 
   Widget _buildNav() {
+    final scheme = Theme.of(context).colorScheme;
     return Container(
-      width: 140,
+      width: 150,
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: ListView.builder(
         itemCount: _navItems.length,
@@ -183,22 +241,27 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
           final (label, icon) = _navItems[i];
           final selected = i == _selectedPage;
           return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
             child: Material(
-              color: selected
-                  ? Theme.of(context).colorScheme.primaryContainer
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(8),
+              color: selected ? scheme.primaryContainer : Colors.transparent,
+              borderRadius: BorderRadius.circular(10),
               child: InkWell(
-                borderRadius: BorderRadius.circular(8),
+                borderRadius: BorderRadius.circular(10),
                 onTap: () => setState(() => _selectedPage = i),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                   child: Row(
-                    children: [
-                      Icon(icon, size: 18, color: selected ? Theme.of(context).colorScheme.primary : Colors.grey[600]),
+                    children: <Widget>[
+                      Icon(icon,
+                          size: 20,
+                          color: selected ? scheme.primary : scheme.onSurfaceVariant),
                       const SizedBox(width: 10),
-                      Text(label, style: TextStyle(fontSize: 13, fontWeight: selected ? FontWeight.w600 : FontWeight.w400)),
+                      Text(label,
+                          style: TextStyle(
+                              fontSize: 15,
+                              fontWeight:
+                                  selected ? FontWeight.w600 : FontWeight.w400)),
                     ],
                   ),
                 ),
@@ -213,240 +276,256 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
   Widget _buildPage() {
     switch (_selectedPage) {
       case 0:
-        return _buildCountdownPage();
+        return _page(_buildCountdownPage());
       case 1:
-        return _buildWallpaperPage();
+        return _page(_buildWallpaperPage());
       case 2:
-        return _buildScreensaverPage();
+        return _page(_buildScreensaverPage());
       case 3:
-        return _buildGeneralPage();
-      case 4:
-        return _buildAboutPage();
+        return _page(_buildGeneralPage());
       default:
-        return const SizedBox.shrink();
+        return _page(_buildAboutPage());
     }
   }
 
-  // ========== 倒计时页 ==========
+  Widget _page(Widget child) => SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: child,
+      );
+
+  // ---------- 倒计时 ----------
   Widget _buildCountdownPage() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('倒计时类型', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 12),
-          ..._examLabels.entries.map((e) => RadioListTile<String>(
-                title: Text(e.value),
-                value: e.key,
-                groupValue: _config['exam_type'] ?? 'gaokao',
-                onChanged: (v) => _setExamType(v!),
-                dense: true,
-              )),
-          const SizedBox(height: 8),
-          Text(
-            _isCustomExam
-                ? '自定义：壁纸与屏保可在各自页面分别设置地址。'
-                : '高考/中考：壁纸与屏保统一使用对应倒计时页面。',
-            style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ========== 动态壁纸页 ==========
-  Widget _buildWallpaperPage() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SwitchListTile(
-            title: const Text('启用动态壁纸'),
-            value: _config['wallpaper']?['enabled'] ?? true,
-            onChanged: (v) => setState(() => _config['wallpaper']?['enabled'] = v),
-            contentPadding: EdgeInsets.zero,
-          ),
-          const SizedBox(height: 8),
-          Text('壁纸源', style: Theme.of(context).textTheme.bodyMedium),
-          const SizedBox(height: 6),
-          TextField(
-            controller: _wallUrlCtrl,
-            enabled: _isCustomExam,
-            decoration: InputDecoration(
-              hintText: _isCustomExam ? '网页地址，或本地 视频/图片/动图 文件' : '跟随倒计时页预设',
-              isDense: true,
-              border: const OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text('画幅', style: Theme.of(context).textTheme.bodyMedium),
-          const SizedBox(height: 6),
-          DropdownButtonFormField<String>(
-            value: _config['wallpaper']?['fit'] ?? 'cover',
-            isDense: true,
-            decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-            items: _fitLabels.entries
-                .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
+    final examType = ApiService.asString(_config['exam_type']);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text('倒计时类型', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        RadioGroup<String>(
+          groupValue: examType,
+          onChanged: (v) {
+            if (v != null) _setExamType(v);
+          },
+          child: Column(
+            children: _examLabels.entries
+                .map((e) => RadioListTile<String>(
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(e.value, style: const TextStyle(fontSize: 16)),
+                      value: e.key,
+                    ))
                 .toList(),
-            onChanged: (v) => setState(() => _config['wallpaper']?['fit'] = v),
           ),
-          const SizedBox(height: 12),
-          SwitchListTile(
-            title: const Text('静音（网页与视频）'),
-            value: _config['wallpaper']?['mute'] ?? true,
-            onChanged: (v) => setState(() => _config['wallpaper']?['mute'] = v),
-            contentPadding: EdgeInsets.zero,
-          ),
-        ],
-      ),
-    );
-  }
-
-  // ========== 屏幕保护页 ==========
-  Widget _buildScreensaverPage() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            SwitchListTile(
-              title: const Text('启用屏保（自绘全屏窗口）'),
-              value: _config['screensaver']?['enabled'] ?? true,
-              onChanged: (v) => setState(() => _config['screensaver']?['enabled'] = v),
-              contentPadding: EdgeInsets.zero,
-            ),
-            const SizedBox(height: 8),
-            Text('屏保源', style: Theme.of(context).textTheme.bodyMedium),
-            const SizedBox(height: 6),
-            TextField(
-              controller: _ssUrlCtrl,
-              enabled: _isCustomExam,
-              decoration: InputDecoration(
-                hintText: _isCustomExam ? '网页地址，或本地 视频/图片/动图 文件' : '跟随倒计时页预设',
-                isDense: true,
-                border: const OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Text('空闲触发时长（秒）', style: Theme.of(context).textTheme.bodyMedium),
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                Expanded(
-                  child: Slider(
-                    value: (_config['screensaver']?['timeout'] ?? 600).toDouble(),
-                    min: 30,
-                    max: 3600,
-                    divisions: 119,
-                    label: '${_config['screensaver']?['timeout'] ?? 600}秒',
-                    onChanged: (v) => setState(() => _config['screensaver']?['timeout'] = v.round()),
-                  ),
-                ),
-                SizedBox(
-                  width: 60,
-                  child: Text('${_config['screensaver']?['timeout'] ?? 600}秒', textAlign: TextAlign.right),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Text('画幅', style: Theme.of(context).textTheme.bodyMedium),
-            const SizedBox(height: 6),
-            DropdownButtonFormField<String>(
-              value: _config['screensaver']?['fit'] ?? 'cover',
-              isDense: true,
-              decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
-              items: _fitLabels.entries
-                  .map((e) => DropdownMenuItem(value: e.key, child: Text(e.value)))
-                  .toList(),
-              onChanged: (v) => setState(() => _config['screensaver']?['fit'] = v),
-            ),
-            const SizedBox(height: 12),
-            SwitchListTile(
-              title: const Text('静音（网页与视频）'),
-              value: _config['screensaver']?['mute'] ?? true,
-              onChanged: (v) => setState(() => _config['screensaver']?['mute'] = v),
-              contentPadding: EdgeInsets.zero,
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              icon: const Icon(Icons.play_circle_outline, size: 18),
-              label: const Text('立即测试屏保'),
-              onPressed: () => _api.testCdScreensaver(),
-            ),
-          ],
         ),
-      ),
+        const SizedBox(height: 8),
+        Text(
+          _isCustomExam
+              ? '自定义：壁纸与屏保可以在各自页面分别设置地址。'
+              : '高考 / 中考：壁纸与屏保统一使用对应倒计时页面。',
+          style: TextStyle(
+              fontSize: 14,
+              height: 1.6,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+      ],
     );
   }
 
-  // ========== 通用页 ==========
+  // ---------- 动态壁纸 ----------
+  Widget _buildWallpaperPage() {
+    final wall = _section('wallpaper');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('启用动态壁纸'),
+          value: wall['enabled'] != false,
+          onChanged: (v) => setState(() => wall['enabled'] = v),
+        ),
+        const SizedBox(height: 8),
+        const Text('壁纸源'),
+        const SizedBox(height: 6),
+        TextField(
+          controller: _wallUrlCtrl,
+          enabled: _isCustomExam,
+          decoration: InputDecoration(
+            isDense: true,
+            border: const OutlineInputBorder(),
+            hintText: _isCustomExam
+                ? '网页地址，或本地 视频/图片/动图 文件'
+                : '跟随倒计时页预设（切换类型即可修改）',
+          ),
+        ),
+        const SizedBox(height: 14),
+        const Text('画幅'),
+        const SizedBox(height: 6),
+        DropdownButtonFormField<String>(
+          initialValue: ApiService.asString(wall['fit']).isEmpty
+              ? 'cover'
+              : ApiService.asString(wall['fit']),
+          isDense: true,
+          decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+          items: _fitLabels.entries
+              .map((e) => DropdownMenuItem<String>(value: e.key, child: Text(e.value)))
+              .toList(),
+          onChanged: (v) => setState(() => wall['fit'] = v),
+        ),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('静音（网页与视频）'),
+          value: wall['mute'] != false,
+          onChanged: (v) => setState(() => wall['mute'] = v),
+        ),
+      ],
+    );
+  }
+
+  // ---------- 屏幕保护 ----------
+  Widget _buildScreensaverPage() {
+    final ss = _section('screensaver');
+    final timeout = ApiService.asInt(ss['timeout']) == 0 ? 600 : ApiService.asInt(ss['timeout']);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('启用屏保'),
+          value: ss['enabled'] != false,
+          onChanged: (v) => setState(() => ss['enabled'] = v),
+        ),
+        const SizedBox(height: 8),
+        const Text('屏保源'),
+        const SizedBox(height: 6),
+        TextField(
+          controller: _ssUrlCtrl,
+          enabled: _isCustomExam,
+          decoration: InputDecoration(
+            isDense: true,
+            border: const OutlineInputBorder(),
+            hintText: _isCustomExam
+                ? '网页地址，或本地 视频/图片/动图 文件'
+                : '跟随倒计时页预设',
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text('空闲 $timeout 秒后启动屏保'),
+        Slider(
+          value: timeout.toDouble().clamp(30, 3600),
+          min: 30,
+          max: 3600,
+          divisions: 119,
+          label: '$timeout 秒',
+          onChanged: (v) => setState(() => ss['timeout'] = v.round()),
+        ),
+        const SizedBox(height: 6),
+        const Text('画幅'),
+        const SizedBox(height: 6),
+        DropdownButtonFormField<String>(
+          initialValue: ApiService.asString(ss['fit']).isEmpty
+              ? 'cover'
+              : ApiService.asString(ss['fit']),
+          isDense: true,
+          decoration: const InputDecoration(border: OutlineInputBorder(), isDense: true),
+          items: _fitLabels.entries
+              .map((e) => DropdownMenuItem<String>(value: e.key, child: Text(e.value)))
+              .toList(),
+          onChanged: (v) => setState(() => ss['fit'] = v),
+        ),
+        const SizedBox(height: 8),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('静音（网页与视频）'),
+          value: ss['mute'] != false,
+          onChanged: (v) => setState(() => ss['mute'] = v),
+        ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.play_circle_outline, size: 20),
+          label: const Text('立即测试屏保'),
+          onPressed: () async {
+            if (ss['enabled'] == false) {
+              _showSnack('请先勾选「启用屏保」再测试', error: true);
+              return;
+            }
+            try {
+              await _api.testCdScreensaver();
+              _showSnack('屏保已启动，动一下鼠标或按键盘即可退出');
+            } catch (e) {
+              _showSnack('测试屏保失败：$e', error: true);
+            }
+          },
+        ),
+      ],
+    );
+  }
+
+  // ---------- 通用 ----------
   Widget _buildGeneralPage() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('通用', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 12),
-          SwitchListTile(
-            title: const Text('开机自启'),
-            subtitle: const Text('写入注册表 HKCU，卸载自动清理'),
-            value: _config['run_at_startup'] ?? false,
-            onChanged: (v) => setState(() => _config['run_at_startup'] = v),
-            contentPadding: EdgeInsets.zero,
-          ),
-          const SizedBox(height: 8),
-          Text('播放', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 12),
-          SwitchListTile(
-            title: const Text('视频循环播放'),
-            subtitle: const Text('壁纸与屏保均生效'),
-            value: _config['playback']?['video_loop'] ?? true,
-            onChanged: (v) => setState(() => _config['playback']?['video_loop'] = v),
-            contentPadding: EdgeInsets.zero,
-          ),
-        ],
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('开机自动启动壁纸'),
+          subtitle: const Text('写入当前用户注册表，卸载时会自动清理'),
+          value: _config['run_at_startup'] == true,
+          onChanged: (v) => setState(() => _config['run_at_startup'] = v),
+        ),
+        const Divider(),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('视频循环播放'),
+          subtitle: const Text('壁纸与屏保均生效'),
+          value: _section('playback')['video_loop'] != false,
+          onChanged: (v) => setState(() => _section('playback')['video_loop'] = v),
+        ),
+      ],
     );
   }
 
-  // ========== 关于页 ==========
+  // ---------- 关于 ----------
   Widget _buildAboutPage() {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('关于', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 16),
-          _aboutRow('程序', 'Countdown Desktop（傻瓜启动器特供版）'),
-          _aboutRow('版本', 'v$_cdVersion'),
-          _aboutRow('功能', '动态壁纸 + 屏幕保护（网页/视频/图片/动图）'),
-          _aboutRow('渲染', 'pywebview + WebView2（Chromium）'),
-          _aboutRow('更新', '已由傻瓜启动器统一管理'),
-          const SizedBox(height: 20),
-          Text('开源许可与鸣谢', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          Text(
-            '本软件基于 GPL-3.0 授权开源。壁纸嵌入实现学习并借鉴了 Lively Wallpaper（GPL-3.0），在此向作者 rocksdanister 及社区贡献者致谢。',
-            style: TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.5),
-          ),
-        ],
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text('Countdown Desktop（傻瓜启动器特供版）',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 12),
+        _aboutRow('版本', 'v$_cdVersion'),
+        _aboutRow('功能', '动态壁纸 + 屏幕保护（网页/视频/图片/动图）'),
+        _aboutRow('渲染', 'pywebview + WebView2（Chromium）'),
+        _aboutRow('更新', '由傻瓜启动器统一管理，在首页横幅一键更新'),
+        const SizedBox(height: 18),
+        Text('开源许可与鸣谢',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        Text(
+          '本软件基于 GPL-3.0 授权开源。壁纸嵌入实现学习并借鉴了 '
+          'Lively Wallpaper（GPL-3.0），在此向作者 rocksdanister 及社区贡献者致谢。',
+          style: TextStyle(
+              fontSize: 13, height: 1.7,
+              color: Theme.of(context).colorScheme.onSurfaceVariant),
+        ),
+      ],
     );
   }
 
   Widget _aboutRow(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
+      padding: const EdgeInsets.symmetric(vertical: 5),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 60, child: Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 13))),
-          Expanded(child: Text(value, style: const TextStyle(fontSize: 13))),
+        children: <Widget>[
+          SizedBox(
+            width: 64,
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant)),
+          ),
+          Expanded(child: Text(value, style: const TextStyle(fontSize: 14))),
         ],
       ),
     );

@@ -1,153 +1,95 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-早读内嵌浏览器窗口。
-用 PySide6 + QWebEngineView，支持自动登录（官方 Token 直链）、置顶、调整大小、移动。
-通过 run.py --morning-browser 启动，从配置文件读取班级信息。
+早晚读内嵌浏览器窗口。
+
+用 PySide6 + QWebEngineView。已登录时用官方免登录 token 直链打开，
+未登录则直接打开网页首页（不拦截用户）。
+
+从 run.py --morning-browser 启动，配置从 D 盘配置文件读取
+（不再通过命令行传密码：命令行对本机任何进程可见）。
 """
-import sys
-import os
 import json
-import time
-import base64
 import logging
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
-                               QHBoxLayout, QPushButton, QLabel, QFrame)
+import os
+import sys
+import time
+
+from PySide6.QtCore import QUrl, Qt
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtCore import QUrl, Qt, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtWidgets import (QApplication, QFrame, QHBoxLayout, QLabel,
+                               QMainWindow, QPushButton, QVBoxLayout, QWidget)
+
+from src import morning_config
 
 log = logging.getLogger("morning_browser")
 
-# 早读网页地址
-MORNING_READING_URL = "https://zztool.free.nf/morning-reading"
+MORNING_READING_URL = morning_config.MORNING_READING_URL
+PERSISTENT_CONFIG_PATH = morning_config.PERSISTENT_CONFIG_PATH
+TEMP_CONFIG_PATH = morning_config.TEMP_CONFIG_PATH
+DATA_DIR = morning_config.DATA_DIR
+PID_FILE = os.path.join(DATA_DIR, "morning_browser.pid")
 
-# 配置文件路径（与 core.py 的 UPDATE_DIR 保持一致：D:\IdiotLaunch\data）
-PERSISTENT_CONFIG_PATH = r"D:\IdiotLaunch\data\morning_config.json"
-TEMP_CONFIG_PATH = os.path.join(os.environ.get("TEMP", os.path.expanduser("~")),
-                                "idiot_launch_morning_config.json")
-
-# 密码加密密钥（简单 XOR，不是强加密，只是避免明文存储）
-_PASSWORD_KEY = b"IdiotLaunch_Morning_Reading_2024"
+# 兼容旧调用方
+load_morning_config = morning_config.load
 
 
-def _encrypt_password(password: str) -> str:
-    """简单加密密码：XOR + Base64。"""
-    if not password:
-        return ""
-    data = password.encode("utf-8")
-    encrypted = bytes([data[i] ^ _PASSWORD_KEY[i % len(_PASSWORD_KEY)] for i in range(len(data))])
-    return "enc:" + base64.b64encode(encrypted).decode("ascii")
+def save_morning_config(config, persistent: bool = True) -> bool:
+    return morning_config.save(config, persistent=persistent)
 
 
-def _decrypt_password(encrypted: str) -> str:
-    """解密密码。如果不是加密格式（旧版明文），直接返回。"""
-    if not encrypted:
-        return ""
-    if not encrypted.startswith("enc:"):
-        return encrypted  # 旧版明文，兼容
-    try:
-        data = base64.b64decode(encrypted[4:])
-        decrypted = bytes([data[i] ^ _PASSWORD_KEY[i % len(_PASSWORD_KEY)] for i in range(len(data))])
-        return decrypted.decode("utf-8")
-    except Exception:
-        return encrypted  # 解密失败，返回原值
-
-
-def load_morning_config():
-    """加载早读班级配置。优先读取临时配置（非持久登录），没有则读取持久配置。密码自动解密。"""
-    for path in (TEMP_CONFIG_PATH, PERSISTENT_CONFIG_PATH):
-        try:
-            if os.path.isfile(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    cfg = json.load(f)
-                # 解密密码
-                if "password" in cfg:
-                    cfg["password"] = _decrypt_password(cfg["password"])
-                return cfg
-        except Exception:
-            continue
-    return {}
-
-
-def save_morning_config(config, persistent=True):
-    """保存早读班级配置。persistent=False 时写入临时文件，IL 重启后自动消失。密码自动加密。"""
-    path = PERSISTENT_CONFIG_PATH if persistent else TEMP_CONFIG_PATH
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        # 加密密码后再保存
-        cfg_to_save = dict(config)
-        if "password" in cfg_to_save and cfg_to_save["password"]:
-            cfg_to_save["password"] = _encrypt_password(cfg_to_save["password"])
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(cfg_to_save, f, ensure_ascii=False, indent=2)
-        if persistent and os.path.isfile(TEMP_CONFIG_PATH):
-            try:
-                os.remove(TEMP_CONFIG_PATH)
-            except Exception:
-                pass
-        return True
-    except Exception as e:
-        log.error(f"保存早读配置失败: {e}")
-        return False
-
-
-def clear_temp_morning_config():
-    """删除临时早读配置（IL 退出时调用）。"""
-    try:
-        if os.path.isfile(TEMP_CONFIG_PATH):
-            os.remove(TEMP_CONFIG_PATH)
-    except Exception:
-        pass
+def clear_temp_morning_config() -> None:
+    morning_config.clear_temp()
 
 
 class MorningBrowserWindow(QMainWindow):
-    """早读内嵌浏览器窗口。"""
+    """早晚读内嵌浏览器窗口。"""
 
     def __init__(self, config=None):
         super().__init__()
-        self.config = config or load_morning_config()
+        self.config = config or morning_config.load()
         self._auto_login_done = False
         self._always_on_top = True
+        self._drag_pos = None
 
         self.setWindowTitle("早晚读")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(640, 480)
         self.resize(1000, 700)
 
-        # 窗口置顶
-        self._update_window_flags()
-
+        # 先建 UI 再显示：原实现先 show() 后 _build_ui()，会先闪一个空白窗
         self._build_ui()
+        self._update_window_flags()
+        self.show()
         self._load_page()
 
     def closeEvent(self, event):
-        """窗口关闭时清理 PID 文件。"""
+        """关闭时清理 PID 文件（只删自己的，避免误删另一个实例的）。"""
         try:
-            pid_file = r"D:\IdiotLaunch\data\morning_browser.pid"
-            if os.path.isfile(pid_file):
-                os.remove(pid_file)
+            if os.path.isfile(PID_FILE):
+                with open(PID_FILE, "r", encoding="utf-8") as f:
+                    if f.read().strip() == str(os.getpid()):
+                        os.remove(PID_FILE)
         except Exception:
             pass
         super().closeEvent(event)
 
     def eventFilter(self, obj, event):
         """工具栏拖动窗口。"""
-        if obj == getattr(self, '_toolbar', None):
-            from PySide6.QtGui import QMouseEvent
-            if isinstance(event, QMouseEvent):
-                if event.type() == event.Type.MouseButtonPress and event.button() == Qt.LeftButton:
-                    self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-                    return True
-                elif event.type() == event.Type.MouseMove and event.buttons() & Qt.LeftButton and self._drag_pos:
-                    self.move(event.globalPosition().toPoint() - self._drag_pos)
-                    return True
-                elif event.type() == event.Type.MouseButtonRelease:
-                    self._drag_pos = None
-                    return True
+        from PySide6.QtGui import QMouseEvent
+
+        if obj == getattr(self, "_toolbar", None) and isinstance(event, QMouseEvent):
+            if event.type() == event.Type.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._drag_pos = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+                return True
+            if event.type() == event.Type.MouseMove and event.buttons() & Qt.LeftButton and self._drag_pos:
+                self.move(event.globalPosition().toPoint() - self._drag_pos)
+                return True
+            if event.type() == event.Type.MouseButtonRelease:
+                self._drag_pos = None
+                return True
         return super().eventFilter(obj, event)
 
     def _update_window_flags(self):
-        """更新窗口标志（置顶+无边框）。"""
         flags = Qt.Window | Qt.FramelessWindowHint
         if self._always_on_top:
             flags |= Qt.WindowStaysOnTopHint
@@ -196,8 +138,9 @@ class MorningBrowserWindow(QMainWindow):
         tb_layout.addWidget(class_label)
         tb_layout.addSpacing(15)
 
-        # 置顶按钮
-        self.top_btn = QPushButton("置顶中")
+        # 置顶按钮（明确写成"开/关"，不要用状态词当按钮名）
+        self.top_btn = QPushButton("置顶：开")
+        self.top_btn.setToolTip("点击切换是否让本窗口始终显示在最前面")
         self.top_btn.setStyleSheet(
             "background-color: rgba(255,255,255,0.2); color: white; "
             "border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px;"
@@ -304,11 +247,32 @@ class MorningBrowserWindow(QMainWindow):
         """切换置顶状态。"""
         self._always_on_top = not self._always_on_top
         self._update_window_flags()
-        self.top_btn.setText("置顶中" if self._always_on_top else "未置顶")
+        self.top_btn.setText("置顶：开" if self._always_on_top else "置顶：关")
+
+    def _show_load_error(self):
+        """网页打不开时给中文说明，而不是让老师看 Chromium 的英文报错页。"""
+        html = """
+        <html><head><meta charset="utf-8"><style>
+        body{font-family:"Microsoft YaHei",sans-serif;background:#1f2328;color:#eee;
+             display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+        .box{text-align:center;max-width:520px;line-height:1.9}
+        h2{font-size:22px} p{font-size:15px;color:#bbb}
+        </style></head><body><div class="box">
+        <h2>早晚读网页打不开</h2>
+        <p>常见原因：教室网络被限制、服务器临时故障、或系统时间不准确。</p>
+        <p>可以点右上角「刷新」重试；如果一直不行，请用手机流量确认一下网站是否正常。</p>
+        </div></body></html>
+        """
+        try:
+            self.browser.setHtml(html)
+        except Exception:
+            pass
 
     def _on_load_finished(self, ok):
         """页面加载完成后自动登录。"""
         if not ok:
+            log.warning("早晚读页面加载失败")
+            self._show_load_error()
             return
         if self._auto_login_done:
             return
@@ -322,17 +286,18 @@ class MorningBrowserWindow(QMainWindow):
 
         # 班级号补零（如 "1" -> "01"）
         try:
-            class_num = int(class_number)
-            class_number = f"{class_num:02d}"
+            class_number = f"{int(class_number):02d}"
         except (ValueError, TypeError):
             pass
 
-        # 注入 JavaScript 自动填写表单并提交
-        # 用多种选择器兼容网页改版
+        # 用 json.dumps 生成 JS 字面量：密码里有引号/反斜杠也不会把脚本写坏
+        grade_js = json.dumps(str(grade))
+        class_js = json.dumps(str(class_number))
+        pass_js = json.dumps(str(password))
+
         js = f"""
         (function() {{
             function tryLogin() {{
-                // 尝试多种选择器，兼容网页改版
                 var gradeSelect = document.querySelector('select[name="grade"]') ||
                                   document.querySelector('select') ||
                                   document.querySelector('.grade-select');
@@ -355,13 +320,11 @@ class MorningBrowserWindow(QMainWindow):
                                document.querySelector('button');
 
                 if (gradeSelect && classInput && passInput && loginBtn) {{
-                    // 设置年级并触发 change 事件
-                    gradeSelect.value = '{grade}';
+                    gradeSelect.value = {grade_js};
                     gradeSelect.dispatchEvent(new Event('change', {{bubbles: true}}));
-                    // 设置班级号和密码并触发 input 事件
-                    classInput.value = '{class_number}';
+                    classInput.value = {class_js};
                     classInput.dispatchEvent(new Event('input', {{bubbles: true}}));
-                    passInput.value = '{password}';
+                    passInput.value = {pass_js};
                     passInput.dispatchEvent(new Event('input', {{bubbles: true}}));
                     loginBtn.click();
                     return true;
@@ -383,21 +346,26 @@ class MorningBrowserWindow(QMainWindow):
         try:
             self.browser.page().runJavaScript(js)
             self._auto_login_done = True
+            log.info("已注入自动登录脚本")
         except Exception as e:
             log.warning(f"自动登录 JS 注入失败: {e}")
 
 
 def main():
+    from src.core import setup_logging
+
+    setup_logging("morning")
     app = QApplication(sys.argv)
     app.setApplicationName("早晚读")
 
-    # 从命令行参数读取配置（如果有）
-    config = {}
-    if len(sys.argv) > 1:
-        try:
-            config = json.loads(sys.argv[1])
-        except Exception:
-            pass
+    # 配置一律从 D 盘配置文件读（不接收命令行参数，避免密码出现在命令行里）
+    config = morning_config.load()
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
 
     window = MorningBrowserWindow(config)
     window.show()
