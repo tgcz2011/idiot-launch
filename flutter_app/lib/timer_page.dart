@@ -1,16 +1,11 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:ffi' as ffi;
-import 'dart:io';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
-import 'package:window_manager/window_manager.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:desktop_multi_window/desktop_multi_window.dart';
 
-// ==================== FFI: 子窗口无边框控制 ====================
-// window_manager 在 desktop_multi_window 子窗口中控制的是主窗口，
-// 所以用 FFI 直接调用 user32.dll 控制当前活动窗口（子窗口）。
+// ==================== FFI: user32.dll 绑定 ====================
 final _user32 = ffi.DynamicLibrary.open('user32.dll');
 
 typedef _GetForegroundWindowNative = ffi.IntPtr Function();
@@ -32,230 +27,186 @@ typedef _SetWindowPosDart = int Function(
     int hWnd, int hWndInsertAfter, int X, int Y, int cx, int cy, int uFlags);
 final _setWindowPos = _user32.lookupFunction<_SetWindowPosNative, _SetWindowPosDart>('SetWindowPos');
 
-const int _gwlStyle = -16;
-const int _wsCaption = 0x00C00000;
-const int _wsThickFrame = 0x00040000;
-const int _wsSysMenu = 0x00080000;
-const int _wsMinimizeBox = 0x00020000;
-const int _wsMaximizeBox = 0x00010000;
-const int _swpFrameChanged = 0x0020;
-const int _swpNoZOrder = 0x0004;
-const int _swpNoMove = 0x0002;
-const int _swpNoSize = 0x0001;
-const int _hwndTopmost = -1;
-const int _hwndNotopmost = -2;
-const int _smCxScreen = 0;
-const int _smCyScreen = 1;
-
-// 无边框窗口拖动：ReleaseCapture + SendMessage(WM_NCLBUTTONDOWN, HTCAPTION)
 typedef _ReleaseCaptureNative = ffi.Int32 Function();
 typedef _ReleaseCaptureDart = int Function();
 final _releaseCapture = _user32.lookupFunction<_ReleaseCaptureNative, _ReleaseCaptureDart>('ReleaseCapture');
 
 typedef _SendMessageNative = ffi.IntPtr Function(
     ffi.IntPtr hWnd, ffi.Uint32 Msg, ffi.IntPtr wParam, ffi.IntPtr lParam);
-typedef _SendMessageDart = int Function(
-    int hWnd, int Msg, int wParam, int lParam);
+typedef _SendMessageDart = int Function(int hWnd, int Msg, int wParam, int lParam);
 final _sendMessage = _user32.lookupFunction<_SendMessageNative, _SendMessageDart>('SendMessageW');
 
-const int _wmNcLButtonDown = 0x00A1;
-const int _htCaption = 2;
+typedef _ShowWindowNative = ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Int32 nCmdShow);
+typedef _ShowWindowDart = int Function(int hWnd, int nCmdShow);
+final _showWindow = _user32.lookupFunction<_ShowWindowNative, _ShowWindowDart>('ShowWindow');
 
 typedef _GetSystemMetricsNative = ffi.Int32 Function(ffi.Int32 nIndex);
 typedef _GetSystemMetricsDart = int Function(int nIndex);
 final _getSystemMetrics = _user32.lookupFunction<_GetSystemMetricsNative, _GetSystemMetricsDart>('GetSystemMetrics');
 
-// 当前子窗口句柄缓存
-int _cachedHWnd = 0;
-bool _isTopMost = false;
-String _windowTitle = ''; // 当前子窗口标题，用于精确查找窗口
+typedef _SetWindowTextNative = ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<Utf16> lpString);
+typedef _SetWindowTextDart = int Function(int hWnd, ffi.Pointer<Utf16>);
+final _setWindowText = _user32.lookupFunction<_SetWindowTextNative, _SetWindowTextDart>('SetWindowTextW');
 
-/// 通过窗口标题查找属于当前进程的可见顶层窗口。
-int _findOurWindow() {
-  if (_cachedHWnd != 0) return _cachedHWnd;
-  final title = _windowTitle;
-  try {
-    final currentPid = pid;
-    final getWindowThreadProcessId = _user32.lookupFunction<
-        ffi.Uint32 Function(ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId),
-        int Function(int hWnd, ffi.Pointer<ffi.Uint32>)>('GetWindowThreadProcessId');
-    final isWindowVisible = _user32.lookupFunction<
-        ffi.Int32 Function(ffi.IntPtr hWnd),
-        int Function(int hWnd)>('IsWindowVisible');
-    final getWindow = _user32.lookupFunction<
-        ffi.IntPtr Function(ffi.IntPtr hWnd, ffi.Uint32 uCmd),
-        int Function(int hWnd, int uCmd)>('GetWindow');
-    final getWindowText = _user32.lookupFunction<
-        ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint16> lpString, ffi.Int32 nMaxCount),
-        int Function(int hWnd, ffi.Pointer<ffi.Uint16>, int)>('GetWindowTextW');
+const int _gwlStyle = -16;
+const int _wsCaption = 0x00C00000;
+const int _wsSysMenu = 0x00080000;
+const int _wsMinimizeBox = 0x00020000;
+const int _wsMaximizeBox = 0x00010000;
+const int _swpFrameChanged = 0x0020;
+const int _swpNoZOrder = 0x0004;
+const int _hwndTopmost = -1;
+const int _hwndNotopmost = -2;
+const int _smCxScreen = 0;
+const int _smCyScreen = 1;
+const int _wmNcLButtonDown = 0x00A1;
+const int _htCaption = 2;
+const int _swMinimize = 6;
+const int _wmClose = 0x0010;
 
-    const int gwHwndFirst = 0;
-    const int gwHwndNext = 2;
-    final pidPtr = calloc<ffi.Uint32>();
-    final textPtr = calloc<ffi.Uint16>(256); // Utf16 不能直接 calloc，用 Uint16 再 cast
+/// 子窗口控制器：每个实例独立持有窗口句柄和状态
+class _SubWindowController {
+  int hWnd = 0;
+  bool isTopMost = false;
 
-    int hWnd = getWindow(0, gwHwndFirst);
-    while (hWnd != 0) {
-      if (isWindowVisible(hWnd) != 0) {
-        getWindowThreadProcessId(hWnd, pidPtr);
-        if (pidPtr.value == currentPid) {
-          final len = getWindowText(hWnd, textPtr, 256);
-          final wndTitle = len > 0 ? textPtr.cast<Utf16>().toDartString() : '';
-          // 如果设置了窗口标题，精确匹配；否则排除主窗口
-          if (_windowTitle.isNotEmpty) {
-            if (wndTitle == _windowTitle) {
-              _cachedHWnd = hWnd;
-              calloc.free(pidPtr);
-              calloc.free(textPtr);
-              return hWnd;
-            }
-          } else {
-            if (!wndTitle.contains('傻瓜启动器') && !wndTitle.contains('IdiotLaunch')) {
-              _cachedHWnd = hWnd;
-              calloc.free(pidPtr);
-              calloc.free(textPtr);
-              return hWnd;
-            }
-          }
-        }
-      }
-      hWnd = getWindow(hWnd, gwHwndNext);
-    }
-    calloc.free(pidPtr);
-    calloc.free(textPtr);
-  } catch (_) {}
-  return _getForegroundWindow();
-}
-
-/// 设置窗口大小并居中。去掉系统标题栏，用自定义标题栏+FFI拖动。
-void _setupWindow(int width, int height, String title) {
-  _windowTitle = title;
-  _cachedHWnd = 0; // 重置缓存，用新标题重新查找
-  // SetWindowTextW FFI 绑定
-  final setWindowText = _user32.lookupFunction<
-      ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Pointer<Utf16> lpString),
-      int Function(int hWnd, ffi.Pointer<Utf16>)>('SetWindowTextW');
-  for (int attempt = 0; attempt < 8; attempt++) {
-    Future.delayed(Duration(milliseconds: 100 + attempt * 150), () {
+  /// 初始化：获取前台窗口句柄（子窗口刚创建时就是前台窗口），去掉标题栏，设置大小并居中
+  Future<void> setup(int width, int height, String title) async {
+    // 多次尝试，等待窗口完全创建
+    for (int attempt = 0; attempt < 10; attempt++) {
+      await Future.delayed(Duration(milliseconds: 50 + attempt * 50));
       try {
-        // 第一次尝试时，先给前台窗口设置标题（子窗口刚创建时是前台窗口）
-        if (attempt == 0) {
-          final fg = _getForegroundWindow();
-          if (fg != 0) {
-            final titlePtr = title.toNativeUtf16();
-            setWindowText(fg, titlePtr);
-            calloc.free(titlePtr);
-          }
-        }
-        final hWnd = _findOurWindow();
-        if (hWnd == 0) return;
-        // 确保标题正确设置
+        final fg = _getForegroundWindow();
+        if (fg == 0) continue;
+
+        // 设置窗口标题
         final titlePtr = title.toNativeUtf16();
-        setWindowText(hWnd, titlePtr);
+        _setWindowText(fg, titlePtr);
         calloc.free(titlePtr);
-        // 去掉系统标题栏和调整大小边框
-        int style = _getWindowLong(hWnd, _gwlStyle);
-        style &= ~(_wsCaption | _wsThickFrame | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
-        _setWindowLong(hWnd, _gwlStyle, style);
-        // 用 GetSystemMetrics 获取屏幕大小
+
+        // 去掉系统标题栏（保留 WS_THICKFRAME 以便拖动和调整大小）
+        int style = _getWindowLong(fg, _gwlStyle);
+        style &= ~(_wsCaption | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
+        _setWindowLong(fg, _gwlStyle, style);
+
+        // 居中显示
         final screenW = _getSystemMetrics(_smCxScreen);
         final screenH = _getSystemMetrics(_smCyScreen);
         final x = ((screenW - width) ~/ 2).clamp(0, screenW - width);
         final y = ((screenH - height) ~/ 2).clamp(0, screenH - height);
-        _setWindowPos(hWnd, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
+        _setWindowPos(fg, 0, x, y, width, height, _swpFrameChanged | _swpNoZOrder);
+
+        hWnd = fg;
+        return;
       } catch (_) {}
-    });
+    }
+  }
+
+  /// 拖动窗口
+  void startDrag() {
+    if (hWnd == 0) return;
+    try {
+      _releaseCapture();
+      _sendMessage(hWnd, _wmNcLButtonDown, _htCaption, 0);
+    } catch (_) {}
+  }
+
+  /// 最小化
+  void minimize() {
+    if (hWnd == 0) return;
+    try {
+      _showWindow(hWnd, _swMinimize);
+    } catch (_) {}
+  }
+
+  /// 关闭
+  void close() {
+    if (hWnd == 0) return;
+    try {
+      _sendMessage(hWnd, _wmClose, 0, 0);
+    } catch (_) {}
+  }
+
+  /// 切换置顶，返回新状态
+  bool toggleTopMost() {
+    if (hWnd == 0) return isTopMost;
+    try {
+      isTopMost = !isTopMost;
+      _setWindowPos(hWnd, isTopMost ? _hwndTopmost : _hwndNotopmost,
+          0, 0, 0, 0, 0x0001 | 0x0002 | _swpFrameChanged);
+    } catch (_) {}
+    return isTopMost;
   }
 }
 
-/// 无边框窗口拖动：模拟标题栏拖动
-void _startDrag() {
-  try {
-    final hWnd = _findOurWindow();
-    if (hWnd == 0) return;
-    _releaseCapture();
-    _sendMessage(hWnd, _wmNcLButtonDown, _htCaption, 0);
-  } catch (_) {}
-}
+// ==================== 通用标题栏 ====================
+class _TimerTitleBar extends StatelessWidget {
+  final String title;
+  final VoidCallback onDrag;
+  final VoidCallback onMinimize;
+  final VoidCallback onClose;
+  final bool isPinned;
+  final VoidCallback? onTogglePin;
 
-// 窗口最小化/关闭
-const int _swMinimize = 6;
-const int _wmClose = 0x0010;
-typedef _ShowWindowNative = ffi.Int32 Function(ffi.IntPtr hWnd, ffi.Int32 nCmdShow);
-typedef _ShowWindowDart = int Function(int hWnd, int nCmdShow);
-final _showWindow = _user32.lookupFunction<_ShowWindowNative, _ShowWindowDart>('ShowWindow');
+  const _TimerTitleBar({
+    required this.title,
+    required this.onDrag,
+    required this.onMinimize,
+    required this.onClose,
+    required this.isPinned,
+    this.onTogglePin,
+  });
 
-void _minimizeWindow() {
-  try {
-    final hWnd = _findOurWindow();
-    if (hWnd != 0) _showWindow(hWnd, _swMinimize);
-  } catch (_) {}
-}
-
-void _closeWindow() {
-  try {
-    final hWnd = _findOurWindow();
-    if (hWnd != 0) _sendMessage(hWnd, _wmClose, 0, 0);
-  } catch (_) {}
-}
-
-/// 切换窗口置顶状态
-void _toggleTopMost() {
-  try {
-    final hWnd = _findOurWindow();
-    if (hWnd == 0) return;
-    _isTopMost = !_isTopMost;
-    _setWindowPos(hWnd, _isTopMost ? _hwndTopmost : _hwndNotopmost,
-        0, 0, 0, 0, _swpNoMove | _swpNoSize | _swpFrameChanged);
-  } catch (_) {}
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 34,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.15), width: 1)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onPanStart: (_) => onDrag(),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ),
+          if (onTogglePin != null)
+            SizedBox(
+              width: 34, height: 34,
+              child: InkWell(
+                onTap: onTogglePin,
+                child: Icon(
+                  isPinned ? Icons.push_pin : Icons.push_pin_outlined,
+                  size: 16,
+                  color: isPinned ? Theme.of(context).colorScheme.primary : Colors.grey[600],
+                ),
+              ),
+            ),
+          SizedBox(
+            width: 34, height: 34,
+            child: InkWell(onTap: onMinimize, child: const Icon(Icons.remove, size: 16)),
+          ),
+          SizedBox(
+            width: 42, height: 34,
+            child: InkWell(
+              onTap: onClose,
+              hoverColor: Colors.red.withOpacity(0.8),
+              child: const Icon(Icons.close, size: 16),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ==================== 倒计时页面 ====================
-Widget _buildTimerTitleBar(BuildContext context, String title, VoidCallback? onFullscreen, {bool showPin = true}) {
-  return Container(
-    height: 36,
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surface,
-      border: Border(bottom: BorderSide(color: Colors.grey.withOpacity(0.2), width: 1)),
-    ),
-    child: Row(
-      children: [
-        Expanded(
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onPanStart: (_) {
-              _startDrag();
-            },
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-            ),
-          ),
-        ),
-        if (showPin)
-          SizedBox(width: 36, height: 36, child: InkWell(
-            onTap: _toggleTopMost,
-            child: Icon(Icons.push_pin_outlined, size: 17, color: Colors.grey[600]),
-          )),
-        if (onFullscreen != null)
-          SizedBox(width: 36, height: 36, child: InkWell(onTap: onFullscreen, child: const Icon(Icons.fullscreen, size: 17))),
-        SizedBox(width: 36, height: 36, child: InkWell(
-          onTap: _minimizeWindow,
-          child: const Icon(Icons.remove, size: 17),
-        )),
-        SizedBox(
-          width: 44, height: 36,
-          child: InkWell(
-            onTap: _closeWindow,
-            hoverColor: Colors.red.withOpacity(0.8),
-            child: const Icon(Icons.close, size: 17),
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
 class TimerPage extends StatefulWidget {
   const TimerPage({super.key});
 
@@ -264,12 +215,13 @@ class TimerPage extends StatefulWidget {
 }
 
 class _TimerPageState extends State<TimerPage> {
+  final _win = _SubWindowController();
   int _hours = 0;
   int _minutes = 5;
   int _totalSeconds = 0;
   int _remaining = 0;
   bool _running = false;
-  bool _isCountdown = true; // true=倒计时, false=正计时(超时后)
+  bool _isCountdown = true;
   Timer? _tick;
   final AudioPlayer _player = AudioPlayer();
   bool _alarmPlayed = false;
@@ -277,10 +229,8 @@ class _TimerPageState extends State<TimerPage> {
   @override
   void initState() {
     super.initState();
-    _cachedHWnd = 0;
-    _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupWindow(440, 560, '倒计时');
+      _win.setup(360, 440, '倒计时');
     });
   }
 
@@ -336,11 +286,8 @@ class _TimerPageState extends State<TimerPage> {
 
   Future<void> _playAlarm() async {
     try {
-      // 用系统提示音替代（打包后可替换为 assets/alarm.wav）
       await _player.play(AssetSource('audio/alarm.wav'));
-    } catch (_) {
-      // 无音频文件时静默
-    }
+    } catch (_) {}
   }
 
   String _format(int sec) {
@@ -355,16 +302,8 @@ class _TimerPageState extends State<TimerPage> {
 
   Color get _timerColor {
     if (!_isCountdown) return Colors.red;
-    if (_totalSeconds > 0 && _remaining <= _oneFifth && _remaining > 0) {
-      return Colors.red;
-    }
+    if (_totalSeconds > 0 && _remaining <= _oneFifth && _remaining > 0) return Colors.red;
     return Colors.black87;
-  }
-
-  Future<void> _toggleFullscreen() async {
-    final isFull = await windowManager.isFullScreen();
-    await windowManager.setFullScreen(!isFull);
-    await windowManager.setAlwaysOnTop(!isFull);
   }
 
   @override
@@ -380,39 +319,42 @@ class _TimerPageState extends State<TimerPage> {
     return Scaffold(
       body: Column(
         children: [
-          _buildTimerTitleBar(context, '倒计时', null, showPin: true),
+          _TimerTitleBar(
+            title: '倒计时',
+            onDrag: () => _win.startDrag(),
+            onMinimize: () => _win.minimize(),
+            onClose: () => _win.close(),
+            isPinned: _win.isTopMost,
+            onTogglePin: () => setState(() => _win.toggleTopMost()),
+          ),
           Expanded(
             child: Center(
               child: selecting ? _buildPicker() : _buildDisplay(),
             ),
           ),
           Padding(
-            padding: const EdgeInsets.only(bottom: 24),
+            padding: const EdgeInsets.only(bottom: 20),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 if (!_running)
                   FilledButton.icon(
                     onPressed: _start,
-                    icon: const Icon(Icons.play_arrow),
+                    icon: const Icon(Icons.play_arrow, size: 20),
                     label: const Text('开始'),
-                    style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 28, vertical: 12)),
+                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10)),
                   )
                 else
                   OutlinedButton.icon(
                     onPressed: _pause,
-                    icon: const Icon(Icons.pause),
+                    icon: const Icon(Icons.pause, size: 20),
                     label: const Text('暂停'),
-                    style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 28, vertical: 12)),
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10)),
                   ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 TextButton.icon(
                   onPressed: _reset,
-                  icon: const Icon(Icons.refresh),
+                  icon: const Icon(Icons.refresh, size: 18),
                   label: const Text('重置'),
                 ),
               ],
@@ -428,18 +370,18 @@ class _TimerPageState extends State<TimerPage> {
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          _format(_isCountdown ? _remaining : _remaining),
+          _format(_remaining),
           style: TextStyle(
-            fontSize: 72,
+            fontSize: 64,
             fontWeight: FontWeight.bold,
             fontFeatures: const [FontFeature.tabularFigures()],
             color: _timerColor,
           ),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 6),
         Text(
           _isCountdown ? '倒计时中' : '已超时 · 正计时',
-          style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+          style: TextStyle(fontSize: 14, color: Colors.grey[600]),
         ),
       ],
     );
@@ -450,7 +392,7 @@ class _TimerPageState extends State<TimerPage> {
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
         _buildWheel('小时', 24, (v) => _hours = v, _hours),
-        const Text(':', style: TextStyle(fontSize: 48)),
+        const Text(':', style: TextStyle(fontSize: 40)),
         _buildWheel('分钟', 60, (v) => _minutes = v, _minutes),
       ],
     );
@@ -460,18 +402,17 @@ class _TimerPageState extends State<TimerPage> {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 13)),
-        const SizedBox(height: 8),
+        Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+        const SizedBox(height: 6),
         SizedBox(
-          width: 90,
-          height: 160,
+          width: 80,
+          height: 140,
           child: CupertinoPicker(
-            itemExtent: 44,
+            itemExtent: 40,
             scrollController: FixedExtentScrollController(initialItem: initial),
             onSelectedItemChanged: onChanged,
             children: List.generate(max, (i) => Center(
-                  child: Text(i.toString().padLeft(2, '0'),
-                      style: const TextStyle(fontSize: 28)),
+                  child: Text(i.toString().padLeft(2, '0'), style: const TextStyle(fontSize: 24)),
                 )),
           ),
         ),
@@ -489,7 +430,8 @@ class StopwatchPage extends StatefulWidget {
 }
 
 class _StopwatchPageState extends State<StopwatchPage> {
-  int _elapsed = 0; // 毫秒
+  final _win = _SubWindowController();
+  int _elapsed = 0;
   int _lastLap = 0;
   final List<int> _laps = [];
   bool _running = false;
@@ -499,10 +441,8 @@ class _StopwatchPageState extends State<StopwatchPage> {
   @override
   void initState() {
     super.initState();
-    _cachedHWnd = 0;
-    _isTopMost = false;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _setupWindow(440, 600, '秒表');
+      _win.setup(360, 480, '秒表');
     });
   }
 
@@ -546,12 +486,6 @@ class _StopwatchPageState extends State<StopwatchPage> {
     return '${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}.${cs.toString().padLeft(2, '0')}';
   }
 
-  Future<void> _toggleFullscreen() async {
-    final isFull = await windowManager.isFullScreen();
-    await windowManager.setFullScreen(!isFull);
-    await windowManager.setAlwaysOnTop(!isFull);
-  }
-
   @override
   void dispose() {
     _tick?.cancel();
@@ -563,13 +497,20 @@ class _StopwatchPageState extends State<StopwatchPage> {
     return Scaffold(
       body: Column(
         children: [
-          _buildTimerTitleBar(context, '秒表', null, showPin: true),
+          _TimerTitleBar(
+            title: '秒表',
+            onDrag: () => _win.startDrag(),
+            onMinimize: () => _win.minimize(),
+            onClose: () => _win.close(),
+            isPinned: _win.isTopMost,
+            onTogglePin: () => setState(() => _win.toggleTopMost()),
+          ),
           Padding(
-            padding: const EdgeInsets.symmetric(vertical: 20),
+            padding: const EdgeInsets.symmetric(vertical: 16),
             child: Text(
               _fmt(_elapsed),
               style: const TextStyle(
-                fontSize: 56,
+                fontSize: 48,
                 fontWeight: FontWeight.bold,
                 fontFeatures: [FontFeature.tabularFigures()],
               ),
@@ -577,61 +518,52 @@ class _StopwatchPageState extends State<StopwatchPage> {
           ),
           Expanded(
             child: _laps.isEmpty
-                ? Center(
-                    child: Text('暂无记次',
-                        style: TextStyle(color: Colors.grey[500])),
-                  )
+                ? Center(child: Text('暂无记次', style: TextStyle(color: Colors.grey[500], fontSize: 14)))
                 : ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    padding: const EdgeInsets.symmetric(horizontal: 20),
                     itemCount: _laps.length,
                     itemBuilder: (ctx, i) {
                       final lapNum = _laps.length - i;
                       return ListTile(
                         dense: true,
-                        leading: Text('第$lapNum次',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                        leading: Text('第$lapNum次', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
                         trailing: Text(_fmt(_laps[i]),
-                            style: const TextStyle(
-                                fontFeatures: [FontFeature.tabularFigures()])),
+                            style: const TextStyle(fontFeatures: [FontFeature.tabularFigures()], fontSize: 14)),
                       );
                     },
                   ),
           ),
           Padding(
-            padding: const EdgeInsets.only(bottom: 24),
+            padding: const EdgeInsets.only(bottom: 20),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 if (!_running)
                   FilledButton.icon(
                     onPressed: _start,
-                    icon: const Icon(Icons.play_arrow),
+                    icon: const Icon(Icons.play_arrow, size: 20),
                     label: const Text('开始'),
-                    style: FilledButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 28, vertical: 12)),
+                    style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10)),
                   )
                 else
                   OutlinedButton.icon(
                     onPressed: _pause,
-                    icon: const Icon(Icons.pause),
+                    icon: const Icon(Icons.pause, size: 20),
                     label: const Text('暂停'),
-                    style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 28, vertical: 12)),
+                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10)),
                   ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 if (_running)
                   TextButton.icon(
                     onPressed: _lap,
-                    icon: const Icon(Icons.flag),
+                    icon: const Icon(Icons.flag, size: 18),
                     label: const Text('记次'),
                   ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 TextButton.icon(
                   onPressed: _reset,
-                  icon: const Icon(Icons.refresh),
+                  icon: const Icon(Icons.refresh, size: 18),
                   label: const Text('重置'),
                 ),
               ],
