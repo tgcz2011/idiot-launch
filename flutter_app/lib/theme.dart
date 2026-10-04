@@ -25,23 +25,41 @@ class AppTheme {
       fontFamily: 'NotoSansSC',
       visualDensity: VisualDensity.comfortable,
       materialTapTargetSize: MaterialTapTargetSize.padded,
-      scaffoldBackgroundColor: isDark ? const Color(0xFF15171A) : scheme.surface,
+      scaffoldBackgroundColor:
+          isDark ? const Color(0xFF15171A) : const Color(0xFFF2F4F8),
     );
 
+    // 必须在**带颜色的**基础样式上 copyWith。
+    // 直接写 TextStyle(fontSize: xx) 会得到 color 为 null 的样式，
+    // 一旦继承链断开就是"看不见的文字"（浅色模式下真实出现过）。
+    final t = base.textTheme;
     return base.copyWith(
-      textTheme: base.textTheme.copyWith(
+      textTheme: t.copyWith(
         // 比默认大一号：投影/远距离也能看清
-        displayLarge: const TextStyle(fontSize: 64, fontWeight: FontWeight.w700),
-        headlineMedium: const TextStyle(fontSize: 30, fontWeight: FontWeight.w700),
-        titleLarge: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
-        titleMedium: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-        titleSmall: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-        bodyLarge: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-        bodyMedium: const TextStyle(fontSize: 15, fontWeight: FontWeight.w400),
-        bodySmall: const TextStyle(fontSize: 14, fontWeight: FontWeight.w400),
-        labelLarge: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-        labelMedium: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-        labelSmall: const TextStyle(fontSize: 13, fontWeight: FontWeight.w400),
+        displayLarge:
+            t.displayLarge!.copyWith(fontSize: 64, fontWeight: FontWeight.w700),
+        headlineMedium: t.headlineMedium!
+            .copyWith(fontSize: 30, fontWeight: FontWeight.w700),
+        titleLarge: t.titleLarge!.copyWith(
+            fontSize: 24, fontWeight: FontWeight.w700, color: scheme.onSurface),
+        titleMedium: t.titleMedium!.copyWith(
+            fontSize: 18, fontWeight: FontWeight.w600, color: scheme.onSurface),
+        titleSmall: t.titleSmall!.copyWith(
+            fontSize: 16, fontWeight: FontWeight.w600, color: scheme.onSurface),
+        bodyLarge: t.bodyLarge!.copyWith(
+            fontSize: 16, fontWeight: FontWeight.w500, color: scheme.onSurface),
+        bodyMedium: t.bodyMedium!.copyWith(
+            fontSize: 15, fontWeight: FontWeight.w400, color: scheme.onSurface),
+        bodySmall: t.bodySmall!.copyWith(
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            color: scheme.onSurfaceVariant),
+        labelLarge:
+            t.labelLarge!.copyWith(fontSize: 16, fontWeight: FontWeight.w600),
+        labelMedium:
+            t.labelMedium!.copyWith(fontSize: 14, fontWeight: FontWeight.w500),
+        labelSmall:
+            t.labelSmall!.copyWith(fontSize: 13, fontWeight: FontWeight.w400),
       ),
       listTileTheme: ListTileThemeData(
         iconColor: scheme.primary,
@@ -57,19 +75,30 @@ class AppTheme {
         ),
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: isDark ? const Color(0xFF1E2126) : scheme.surface,
+        backgroundColor: isDark ? const Color(0xFF1E2126) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
+      // 卡片必须有可见的"框"：浅色下 M3 的 surfaceContainerLowest 是纯白，
+      // 页面底色也很浅 → 只有极淡边框，用户反馈"这个框看不见"。
+      // 改成白底 + 阴影 + 明确边框。
       cardTheme: CardThemeData(
-        color: isDark ? const Color(0xFF1E2126) : scheme.surfaceContainerLowest,
-        elevation: 0,
+        color: isDark ? const Color(0xFF1E2126) : Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shadowColor: Colors.black.withValues(alpha: 0.22),
+        elevation: isDark ? 0 : 1.5,
+        margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(14),
-          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.6)),
+          side: BorderSide(
+              color: isDark
+                  ? const Color(0xFF3C424B)
+                  : const Color(0xFFD6DAE3),
+              width: 1),
         ),
       ),
       navigationRailTheme: NavigationRailThemeData(
-        backgroundColor: isDark ? const Color(0xFF1B1E23) : scheme.surfaceContainerLow,
+        backgroundColor:
+            isDark ? const Color(0xFF1B1E23) : scheme.surfaceContainerLow,
         indicatorColor: scheme.primaryContainer,
         labelType: NavigationRailLabelType.all,
       ),
@@ -77,6 +106,9 @@ class AppTheme {
         behavior: SnackBarBehavior.floating,
         backgroundColor: isDark ? const Color(0xFF2A2E35) : const Color(0xFF323232),
         contentTextStyle: const TextStyle(fontSize: 15, color: Colors.white),
+      ),
+      dividerTheme: DividerThemeData(
+        color: isDark ? const Color(0xFF2E333A) : const Color(0xFFE1E4EB),
       ),
     );
   }

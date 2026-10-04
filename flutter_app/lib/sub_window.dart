@@ -11,23 +11,22 @@ import 'app_log.dart';
 // 为什么不用 window_manager：它作用于进程的"主窗口"，而子窗口是
 // desktop_multi_window 在同一进程里新建的另一个顶层窗口。
 //
-// 原来的实现为什么"点几下就未响应"：
-//   1) 全部窗口（主窗口 + 每个子窗口）都由进程主线程/PowerShell 消息循环那一根线程
-//      创建并拥有。Dart 的 UI 线程不是窗口线程。
-//   2) 对别的线程拥有的窗口调用 SendMessage（WM_CLOSE / WM_SETTEXT）或
-//      SetWindowPos（不带 SWP_ASYNCWINDOWPOS）会同步等待窗口线程处理消息；
-//      而窗口线程处理 WM_CLOSE 时又会回头找 Dart（插件 / Flutter 引擎），
-//      两边互等 → 整个界面"未响应"。
-//   3) 每 100ms 用 EnumWindows 重新找一次窗口，并且"取最后一个"，倒计时和秒表
-//      两个窗口会互相抢（把对方的标题/尺寸改掉）。
+// 历史问题（beta27 用户实测反馈）：
+//   1) 子窗口自己去 EnumWindows 找"本进程 + 标题为空"的窗口 → 同时开两个窗口时
+//      两边可能选中同一个窗口：A 的拖动会移动 B，另一个窗口永远保持插件默认的
+//      800x600 + 原生标题栏（"有些一直留着"就是这个）。
+//   2) 对别的线程拥有的窗口调用 SendMessage / 不带 SWP_ASYNCWINDOWPOS 的
+//      SetWindowPos 会同步等待对方线程 → 界面"未响应"。
+//   3) 窗口创建时是可见的，于是先闪一下 800x600 的原生窗口再被改样式。
 //
 // 现在的做法：
-//   * 关闭用 PostMessage（异步投递，不等待）。
-//   * 移动/缩放一律 SWP_ASYNCWINDOWPOS，绝不阻塞。
-//   * 设置标题用 SendMessageTimeoutW + SMTO_ABORTIFHUNG（对方卡住就放弃）。
-//   * 只在"定位"阶段做 EnumWindows，定位成功立刻停表；并且定位条件是
-//     "本进程 + 可见 + 标题为空"（插件创建窗口时标题就是空的），
-//     定位成功马上写标题 → 已经配置好的窗口永远不会被第二个子窗口抢走。
+//   * 父窗口创建子窗口时用 hiddenAtLaunch=true，并在创建前后对比本进程顶层窗口，
+//     确定地找出"新出现的那个 HWND"，通过窗口通道推给子窗口；
+//     子窗口拿到 HWND 后立刻改样式、再自己显示 —— 看不到 800x600 的原生窗口。
+//   * 拿不到 HWND 时回退到搜索，并且无论如何都会让窗口显示出来，
+//     不会出现"点了没反应"。
+//   * 关闭用 PostMessage，移动/缩放一律 SWP_ASYNCWINDOWPOS，设标题用
+//     SendMessageTimeoutW + SMTO_ABORTIFHUNG。
 // ============================================================================
 
 final ffi.DynamicLibrary _user32 = ffi.DynamicLibrary.open('user32.dll');
@@ -45,8 +44,8 @@ typedef _EnumWindowsDart = int Function(
     ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> lpEnumFunc,
     int lParam);
 
-final _EnumWindowsDart _enumWindows = _user32.lookupFunction<
-    _EnumWindowsNative, _EnumWindowsDart>('EnumWindows');
+final _EnumWindowsDart _enumWindows = _user32
+    .lookupFunction<_EnumWindowsNative, _EnumWindowsDart>('EnumWindows');
 
 typedef _GetWindowThreadProcessIdNative = ffi.Uint32 Function(
     ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId);
@@ -74,8 +73,8 @@ final _Int2Dart _showWindow =
     _user32.lookupFunction<_Int2Native, _Int2Dart>('ShowWindow');
 final _Int2Dart _getWindowLong =
     _user32.lookupFunction<_IntPtr2Native, _IntPtr2Dart>('GetWindowLongW');
-final _IntPtr3Dart _setWindowLong = _user32
-    .lookupFunction<_IntPtr3Native, _IntPtr3Dart>('SetWindowLongW');
+final _IntPtr3Dart _setWindowLong =
+    _user32.lookupFunction<_IntPtr3Native, _IntPtr3Dart>('SetWindowLongW');
 
 typedef _GetCurrentProcessIdNative = ffi.Uint32 Function();
 typedef _GetCurrentProcessIdDart = int Function();
@@ -89,8 +88,14 @@ typedef _GetWindowRectDart = int Function(int hWnd, ffi.Pointer<_Rect> lpRect);
 final _GetWindowRectDart _getWindowRect = _user32
     .lookupFunction<_GetWindowRectNative, _GetWindowRectDart>('GetWindowRect');
 
-typedef _SetWindowPosNative = ffi.Int32 Function(ffi.IntPtr hWnd,
-    ffi.IntPtr hWndInsertAfter, ffi.Int32 x, ffi.Int32 y, ffi.Int32 cx, ffi.Int32 cy, ffi.Uint32 uFlags);
+typedef _SetWindowPosNative = ffi.Int32 Function(
+    ffi.IntPtr hWnd,
+    ffi.IntPtr hWndInsertAfter,
+    ffi.Int32 x,
+    ffi.Int32 y,
+    ffi.Int32 cx,
+    ffi.Int32 cy,
+    ffi.Uint32 uFlags);
 typedef _SetWindowPosDart = int Function(
     int hWnd, int hWndInsertAfter, int x, int y, int cx, int cy, int uFlags);
 final _SetWindowPosDart _setWindowPos = _user32
@@ -120,15 +125,17 @@ final _SendMessageTimeoutDart _sendMessageTimeout =
 typedef _MonitorFromWindowNative = ffi.IntPtr Function(
     ffi.IntPtr hWnd, ffi.Uint32 dwFlags);
 typedef _MonitorFromWindowDart = int Function(int hWnd, int dwFlags);
-final _MonitorFromWindowDart _monitorFromWindow = _user32.lookupFunction<
-    _MonitorFromWindowNative, _MonitorFromWindowDart>('MonitorFromWindow');
+final _MonitorFromWindowDart _monitorFromWindow = _user32
+    .lookupFunction<_MonitorFromWindowNative, _MonitorFromWindowDart>(
+        'MonitorFromWindow');
 
 typedef _GetMonitorInfoNative = ffi.Int32 Function(
     ffi.IntPtr hMonitor, ffi.Pointer<_MonitorInfo> lpmi);
 typedef _GetMonitorInfoDart = int Function(
     int hMonitor, ffi.Pointer<_MonitorInfo> lpmi);
-final _GetMonitorInfoDart _getMonitorInfo = _user32.lookupFunction<
-    _GetMonitorInfoNative, _GetMonitorInfoDart>('GetMonitorInfoW');
+final _GetMonitorInfoDart _getMonitorInfo = _user32
+    .lookupFunction<_GetMonitorInfoNative, _GetMonitorInfoDart>(
+        'GetMonitorInfoW');
 
 // ---- 结构体 -----------------------------------------------------------------
 
@@ -165,47 +172,53 @@ const int _swpNoMove = 0x0002;
 const int _swpNoZOrder = 0x0004;
 const int _swpNoActivate = 0x0010;
 const int _swpFrameChanged = 0x0020;
+const int _swpShowWindow = 0x0040;
 /// 关键：把请求投递给窗口所属线程，本线程立即返回，不会因为对方忙而死等。
 const int _swpAsyncWindowPos = 0x4000;
 
 const int _hwndTopMost = -1;
 const int _hwndNoTopMost = -2;
+const int _swShow = 5;
 const int _swMinimize = 6;
 const int _wmClose = 0x0010;
 const int _wmSetText = 0x000C;
 const int _smtoAbortIfHung = 0x0002;
 const int _monitorDefaultToNearest = 2;
 
-// ---- EnumWindows 回调（FFI 回调必须是顶级函数，且只创建一次） ---------------
+// ---- 顶层窗口枚举 -----------------------------------------------------------
 
 final List<int> _enumResult = <int>[];
 int _enumPid = 0;
+bool _enumVisibleOnly = true;
+bool _enumEmptyTitleOnly = false;
 
 int _enumWindowsProc(int hWnd, int lParam) {
   try {
-    final pidPtr = _pidScratch;
-    _getWindowThreadProcessId(hWnd, pidPtr);
-    if (pidPtr.value == _enumPid &&
-        _isWindowVisible(hWnd) != 0 &&
-        _getWindowTextLength(hWnd) == 0) {
-      _enumResult.add(hWnd);
-    }
+    _getWindowThreadProcessId(hWnd, _pidScratch);
+    if (_pidScratch.value != _enumPid) return 1;
+    if (_enumVisibleOnly && _isWindowVisible(hWnd) == 0) return 1;
+    if (_enumEmptyTitleOnly && _getWindowTextLength(hWnd) != 0) return 1;
+    _enumResult.add(hWnd);
   } catch (_) {
-    // 忽略单个窗口的读取失败
+    // 单个窗口读取失败就跳过
   }
-  return 1; // 继续枚举
+  return 1;
 }
 
 final ffi.Pointer<ffi.Uint32> _pidScratch = calloc<ffi.Uint32>();
 final ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> _enumProcPtr =
     ffi.Pointer.fromFunction<_EnumWindowsProcNative>(_enumWindowsProc, 0);
 
-/// 找出"属于本进程、可见、且标题为空"的顶层窗口。
+/// 列出本进程的所有顶层窗口。
 ///
-/// 标题为空 = 这个子窗口还没被配置过（插件创建时标题是空字符串）。
-List<int> _findUnstyledWindows() {
+/// [visibleOnly]=false 时连隐藏窗口一起列出（子窗口刚创建时是隐藏的）。
+/// [emptyTitleOnly]=true 时只列标题为空的窗口（插件创建的窗口标题为空，主窗口有标题）。
+List<int> listProcessWindows(
+    {bool visibleOnly = true, bool emptyTitleOnly = false}) {
   _enumResult.clear();
   _enumPid = _getCurrentProcessId();
+  _enumVisibleOnly = visibleOnly;
+  _enumEmptyTitleOnly = emptyTitleOnly;
   try {
     _enumWindows(_enumProcPtr, 0);
   } catch (e, s) {
@@ -227,6 +240,7 @@ class SubWindow {
   int _attempts = 0;
   bool _isTopMost = false;
   bool _isFullscreen = false;
+  bool _shown = false;
 
   int _widthPx = 360;
   int _heightPx = 440;
@@ -235,71 +249,75 @@ class SubWindow {
   int _dragX = 0;
   int _dragY = 0;
 
-  /// 窗口是否已就绪（拿到 HWND 并完成样式设置）。
   bool get isReady => _hwnd != 0;
 
   bool get isTopMost => _isTopMost;
 
-  /// 开始定位并配置窗口。
+  /// 配置并显示窗口。
   ///
-  /// [logicalWidth] / [logicalHeight] 是 Flutter 逻辑像素，调用方用
-  /// MediaQuery.devicePixelRatio 换算成物理像素传进来。
+  /// [hwnd] 由父窗口通过窗口通道传下来（确定性，不会抢错窗口）。
+  /// 传 0 时回退到"本进程 + 标题为空"的自动查找。
+  /// [nativeShow] 是拿不到 HWND 时的兜底显示手段（window_show，作用于自己的窗口）。
   void attach({
     required int widthPx,
     required int heightPx,
     required String title,
+    int hwnd = 0,
+    Future<void> Function()? nativeShow,
   }) {
     _widthPx = widthPx;
     _heightPx = heightPx;
     _title = title;
+
+    if (hwnd != 0) {
+      _take(hwnd);
+      if (_hwnd != 0) return;
+    }
+
+    // 回退路径：父窗口可能还没把 HWND 推过来
     _attempts = 0;
-    _locateTimer?.cancel();
-    // 立即试一次，之后每 150ms 重试，最多 6 秒
-    _tryAttach();
+    _trySearch();
     if (_hwnd == 0) {
       _locateTimer = Timer.periodic(const Duration(milliseconds: 150), (t) {
         _attempts++;
-        _tryAttach();
-        if (_hwnd != 0 || _attempts > 40) {
+        _trySearch();
+        if (_hwnd != 0 || _attempts > 16) {
           t.cancel();
           _locateTimer = null;
           if (_hwnd == 0) {
-            AppLog.warn('$tag: 6 秒内未找到自身窗口，放弃样式设置（窗口仍可用）');
+            AppLog.warn('$tag: 未能识别自身窗口，先用原始样式显示出来');
+            if (nativeShow != null) nativeShow();
           }
         }
       });
     }
   }
 
-  void _tryAttach() {
+  void _trySearch() {
     if (_hwnd != 0) return;
-    final candidates = _findUnstyledWindows();
+    final candidates =
+        listProcessWindows(visibleOnly: false, emptyTitleOnly: true);
     if (candidates.isEmpty) return;
-    // 取最后创建的那个（EnumWindows 按 Z 序，新窗口在最前，这里取列表末尾兜底）
-    final h = candidates.last;
-    final style = _getWindowLong(h, _gwlStyle);
+    _take(candidates.last);
+  }
+
+  void _take(int hwnd) {
+    final style = _getWindowLong(hwnd, _gwlStyle);
     if ((style & _wsCaption) != 0) {
       final stripped = style &
           ~(_wsCaption | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
-      _setWindowLong(h, _gwlStyle, stripped);
-      if ((_getWindowLong(h, _gwlStyle) & _wsCaption) != 0) {
-        return; // 样式没生效，下一轮再试
+      _setWindowLong(hwnd, _gwlStyle, stripped);
+      if ((_getWindowLong(hwnd, _gwlStyle) & _wsCaption) != 0) {
+        return; // 样式没生效，留给下一轮
       }
     }
-    _hwnd = h;
+    _hwnd = hwnd;
     _applyFrame();
     _setTitle(_title);
-    AppLog.info('$tag: 已接管窗口 hwnd=$h ${_widthPx}x$_heightPx');
+    _show();
+    AppLog.info('$tag: 已接管窗口 hwnd=$hwnd ${_widthPx}x$_heightPx');
   }
 
-  void _applyFrame() {
-    if (_hwnd == 0) return;
-    final r = _centeredRect(_widthPx, _heightPx);
-    _setWindowPos(_hwnd, 0, r[0], r[1], r[2], r[3],
-        _swpAsyncWindowPos | _swpNoZOrder | _swpFrameChanged | _swpNoActivate);
-  }
-
-  /// 在当前显示器的工作区里居中（避开任务栏、支持多显示器 / 缩放）。
   List<int> _centeredRect(int w, int h) {
     final mi = calloc<_MonitorInfo>();
     try {
@@ -322,21 +340,41 @@ class SubWindow {
     }
   }
 
+  void _applyFrame() {
+    if (_hwnd == 0) return;
+    final r = _centeredRect(_widthPx, _heightPx);
+    _setWindowPos(_hwnd, 0, r[0], r[1], r[2], r[3],
+        _swpAsyncWindowPos | _swpNoZOrder | _swpFrameChanged | _swpNoActivate);
+  }
+
+  /// 显示窗口（创建时是隐藏的，改好样式再显示 → 不会闪 800x600 的原生窗口）。
+  void _show() {
+    if (_hwnd == 0 || _shown) return;
+    _shown = true;
+    _showWindow(_hwnd, _swShow);
+    _setWindowPos(
+        _hwnd, 0, 0, 0, 0, 0,
+        _swpAsyncWindowPos |
+            _swpNoMove |
+            _swpNoSize |
+            _swpNoZOrder |
+            _swpShowWindow);
+  }
+
   void _setTitle(String title) {
     if (_hwnd == 0 || title.isEmpty) return;
     final ptr = title.toNativeUtf16();
     final out = calloc<ffi.UintPtr>();
     try {
       // 对方线程卡住时直接超时返回，绝不把自己的 UI 线程挂死
-      _sendMessageTimeout(_hwnd, _wmSetText, 0, ptr.address, _smtoAbortIfHung,
-          1000, out);
+      _sendMessageTimeout(
+          _hwnd, _wmSetText, 0, ptr.address, _smtoAbortIfHung, 1000, out);
     } finally {
       calloc.free(ptr);
       calloc.free(out);
     }
   }
 
-  /// 拖动：记录起点，之后按增量移动（异步投递，不阻塞手势）。
   void beginDrag() {
     if (_hwnd == 0) return;
     final rc = calloc<_Rect>();
@@ -390,17 +428,9 @@ class SubWindow {
         if (mon == 0 || _getMonitorInfo(mon, mi) == 0) return false;
         final m = mi.ref.rcMonitor;
         _isFullscreen = true;
-        _setWindowPos(
-            _hwnd,
-            0,
-            m.left,
-            m.top,
-            m.right - m.left,
+        _setWindowPos(_hwnd, 0, m.left, m.top, m.right - m.left,
             m.bottom - m.top,
-            _swpAsyncWindowPos |
-                _swpNoZOrder |
-                _swpFrameChanged |
-                _swpNoActivate);
+            _swpAsyncWindowPos | _swpNoZOrder | _swpFrameChanged | _swpNoActivate);
       } finally {
         calloc.free(mi);
       }

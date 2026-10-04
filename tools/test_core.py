@@ -121,5 +121,53 @@ class TestSettings(unittest.TestCase):
                 core.SETTINGS_FILE = old_file
 
 
+class TestManualUpdateCheck(unittest.TestCase):
+    """回归：点"检查更新"不能把 last_check 清零。
+
+    清零会让界面立刻从"x 分钟前检查过"变成"还没有检查过更新"（用户实测反馈）。
+    """
+
+    def test_force_check_flag_without_clearing_timestamp(self):
+        import src.core as core
+
+        old_state = core.STATE_FILE
+        with tempfile.TemporaryDirectory() as d:
+            core.STATE_FILE = os.path.join(d, "state.json")
+            try:
+                core.save_state({"launcher_last_check": 1234.5})
+                core._handle_daemon_command({"cmd": "check_updates"})
+                st = core.load_state()
+                self.assertEqual(st.get("launcher_last_check"), 1234.5)
+                self.assertTrue(st.get("force_check"))
+            finally:
+                core.STATE_FILE = old_state
+
+
+class TestProcessKillSafety(unittest.TestCase):
+    """回归：结束进程前必须确认映像名，绝不能误杀（PID 会被复用）。"""
+
+    def test_refuses_self_and_foreign_process(self):
+        try:
+            from src import backend_server as bs
+        except Exception as e:  # 缺 GUI 依赖时跳过（CI 里装了 PySide6）
+            self.skipTest(f"backend_server 不可导入: {e}")
+            return
+
+        self.assertFalse(bs._kill_process(os.getpid()))
+        self.assertFalse(bs._kill_process(0))
+
+        import subprocess
+        import time as _time
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+        try:
+            _time.sleep(0.5)
+            self.assertFalse(bs._kill_process(proc.pid),
+                             "不应该结束非本程序的进程")
+            self.assertIsNone(proc.poll(), "目标进程被误杀了")
+        finally:
+            proc.kill()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

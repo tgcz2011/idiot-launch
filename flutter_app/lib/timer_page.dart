@@ -11,9 +11,15 @@ import 'sub_window.dart';
 /// 倒计时 / 秒表（独立子窗口）。
 ///
 /// 窗口由 desktop_multi_window 创建，样式与位置交给 [SubWindow]（非阻塞 FFI）。
-/// 设计目标：老师站在讲台/大屏幕前，一两次点击就能用，字大、按钮大。
+/// [hwnd] 由父窗口通过窗口通道传下来，避免两个子窗口互相抢错窗口。
+///
+/// 设计目标：老师站在讲台/大屏幕前，一两次点击就能用 ——
+/// 所以选时长全部用大按钮（预设 + 步进），不依赖拖动滚轮。
 class TimerPage extends StatefulWidget {
-  const TimerPage({super.key});
+  const TimerPage({super.key, this.hwnd = 0, this.nativeShow});
+
+  final int hwnd;
+  final Future<void> Function()? nativeShow;
 
   @override
   State<TimerPage> createState() => _TimerPageState();
@@ -47,18 +53,23 @@ class _TimerPageState extends State<TimerPage> {
       final dpr = View.of(context).devicePixelRatio;
       _win.attach(
         widthPx: (380 * dpr).round(),
-        heightPx: (500 * dpr).round(),
+        heightPx: (530 * dpr).round(),
         title: '倒计时',
+        hwnd: widget.hwnd,
+        nativeShow: widget.nativeShow,
       );
     });
   }
 
   // ---------- 计时逻辑（基于真实时间，不受卡顿/休眠影响） ----------
 
+  Duration get _picked =>
+      Duration(seconds: _pickHours * 3600 + _pickMinutes * 60);
+
   Duration get _display {
     switch (_phase) {
       case _Phase.idle:
-        return Duration(seconds: _pickHours * 3600 + _pickMinutes * 60);
+        return _picked;
       case _Phase.running:
         final left = _endAt!.difference(DateTime.now());
         return left.isNegative ? Duration.zero : left;
@@ -67,6 +78,16 @@ class _TimerPageState extends State<TimerPage> {
       case _Phase.overtime:
         return DateTime.now().difference(_endAt!);
     }
+  }
+
+  int get _totalMinutes => _pickHours * 60 + _pickMinutes;
+
+  void _setTotalMinutes(int minutes) {
+    final clamped = minutes.clamp(0, 12 * 60 + 59);
+    setState(() {
+      _pickHours = clamped ~/ 60;
+      _pickMinutes = clamped % 60;
+    });
   }
 
   void _startTicker() {
@@ -87,7 +108,7 @@ class _TimerPageState extends State<TimerPage> {
 
   void _startWith(Duration d) {
     if (d.inSeconds <= 0) {
-      setState(() => _audioWarning = '请先选择时长');
+      setState(() => _audioWarning = '请先选择时长（不能是 0 分钟）');
       return;
     }
     setState(() {
@@ -142,8 +163,6 @@ class _TimerPageState extends State<TimerPage> {
 
   // ---------- 显示 ----------
 
-  static String _format(Duration d) => formatDuration(d);
-
   Color _timeColor(ColorScheme scheme) {
     if (_phase == _Phase.overtime) return scheme.error;
     if (_phase == _Phase.running &&
@@ -178,7 +197,8 @@ class _TimerPageState extends State<TimerPage> {
               isTopMost: _win.isTopMost,
               isFullscreen: _fullscreen,
               onToggleTopMost: () => setState(() => _win.toggleTopMost()),
-              onToggleFullscreen: () => setState(() => _fullscreen = _win.toggleFullscreen()),
+              onToggleFullscreen: () =>
+                  setState(() => _fullscreen = _win.toggleFullscreen()),
               onMinimize: _win.minimize,
               onClose: _win.close,
               dragStart: _win.beginDrag,
@@ -215,68 +235,61 @@ class _TimerPageState extends State<TimerPage> {
       } else if (_phase == _Phase.paused) {
         _resume();
       } else if (_phase == _Phase.idle) {
-        _startWith(Duration(seconds: _pickHours * 3600 + _pickMinutes * 60));
+        _startWith(_picked);
       }
     } else if (k == LogicalKeyboardKey.keyR) {
       _reset();
     }
   }
 
-  // ---------- 选择时长 ----------
+  // ---------- 选择时长（全部按钮，不依赖拖动） ----------
 
   Widget _buildPicker(ColorScheme scheme) {
-    final picked = Duration(seconds: _pickHours * 3600 + _pickMinutes * 60);
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Text(_format(picked),
+          Text(formatDuration(_picked),
               style: TextStyle(
-                  fontSize: 46,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 44,
+                  fontWeight: FontWeight.w800,
                   color: scheme.primary,
-                  fontFeatures: const <FontFeature>[FontFeature.tabularFigures()])),
-          const SizedBox(height: 6),
-          Text('点一下下面的时长立即开始，或自己拨轮子',
+                  fontFeatures: const <FontFeature>[
+                    FontFeature.tabularFigures()
+                  ])),
+          const SizedBox(height: 2),
+          Text('点预设立即开始，或用下面的 −/+ 调整',
               style: TextStyle(fontSize: 14, color: scheme.onSurfaceVariant)),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           Wrap(
-            spacing: 10,
-            runSpacing: 10,
+            spacing: 8,
+            runSpacing: 8,
             alignment: WrapAlignment.center,
             children: _presetMinutes
                 .map((m) => SizedBox(
                       width: 104,
-                      height: 52,
+                      height: 48,
                       child: FilledButton.tonal(
                         onPressed: () => _startWith(Duration(minutes: m)),
                         child: Text(m == 60 ? '1 小时' : '$m 分钟',
                             style: const TextStyle(
-                                fontSize: 17, fontWeight: FontWeight.w600)),
+                                fontSize: 16, fontWeight: FontWeight.w600)),
                       ),
                     ))
                 .toList(),
           ),
           const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              _Wheel(
-                  label: '小时',
-                  max: 13,
-                  initial: _pickHours,
-                  onChanged: (v) => setState(() => _pickHours = v)),
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 4),
-                child: Text(':', style: TextStyle(fontSize: 34)),
-              ),
-              _Wheel(
-                  label: '分钟',
-                  max: 60,
-                  initial: _pickMinutes,
-                  onChanged: (v) => setState(() => _pickMinutes = v)),
-            ],
+          _StepperRow(
+            label: '小时',
+            value: _pickHours,
+            onDelta: (d) => _setTotalMinutes(_totalMinutes + d * 60),
+          ),
+          const SizedBox(height: 8),
+          _StepperRow(
+            label: '分钟',
+            value: _pickMinutes,
+            onDelta: (d) => _setTotalMinutes(_totalMinutes + d),
           ),
         ],
       ),
@@ -300,7 +313,7 @@ class _TimerPageState extends State<TimerPage> {
           child: FittedBox(
             fit: BoxFit.scaleDown,
             child: Text(
-              _format(_display),
+              formatDuration(_display),
               style: TextStyle(
                 fontSize: 104,
                 fontWeight: FontWeight.w800,
@@ -324,14 +337,13 @@ class _TimerPageState extends State<TimerPage> {
 
   Widget _buildActions(ColorScheme scheme) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 18, top: 4),
+      padding: const EdgeInsets.only(bottom: 16, top: 4),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
           if (_phase == _Phase.idle)
             FilledButton.icon(
-              onPressed: () => _startWith(
-                  Duration(seconds: _pickHours * 3600 + _pickMinutes * 60)),
+              onPressed: () => _startWith(_picked),
               icon: const Icon(Icons.play_arrow, size: 26),
               label: const Text('开始'),
               style: FilledButton.styleFrom(
@@ -387,7 +399,10 @@ class _TimerPageState extends State<TimerPage> {
 // ============================================================================
 
 class StopwatchPage extends StatefulWidget {
-  const StopwatchPage({super.key});
+  const StopwatchPage({super.key, this.hwnd = 0, this.nativeShow});
+
+  final int hwnd;
+  final Future<void> Function()? nativeShow;
 
   @override
   State<StopwatchPage> createState() => _StopwatchPageState();
@@ -414,6 +429,8 @@ class _StopwatchPageState extends State<StopwatchPage> {
         widthPx: (400 * dpr).round(),
         heightPx: (580 * dpr).round(),
         title: '秒表',
+        hwnd: widget.hwnd,
+        nativeShow: widget.nativeShow,
       );
     });
   }
@@ -479,8 +496,6 @@ class _StopwatchPageState extends State<StopwatchPage> {
     });
   }
 
-  static String _fmt(int ms) => formatStopwatch(ms);
-
   void _onKey(KeyEvent e) {
     if (e is! KeyDownEvent) return;
     final k = e.logicalKey;
@@ -520,7 +535,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 child: Text(
-                  _fmt(_elapsedMs),
+                  formatStopwatch(_elapsedMs),
                   style: TextStyle(
                     fontSize: 76,
                     fontWeight: FontWeight.w800,
@@ -562,7 +577,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
                                   style: const TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.w600)),
-                              Text(_fmt(_laps[i]),
+                              Text(formatStopwatch(_laps[i]),
                                   style: const TextStyle(
                                       fontSize: 18,
                                       fontWeight: FontWeight.w600,
@@ -633,7 +648,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
 }
 
 // ============================================================================
-// 共用：自定义标题栏 + 滚轮
+// 共用：标题栏 + 步进按钮
 // ============================================================================
 
 class _WindowBar extends StatelessWidget {
@@ -666,8 +681,8 @@ class _WindowBar extends StatelessWidget {
       height: 44,
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLow,
-        border: Border(
-            bottom: BorderSide(color: scheme.outlineVariant, width: 1)),
+        border:
+            Border(bottom: BorderSide(color: scheme.outlineVariant, width: 1)),
       ),
       child: Row(
         children: <Widget>[
@@ -680,9 +695,16 @@ class _WindowBar extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: Text(title,
-                      style: const TextStyle(
-                          fontSize: 16, fontWeight: FontWeight.w600)),
+                  child: Row(
+                    children: <Widget>[
+                      Icon(Icons.drag_indicator,
+                          size: 18, color: scheme.onSurfaceVariant),
+                      const SizedBox(width: 6),
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -752,96 +774,66 @@ class _BarButton extends StatelessWidget {
   }
 }
 
-class _Wheel extends StatelessWidget {
-  const _Wheel({
+/// 一行"−5 / −1 / 值 / +1 / +5"的大按钮步进器。
+///
+/// 用它代替滚轮：讲台上鼠标拖动容易失手，而且拖动一旦被别的手势抢走就完全改不了时间
+/// （用户实测："倒计时时间改不了（拖动）"）。按钮永远可靠。
+class _StepperRow extends StatelessWidget {
+  const _StepperRow({
     required this.label,
-    required this.max,
-    required this.initial,
-    required this.onChanged,
+    required this.value,
+    required this.onDelta,
   });
 
   final String label;
-  final int max;
-  final int initial;
-  final ValueChanged<int> onChanged;
+  final int value;
+  final ValueChanged<int> onDelta;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: <Widget>[
-        Text(label, style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
-        const SizedBox(height: 4),
-        Container(
-          width: 88,
-          height: 132,
-          decoration: BoxDecoration(
-            color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(12),
+    Widget btn(String text, int delta) => SizedBox(
+          width: 50,
+          height: 46,
+          child: FilledButton.tonal(
+            onPressed: () => onDelta(delta),
+            style: FilledButton.styleFrom(
+                padding: EdgeInsets.zero,
+                backgroundColor: scheme.surfaceContainerHighest),
+            child: Text(text,
+                style:
+                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
           ),
-          child: _WheelList(
-              max: max, initial: initial, onChanged: onChanged, scheme: scheme),
-        ),
-      ],
-    );
-  }
-}
+        );
 
-class _WheelList extends StatefulWidget {
-  const _WheelList({
-    required this.max,
-    required this.initial,
-    required this.onChanged,
-    required this.scheme,
-  });
-
-  final int max;
-  final int initial;
-  final ValueChanged<int> onChanged;
-  final ColorScheme scheme;
-
-  @override
-  State<_WheelList> createState() => _WheelListState();
-}
-
-class _WheelListState extends State<_WheelList> {
-  late final FixedExtentScrollController _controller =
-      FixedExtentScrollController(initialItem: widget.initial);
-  late int _index = widget.initial;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ListWheelScrollView.useDelegate(
-      controller: _controller,
-      itemExtent: 40,
-      physics: const FixedExtentScrollPhysics(),
-      onSelectedItemChanged: (i) {
-        setState(() => _index = i);
-        widget.onChanged(i);
-      },
-      childDelegate: ListWheelChildBuilderDelegate(
-        childCount: widget.max,
-        builder: (ctx, i) => Center(
-          child: Text(
-            i.toString().padLeft(2, '0'),
-            style: TextStyle(
-              fontSize: 26,
-              fontWeight: FontWeight.w600,
-              // 用 state 里的下标：controller.selectedItem 在首次 build（还没 attach）时不可用
-              color: i == _index
-                  ? widget.scheme.primary
-                  : widget.scheme.onSurfaceVariant,
+    return Row(
+      children: <Widget>[
+        SizedBox(
+            width: 46,
+            child: Text(label,
+                style:
+                    TextStyle(fontSize: 15, color: scheme.onSurfaceVariant))),
+        btn('-5', -5),
+        const SizedBox(width: 6),
+        btn('-1', -1),
+        Expanded(
+          child: Center(
+            child: Text(
+              value.toString().padLeft(2, '0'),
+              style: TextStyle(
+                  fontSize: 30,
+                  fontWeight: FontWeight.w700,
+                  color: scheme.onSurface,
+                  fontFeatures: const <FontFeature>[
+                    FontFeature.tabularFigures()
+                  ]),
             ),
           ),
         ),
-      ),
+        btn('+1', 1),
+        const SizedBox(width: 6),
+        btn('+5', 5),
+      ],
     );
   }
 }

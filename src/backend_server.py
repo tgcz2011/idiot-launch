@@ -459,23 +459,96 @@ def _confirm_quit() -> bool:
         return True
 
 
+def _kill_process(pid: int) -> bool:
+    """结束指定进程。只在映像名确实是本程序时才动手（PID 可能被复用）。"""
+    if not pid or pid == os.getpid():
+        return False
+    try:
+        PROCESS_TERMINATE = 0x0001
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.windll.kernel32
+        h = kernel32.OpenProcess(
+            PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return False
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            size = ctypes.c_uint(1024)
+            exe = ""
+            if kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+                exe = buf.value.lower()
+            if exe and not (exe.endswith("idiotlaunch.exe")
+                            or exe.endswith("idiotlaunchbackend.exe")):
+                log_daemon(f"PID {pid} 是 {exe}，不是本程序，跳过")
+                return False
+            kernel32.TerminateProcess(h, 0)
+            log_daemon(f"已结束进程 pid={pid} ({os.path.basename(exe) or '未知'})")
+            return True
+        finally:
+            kernel32.CloseHandle(h)
+    except Exception as e:
+        log_daemon(f"结束进程 {pid} 失败: {type(e).__name__}: {e}")
+        return False
+
+
+def _find_frontend_pids() -> set:
+    """通过"标题含傻瓜启动器"的窗口反查前端进程号。
+
+    窗口被隐藏（收进托盘）也能枚举到，所以关窗之后照样找得出来。
+    """
+    user32 = ctypes.windll.user32
+    pids = set()
+
+    def _cb(hwnd, _):
+        try:
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            if "傻瓜启动器" in buf.value:
+                pid = ctypes.c_ulong()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value:
+                    pids.add(int(pid.value))
+        except Exception:
+            pass
+        return True
+
+    try:
+        user32.EnumWindows(
+            ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(_cb),
+            None)
+    except Exception:
+        pass
+    return pids
+
+
 def _kill_child_by_pid_file(path: str) -> None:
     try:
         if not os.path.isfile(path):
             return
         with open(path, "r", encoding="utf-8") as f:
             pid = int(f.read().strip())
-        PROCESS_TERMINATE = 0x0001
-        h = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
-        if h:
-            ctypes.windll.kernel32.TerminateProcess(h, 0)
-            ctypes.windll.kernel32.CloseHandle(h)
+        _kill_process(pid)
     except Exception:
         pass
 
 
+def _kill_frontend() -> None:
+    """结束 Flutter 前端进程。
+
+    必须做：倒计时/秒表子窗口和主窗口都在这个进程里。托盘"退出"如果不杀它，
+    那些窗口会一直留在屏幕上（用户反馈："退出应用后倒计时等窗口完全没有结束"）。
+    """
+    for pid in _find_frontend_pids():
+        _kill_process(pid)
+    # 兜底：主窗口可能已经不在了，但 instance.pid 还记着（会校验映像名，安全）
+    _kill_child_by_pid_file(os.path.join(UPDATE_DIR, "instance.pid"))
+
+
 def _shutdown_everything(reason: str = "tray", confirmed: bool = True) -> None:
-    """让整个程序真正退出：托盘/守护/悬浮球/浏览器子进程/壁纸。"""
+    """让整个程序真正退出：前端 + 托盘 + 守护 + 悬浮球 + 浏览器子进程 + 壁纸。"""
     global _quitting
     if _quitting:
         return
@@ -490,13 +563,16 @@ def _shutdown_everything(reason: str = "tray", confirmed: bool = True) -> None:
         _quitting = False
         return
 
+    # 1. 先关前端：倒计时/秒表子窗口在它自己的进程里，杀了它窗口才会消失
+    _kill_frontend()
+
     try:
         if _tray_icon is not None:
             _tray_icon.stop()
     except Exception:
         pass
 
-    # 1. 通知 daemon 线程优雅退出（保存状态）
+    # 2. 通知 daemon 线程优雅退出（保存状态）
     try:
         signal_daemon_quit()
     except Exception:

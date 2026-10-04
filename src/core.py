@@ -70,7 +70,7 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta27"
+LAUNCHER_VERSION = "3.0.0.0-beta28"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
@@ -1001,14 +1001,22 @@ def _launcher_download_worker(url: str, dest: str, version: str,
 
 
 def _check_and_download_launcher_update() -> None:
+    """检查并（如需要）后台下载更新包。
+
+    注意：**不**受"自动更新"开关影响 —— 那个开关只控制"空闲时自动安装"。
+    关掉它以后仍然会后台下载，这样用户点「一键更新」时是立即可用的
+    （设置页的文案就是这么写的）。
+    """
     global _launcher_download_thread
     if not getattr(sys, "frozen", False):
-        return
-    if not is_auto_update_enabled():
         return
 
     with _state_lock:
         state = _cleanup_stale_launcher_pending(load_state())
+        # 用户点"检查更新"时置的强制标记（消费掉，但不影响 last_check 时间戳）
+        force = bool(state.pop("force_check", False))
+        if force:
+            save_state(state)
 
     if pending_update_info():
         return
@@ -1021,7 +1029,7 @@ def _check_and_download_launcher_update() -> None:
         if now - state.get("download_failed_at", 0) < backoff:
             return
 
-    if now - state.get("launcher_last_check", 0) < CHECK_INTERVAL:
+    if not force and now - state.get("launcher_last_check", 0) < CHECK_INTERVAL:
         return
     if _launcher_download_thread and _launcher_download_thread.is_alive():
         return
@@ -1196,7 +1204,9 @@ def _handle_daemon_command(cmd: dict) -> None:
     action = cmd.get("cmd", "")
     log_daemon(f"收到命令: {action}")
     if action == "check_updates":
-        update_state({"launcher_last_check": 0})
+        # 只置"强制检查"标记，**不要**把 launcher_last_check 清零：
+        # 清零会让界面立刻变成"还没有检查过更新"（用户反馈过的现象）。
+        update_state({"force_check": True})
         set_daemon_status("checking", 0, "正在手动检查更新...")
     elif action == "apply_launcher_update_now":
         # 由 API 层负责退出进程，这里只启动安装包
@@ -1327,11 +1337,12 @@ def daemon_run() -> int:
 
     quit_event = _event_create(DAEMON_QUIT_EVENT)
 
-    # 启动后 10 分钟内已经检查过就不再重复检查（避免频繁开关程序刷接口）
+    # 启动后 10 分钟内已经检查过就不再重复检查（避免频繁开关程序刷接口）。
+    # 同样只置 force_check、不清零时间戳，否则界面会短暂显示"还没有检查过更新"。
     with _state_lock:
         st = load_state()
         if time.time() - st.get("launcher_last_check", 0) > STARTUP_CHECK_GRACE:
-            st["launcher_last_check"] = 0
+            st["force_check"] = True
         save_state(st)
 
     _last_cleanup = 0.0

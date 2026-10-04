@@ -9,6 +9,7 @@ import 'package:window_manager/window_manager.dart';
 import 'api.dart';
 import 'app_log.dart';
 import 'cd_settings_page.dart';
+import 'sub_window.dart';
 import 'theme.dart';
 import 'timer_page.dart';
 import 'widgets/big_button.dart';
@@ -66,24 +67,56 @@ void main() async {
   AppLog.info('main() 开始 pid=$pid');
 
   // ---- 子窗口入口分发 ----
-  // desktop_multi_window 用 arguments 区分窗口，格式 "pid:timer"。
-  // 必须校验 pid，否则新进程启动时可能误用旧进程子窗口的参数（历史白屏 bug）。
+  // 父窗口创建子窗口时传 arguments = "<pid>:<kind>"，并用窗口通道把子窗口
+  // 自己的 HWND 推过来。用 HWND 而不是"自己枚举找窗口"，是为了让同时打开的
+  // 倒计时/秒表绝不会互相抢错窗口（历史 bug：拖 A 动 B、另一个窗口保持 800x600）。
   try {
     final controller = await WindowController.fromCurrentEngine();
     final args = controller.arguments.toString();
-    if (args.contains(':')) {
-      final parts = args.split(':');
-      if (parts.length == 2 && parts[0] == pid.toString()) {
-        final tag = parts[1] == 'timer' ? 1 : (parts[1] == 'stopwatch' ? 2 : 0);
-        if (tag != 0) AppLog.setWindowTag(tag);
-        if (parts[1] == 'timer') {
-          runApp(const _SubWindowApp(home: TimerPage()));
-          return;
+    final parts = args.split(':');
+    if (parts.length >= 2 && parts[0] == pid.toString()) {
+      final kind = parts[1];
+      if (kind == 'timer' || kind == 'stopwatch') {
+        AppLog.setWindowTag(kind == 'timer' ? 1 : 2);
+
+        final hwndCompleter = Completer<int>();
+        try {
+          await controller.setWindowMethodHandler((call) async {
+            if (call.method == 'set_hwnd') {
+              final a = call.arguments;
+              final h = (a is Map) ? a['hwnd'] : null;
+              if (h is int && !hwndCompleter.isCompleted) {
+                hwndCompleter.complete(h);
+              }
+            }
+            return null;
+          });
+        } catch (e) {
+          AppLog.warn('注册窗口通道失败（将回退到自动查找）: $e');
         }
-        if (parts[1] == 'stopwatch') {
-          runApp(const _SubWindowApp(home: StopwatchPage()));
-          return;
+
+        int hwnd = 0;
+        try {
+          hwnd = await hwndCompleter.future.timeout(const Duration(seconds: 4));
+          AppLog.info('$kind: 收到 HWND $hwnd');
+        } catch (_) {
+          AppLog.warn('$kind: 未收到 HWND，回退到自动查找');
         }
+
+        Future<void> nativeShow() async {
+          try {
+            await controller.show();
+          } catch (e) {
+            AppLog.warn('$kind: 兜底显示失败: $e');
+          }
+        }
+
+        runApp(_SubWindowApp(
+          home: kind == 'timer'
+              ? TimerPage(hwnd: hwnd, nativeShow: nativeShow)
+              : StopwatchPage(hwnd: hwnd, nativeShow: nativeShow),
+        ));
+        return;
       }
     }
   } catch (e) {
@@ -609,23 +642,59 @@ class _MainPageState extends State<MainPage> with WindowListener {
   Future<void> _checkUpdate() async {
     if (_checkingUpdate) return;
     setState(() => _checkingUpdate = true);
+    // 用"上次检查时间有没有变化"判断这次检查是否真的完成了，
+    // 而不是猜 daemon 的活动状态（历史上这里完全没有结果提示）。
+    final beforeCheck = ApiService.asDouble(_updateStatus['last_check_at']);
+    bool finished = false;
     try {
       await _api.checkUpdate();
-      // 等守护进程检查完（最多 ~20 秒），期间界面会显示"正在检查更新"
-      for (int i = 0; i < 20; i++) {
+      for (int i = 0; i < 25; i++) {
         await Future<void>.delayed(const Duration(seconds: 1));
         await _pollStatus();
         if (!mounted) return;
-        final activity = ApiService.asString(_updateStatus['daemon_activity']);
+        final now = ApiService.asDouble(_updateStatus['last_check_at']);
         final ready = ApiService.asBool(_updateStatus['pending_ready']);
         final downloading = ApiService.asBool(_updateStatus['downloading']);
-        if (ready || downloading) break;
-        if (activity != 'checking' && i >= 2) break;
+        if (now != beforeCheck || ready || downloading) {
+          finished = true;
+          break;
+        }
       }
     } catch (e) {
       if (mounted) _showError('检查更新失败', _friendlyError(e));
+      if (mounted) setState(() => _checkingUpdate = false);
+      return;
     } finally {
       if (mounted) setState(() => _checkingUpdate = false);
+    }
+
+    if (!mounted) return;
+    final ready = ApiService.asBool(_updateStatus['pending_ready']);
+    final downloading = ApiService.asBool(_updateStatus['downloading']);
+    final pending = ApiService.asString(_updateStatus['pending_version']);
+    final current = ApiService.asString(_status['version']);
+    if (ready) {
+      _toast('发现新版本 v$pending，已下载完成，点上方「一键更新」即可安装');
+    } else if (downloading) {
+      _toast('发现新版本 v$pending，正在后台下载，完成后可一键更新');
+    } else if (finished) {
+      _toast('已是最新版本（v$current）');
+    } else {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('检查更新没完成'),
+          content: const Text(
+            '25 秒内没有拿到结果，通常是教室网络访问不了更新服务器。\n\n'
+            '可以稍后再点一次「检查更新」；平时不影响倒计时和早晚读的使用。',
+            style: TextStyle(height: 1.6),
+          ),
+          actions: <Widget>[
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: const Text('知道了')),
+          ],
+        ),
+      );
     }
   }
 
@@ -887,6 +956,75 @@ class _MainPageState extends State<MainPage> with WindowListener {
   }
 
   // ---------- 工具页 ----------
+  bool _creatingWindow = false;
+
+  /// 创建倒计时/秒表子窗口。
+  ///
+  /// 为什么要这么麻烦：
+  ///  * 子窗口由插件在**同一进程**里新建，创建时要起一个新的 Flutter 引擎，
+  ///    这一步发生在进程主线程上，所以主窗口会短暂无响应 —— 必须先把 loading
+  ///    弹出来，用户才知道是在加载而不是卡死。
+  ///  * 窗口以 hiddenAtLaunch=true 创建（否则会先闪一个 800x600 的原生标题栏窗口），
+  ///    创建前后对比本进程顶层窗口即可确定地拿到它的 HWND，再推给子窗口，
+  ///    由子窗口改完样式后自己显示。
+  Future<void> _createToolWindow(String kind) async {
+    if (_creatingWindow) return;
+    _creatingWindow = true;
+    final label = kind == 'timer' ? '倒计时' : '秒表';
+    setState(() => _busy = true);
+    _showLoadingDialog('正在打开$label窗口…\n\n第一次打开需要 1-2 秒，这期间主界面会短暂无响应，属正常现象。');
+    try {
+      // 先让 loading 画出来，再去做会阻塞主线程的创建
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      final before = listProcessWindows(visibleOnly: false).toSet();
+
+      final controller = await WindowController.create(WindowConfiguration(
+        arguments: '$pid:$kind',
+        hiddenAtLaunch: true,
+      ));
+
+      // 找出刚出现的那个顶层窗口 = 我们的子窗口
+      int hwnd = 0;
+      for (int i = 0; i < 30 && hwnd == 0; i++) {
+        for (final h in listProcessWindows(visibleOnly: false)) {
+          if (!before.contains(h)) {
+            hwnd = h;
+            break;
+          }
+        }
+        if (hwnd == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      }
+      AppLog.info('创建$label窗口: id=${controller.windowId} hwnd=$hwnd');
+
+      if (hwnd != 0) {
+        // 子窗口的 Dart 侧可能还没注册好通道，失败就重试
+        for (int i = 0; i < 20; i++) {
+          try {
+            await controller
+                .invokeMethod<void>('set_hwnd', <String, dynamic>{'hwnd': hwnd});
+            break;
+          } catch (e) {
+            if (i >= 19) {
+              AppLog.warn('推送 HWND 失败，子窗口会自行查找: $e');
+            }
+            await Future<void>.delayed(const Duration(milliseconds: 150));
+          }
+        }
+      } else {
+        AppLog.warn('未能识别新建的$label窗口，子窗口将自行查找');
+      }
+    } catch (e, s) {
+      AppLog.error('创建$label窗口失败', e, s);
+      if (mounted) _showError('打开$label失败', _friendlyError(e));
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      _creatingWindow = false;
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Widget _buildToolsPage() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -908,21 +1046,13 @@ class _MainPageState extends State<MainPage> with WindowListener {
                 icon: Icons.timer_outlined,
                 label: '倒计时',
                 color: Colors.teal,
-                onPressed: () async {
-                  await WindowController.create(WindowConfiguration(
-                      arguments: '$pid:timer', hiddenAtLaunch: false));
-                  AppLog.info('已创建倒计时子窗口');
-                },
+                onPressed: _busy ? null : () => _createToolWindow('timer'),
               ),
               BigButton(
                 icon: Icons.timer_10_select,
                 label: '秒表',
                 color: Colors.indigo,
-                onPressed: () async {
-                  await WindowController.create(WindowConfiguration(
-                      arguments: '$pid:stopwatch', hiddenAtLaunch: false));
-                  AppLog.info('已创建秒表子窗口');
-                },
+                onPressed: _busy ? null : () => _createToolWindow('stopwatch'),
               ),
             ],
           ),
@@ -1056,10 +1186,10 @@ class _MainPageState extends State<MainPage> with WindowListener {
         _section('更新', <Widget>[
           SwitchListTile(
             secondary: const Icon(Icons.system_update),
-            title: const Text('自动更新'),
+            title: const Text('空闲时自动安装更新'),
             subtitle: const Text(
-                '开启后：后台自动下载新版本，电脑空闲 10 分钟以上时自动安装；'
-                '关闭后只会在你点「一键更新」时安装'),
+                '开启后：新版本仍会在后台自动下载，并在电脑空闲 10 分钟以上时自动安装。\n'
+                '关闭后：仍然后台下载（这样点「一键更新」立刻可用），但不会自动安装。'),
             value: autoUpdate,
             onChanged: (v) async {
               try {
