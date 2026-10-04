@@ -10,6 +10,17 @@ import 'cd_settings_page.dart';
 import 'widgets/title_bar.dart';
 import 'widgets/big_button.dart';
 
+// 启动日志（直接写文件）
+void _bootLog(String msg) {
+  try {
+    final f = File(r'D:\IdiotLaunch\data\boot_debug.log');
+    f.parent.createSync(recursive: true);
+    final now = DateTime.now();
+    final ts = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}:${now.second.toString().padLeft(2, '0')}';
+    f.writeAsStringSync('[$ts] $msg\n', mode: FileMode.append);
+  } catch (_) {}
+}
+
 // Windows API 进程检测（dart:ffi）
 final ffi.DynamicLibrary _kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
 typedef OpenProcessNative = ffi.IntPtr Function(ffi.Uint32, ffi.Int32, ffi.Uint32);
@@ -59,6 +70,7 @@ Future<void> _ensureSingleInstance() async {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  _bootLog('main() 开始, pid=$pid');
 
   // 多窗口入口分发：用 WindowController.fromCurrentEngine 获取 arguments
   // arguments 格式为 "pid:type"，如 "12345:timer"，必须验证 pid 匹配当前进程
@@ -66,27 +78,36 @@ void main() async {
   try {
     final controller = await WindowController.fromCurrentEngine();
     final args = controller.arguments?.toString() ?? '';
+    _bootLog('fromCurrentEngine 成功, args="$args"');
     if (args.contains(':')) {
       final parts = args.split(':');
       if (parts.length == 2 && parts[0] == pid.toString()) {
         if (parts[1] == 'timer') {
+          _bootLog('分发到 timer 子窗口');
           runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const TimerPage()));
+          _bootLog('timer runApp 已返回');
           return;
         }
         if (parts[1] == 'stopwatch') {
+          _bootLog('分发到 stopwatch 子窗口');
           runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const StopwatchPage()));
+          _bootLog('stopwatch runApp 已返回');
           return;
         }
       }
     }
-  } catch (_) {
-    // 主窗口没有 fromCurrentEngine，忽略
+  } catch (e) {
+    _bootLog('fromCurrentEngine 异常（主窗口正常）: $e');
   }
 
+  _bootLog('开始 windowManager.ensureInitialized()');
   await windowManager.ensureInitialized();
+  _bootLog('windowManager 初始化完成');
 
   await _ensureSingleInstance();
+  _bootLog('单实例检测完成, isFirstInstance=$_isFirstInstance');
   if (!_isFirstInstance) {
+    _bootLog('非首个实例，退出');
     Process.killPid(pid);
     return;
   }
@@ -100,12 +121,18 @@ void main() async {
     titleBarStyle: TitleBarStyle.hidden,
     title: '傻瓜启动器',
   );
+  _bootLog('调用 waitUntilReadyToShow');
   windowManager.waitUntilReadyToShow(windowOptions, () async {
+    _bootLog('waitUntilReadyToShow 回调执行，调用 show()');
     await windowManager.show();
+    _bootLog('show() 完成，调用 focus()');
     await windowManager.focus();
+    _bootLog('focus() 完成');
   });
 
+  _bootLog('调用 runApp');
   runApp(const IdiotLaunchApp());
+  _bootLog('main() 结束');
 }
 
 class IdiotLaunchApp extends StatelessWidget {
@@ -205,10 +232,15 @@ class _MainPageState extends State<MainPage> with WindowListener {
   @override
   void initState() {
     super.initState();
-    windowManager.addListener(this);
-    windowManager.setPreventClose(true);
-    _initBackend();
-    _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _pollStatus());
+    _bootLog('initState 开始');
+    try {
+      windowManager.addListener(this);
+      windowManager.setPreventClose(true);
+      _initBackend();
+      _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _pollStatus());
+    } catch (e) {
+      _bootLog('initState 异常: $e');
+    }
   }
 
   @override
