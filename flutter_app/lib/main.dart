@@ -40,10 +40,12 @@ Future<void> _ensureSingleInstance() async {
       final existingPid = int.tryParse(File(pidFile).readAsStringSync().trim());
       if (existingPid != null && _processExists(existingPid)) {
         _isFirstInstance = false;
-        // 通知已有实例激活窗口
+        // 通知已有实例激活窗口（等待响应确保请求送达）
         try {
           final api = ApiService();
-          await api.activateWindow();
+          await api.activateWindow().timeout(const Duration(seconds: 3));
+          // 给已有实例一点时间响应并显示窗口
+          await Future.delayed(const Duration(milliseconds: 500));
         } catch (_) {}
         return;
       }
@@ -59,16 +61,23 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // 多窗口入口分发：用 WindowController.fromCurrentEngine 获取 arguments
-  // 必须在 windowManager.ensureInitialized() 之前，因为 windowManager 在子窗口中可能异常
+  // arguments 格式为 "pid:type"，如 "12345:timer"，必须验证 pid 匹配当前进程
+  // 防止新进程启动时错误获取到旧进程子窗口的 engine 信息
   try {
     final controller = await WindowController.fromCurrentEngine();
-    if (controller.arguments == 'timer') {
-      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const TimerPage()));
-      return;
-    }
-    if (controller.arguments == 'stopwatch') {
-      runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const StopwatchPage()));
-      return;
+    final args = controller.arguments?.toString() ?? '';
+    if (args.contains(':')) {
+      final parts = args.split(':');
+      if (parts.length == 2 && parts[0] == pid.toString()) {
+        if (parts[1] == 'timer') {
+          runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const TimerPage()));
+          return;
+        }
+        if (parts[1] == 'stopwatch') {
+          runApp(MaterialApp(debugShowCheckedModeBanner: false, theme: _timerTheme(), home: const StopwatchPage()));
+          return;
+        }
+      }
     }
   } catch (_) {
     // 主窗口没有 fromCurrentEngine，忽略
@@ -482,10 +491,10 @@ class _MainPageState extends State<MainPage> with WindowListener {
             runSpacing: 12,
             children: [
               BigButton(icon: Icons.timer_outlined, label: '倒计时', color: Colors.teal, onPressed: () async {
-                await WindowController.create(const WindowConfiguration(arguments: 'timer', hiddenAtLaunch: false));
+                await WindowController.create(WindowConfiguration(arguments: '${pid}:timer', hiddenAtLaunch: false));
               }),
               BigButton(icon: Icons.timer_10_select, label: '秒表', color: Colors.indigo, onPressed: () async {
-                await WindowController.create(const WindowConfiguration(arguments: 'stopwatch', hiddenAtLaunch: false));
+                await WindowController.create(WindowConfiguration(arguments: '${pid}:stopwatch', hiddenAtLaunch: false));
               }),
             ],
           ),
