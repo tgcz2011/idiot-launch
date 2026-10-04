@@ -16,12 +16,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 中文 Windows 控制台默认是 GBK，输出 ✓/✗ 这类符号会直接抛 UnicodeEncodeError，
-# 结果脚本跑到一半就中断（版本号只改了一半）。统一用 ASCII 标记。
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
+from _console import setup_console  # noqa: E402
+
+# 中文 Windows 控制台默认 GBK，CI 的 Windows runner 是 cp1252：
+# 输出中文或 ✓/✗ 会直接抛 UnicodeEncodeError，脚本跑到一半就中断。
+setup_console()
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERSION_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:-(beta|alpha|rc)(\d+))?$")

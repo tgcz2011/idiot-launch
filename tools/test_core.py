@@ -12,6 +12,13 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from _console import setup_console  # noqa: E402
+
+# unittest 会把中文用例名打到 stderr：CI runner 是 cp1252、中文 Windows 是 GBK，
+# 不切换编码会以 UnicodeEncodeError 的形式表现成"测试失败"。
+setup_console()
 
 from src import morning_config  # noqa: E402
 from src.core import (  # noqa: E402
