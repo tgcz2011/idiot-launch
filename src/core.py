@@ -62,7 +62,7 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta25"
+LAUNCHER_VERSION = "3.0.0.0-beta26"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
 LAUNCHER_MIN_SIZE = 5 * 1024 * 1024
@@ -1419,6 +1419,7 @@ WScript.Sleep 2000
 ' 2. 强制结束所有 IdiotLaunch 进程（含子进程 /T，确保 GUI/daemon/早读浏览器全部退出）
 On Error Resume Next
 shell.Run "taskkill /F /IM IdiotLaunch.exe /T", 0, True
+shell.Run "taskkill /F /IM IdiotLaunchBackend.exe /T", 0, True
 On Error GoTo 0
 WScript.Sleep 1500
 
