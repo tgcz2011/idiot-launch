@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.core import (
     LAUNCHER_VERSION,
     UPDATE_DIR,
+    compare_versions,
     launch_countdown,
     launch_custom,
     quit_countdown,
@@ -101,8 +102,11 @@ class ApiHandler(BaseHTTPRequestHandler):
             if morning_cfg.get("grade") and morning_cfg.get("class_number"):
                 morning_class = f"{morning_cfg['grade']}-{morning_cfg['class_number']}"
             daemon_status = get_daemon_status()
-            pending = state.get("pending_version")
-            downloaded = state.get("downloaded_version")
+            # 修复：后端写入的是 pending_launcher_version / launcher_download，不是 pending_version / downloading
+            pending = state.get("pending_launcher_version") or state.get("pending_version")
+            dl = state.get("launcher_download") or {}
+            is_downloading = dl.get("status") == "downloading"
+            dl_progress = dl.get("progress", 0.0) if isinstance(dl, dict) else state.get("download_progress", 0.0)
             self._send_json({
                 "version": LAUNCHER_VERSION,
                 "countdown_running": is_running(),
@@ -111,9 +115,12 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "daemon_running": daemon_status == "running",
                 "daemon": daemon_status,
                 "pending_update": pending,
-                "has_update": bool(pending) and pending != LAUNCHER_VERSION,
-                "downloading": state.get("downloading", False),
-                "download_progress": state.get("download_progress", 0.0),
+                "has_update": bool(pending) and compare_versions(pending, LAUNCHER_VERSION) > 0,
+                "downloading": is_downloading,
+                "download_progress": dl_progress,
+                "download_status": dl.get("status", "") if isinstance(dl, dict) else "",
+                "pending_path": state.get("pending_launcher_path", ""),
+                "release_notes": state.get("launcher_release_notes", ""),
                 "activate_requested": state.get("activate_requested", False),
             })
 
@@ -136,15 +143,20 @@ class ApiHandler(BaseHTTPRequestHandler):
 
         elif path == "/api/update/status":
             state = load_state()
-            pending = state.get("pending_version")
+            pending = state.get("pending_launcher_version") or state.get("pending_version")
+            dl = state.get("launcher_download") or {}
+            is_downloading = dl.get("status") == "downloading"
+            dl_progress = dl.get("progress", 0.0) if isinstance(dl, dict) else state.get("download_progress", 0.0)
             self._send_json({
                 "daemon": get_daemon_status(),
                 "daemon_running": get_daemon_status() == "running",
                 "pending_version": pending,
-                "downloaded_version": state.get("downloaded_version"),
-                "has_update": bool(pending) and pending != LAUNCHER_VERSION,
-                "downloading": state.get("downloading", False),
-                "download_progress": state.get("download_progress", 0.0),
+                "has_update": bool(pending) and compare_versions(pending, LAUNCHER_VERSION) > 0,
+                "downloading": is_downloading,
+                "download_progress": dl_progress,
+                "download_status": dl.get("status", "") if isinstance(dl, dict) else "",
+                "pending_path": state.get("pending_launcher_path", ""),
+                "release_notes": state.get("launcher_release_notes", ""),
             })
 
         elif path == "/api/cd/config":
