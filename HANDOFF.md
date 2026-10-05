@@ -92,9 +92,11 @@ IdiotLaunchBackend.exe --server（后端进程）
      实测 10 步 300px 误差 ≤1px，快速甩动（事件合并）也精确。
   2. **触摸/触控笔**：没有光标坐标，用**重建**：`窗口当前位置 + (局部坐标 - 起点) × dpr`。
      窗口自己动多少就补回多少，反馈被抵消，同样 1:1。
-- 鼠标拖动前要 `SetCapture(hwnd)`：否则窗口一动，鼠标消息就按光标位置投给别的窗口了，
-  pan 收不到更新。（捕获必须在 `onPanEnd`/`onPanCancel` 里 `ReleaseCapture`，
-  否则整个桌面的鼠标消息都会被投到本窗口。）
+- **不要自己 `SetCapture`/`ReleaseCapture`**：Flutter 的 Windows embedder 已经在
+  `WM_LBUTTONDOWN` 时 `SetCapture`、`WM_LBUTTONUP` 时 `ReleaseCapture`
+  （`flutter_window.cc`，注释写着 "Capture the pointer in case the user drags
+  outside the client area"）。自己再调一次只会把它的捕获还回去 —— beta30 实测踩过：
+  拖动开始时 `ReleaseCapture`，快速反向甩动时窗口纹丝不动（事件全投给了别的窗口）。
 - 逻辑像素 → 物理像素仍要乘 `devicePixelRatio`（`SubWindow.attach(scale: dpr)`），
   这条单独成立：不乘的话 125% 缩放只走 80%。
 - `WM_NCLBUTTONDOWN/HTCAPTION`（`window_manager.startDragging` 那套系统移动循环）

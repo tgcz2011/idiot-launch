@@ -127,15 +127,12 @@ final _SendMessageTimeoutDart _sendMessageTimeout =
     _user32.lookupFunction<_SendMessageTimeoutNative, _SendMessageTimeoutDart>(
         'SendMessageTimeoutW');
 
-typedef _NoArgIntNative = ffi.Int32 Function();
-typedef _NoArgIntDart = int Function();
-final _NoArgIntDart _releaseCapture =
-    _user32.lookupFunction<_NoArgIntNative, _NoArgIntDart>('ReleaseCapture');
-
-typedef _SetCaptureNative = ffi.IntPtr Function(ffi.IntPtr hWnd);
-typedef _SetCaptureDart = int Function(int hWnd);
-final _SetCaptureDart _setCapture =
-    _user32.lookupFunction<_SetCaptureNative, _SetCaptureDart>('SetCapture');
+// 注意：这里**故意不导出 SetCapture/ReleaseCapture**。
+// Flutter 的 Windows embedder 已经在 WM_LBUTTONDOWN 时 SetCapture、
+// WM_LBUTTONUP 时 ReleaseCapture（flutter_window.cc，注释写着
+// "Capture the pointer in case the user drags outside the client area"）。
+// 我们再插一脚只会把它的捕获还回去 —— beta30 实测踩过：
+// 拖动开始时 ReleaseCapture，快速反向甩动时窗口纹丝不动。
 
 typedef _GetCursorPosNative = ffi.Int32 Function(ffi.Pointer<_Point> p);
 typedef _GetCursorPosDart = int Function(ffi.Pointer<_Point> p);
@@ -296,9 +293,6 @@ class SubWindow {
   /// 系统移动循环不可用只记一次日志，别每次拖动都刷
   bool _systemMoveLogged = false;
 
-  /// 鼠标捕获是否已生效（拖动结束/取消时必须还回去）
-  bool _captured = false;
-
   bool get isReady => _hwnd != 0;
 
   bool get isTopMost => _isTopMost;
@@ -428,43 +422,32 @@ class SubWindow {
     }
   }
 
-  /// 开始拖动窗口。[x]/[y] 是 Flutter 给的逻辑坐标（窗口内），只在兜底路径用。
+  /// 开始拖动窗口。[x]/[y] 是 Flutter 给的逻辑坐标（窗口内）。
   ///
-  /// **主路径：交给系统自己的"移动窗口"模态循环**
-  /// （ReleaseCapture + WM_NCLBUTTONDOWN/HTCAPTION，和主窗口
-  /// windowManager.startDragging 完全同一套消息）。
+  /// 先试一次**系统自己的"移动窗口"模态循环**
+  /// （`WM_NCLBUTTONDOWN/HTCAPTION`，和主窗口 `windowManager.startDragging`
+  /// 完全同一套消息）。这条消息在 `desktop_multi_window` 的子窗口上实测
+  /// **不生效**（消息被处理但模态循环没起来，`SendMessageTimeoutW` 立刻返回，
+  /// 具体原因在插件/Flutter 的 WndProc 里，不在我们这层），
+  /// 所以真正的实现是下面的逐帧拖动；系统循环留着，别的环境上能用就更好
+  /// （它自带贴边/Aero Snap，而且完全在屏幕坐标里跟踪指针）。
   ///
-  /// 为什么不能自己 SetWindowPos（beta28/beta29 两版都栽在这）：
+  /// 为什么自己 SetWindowPos 这么难（beta28、beta29 两轮都栽在这）：
   /// Flutter 给的指针坐标是**相对窗口**的。窗口一跟着指针动，指针相对窗口的
   /// 位置就跟着变，"指针走了多少"和"窗口走了多少"搅在一起：
   ///   * 按绝对位置算 → 窗口动 30px 又弹回原位（实测十步只走 60%，来回跳）；
-  ///   * 按 delta 累加   → 每步只能拿到一半的位移（同样实测）。
-  /// 这不是 bug 是信息不足：相对坐标里根本推不出指针的屏幕绝对位置。
-  /// 系统移动循环在屏幕坐标里跟踪指针（并且自己 SetCapture），
-  /// 光标/手指到哪窗口跟到哪，任何 DPI 都对，还自带贴边/Aero Snap。
+  ///   * 按 delta 累加   → 每步只能拿到一半的位移（实测反向快甩正好 -150/期望 -300）。
+  /// 这不是算错，是相对坐标里根本推不出指针的屏幕绝对位置 —— 信息不足。
+  /// 所以下面改用 `GetCursorPos` 的屏幕坐标（鼠标）/ 重建坐标（触摸）。
   ///
-  /// 代价：拖动期间本窗口的 Dart 线程会阻塞在模态循环里（不重绘、定时器延后）。
-  /// 倒计时/秒表都按"结束时间戳"算时间，不会走时，松手立刻恢复；
-  /// 主窗口的标题栏本来就是这么拖的，行为一致。
-  ///
-  /// 万一这条消息在本窗口上不成立（立刻返回且窗口没动），
-  /// 退回到逐帧 SetWindowPos 的兜底拖动，至少还拖得动。
+  /// 鼠标捕获不用我们自己管：Flutter 的 Windows embedder 在 WM_LBUTTONDOWN 时
+  /// 已经 `SetCapture`、WM_LBUTTONUP 时 `ReleaseCapture`
+  /// （`flutter_window.cc` 里"Capture the pointer in case the user drags outside
+  /// the client area"）。自己再调一次反而会把它的捕获还回去（踩过一次）。
   void beginDrag(double x, double y,
       [PointerDeviceKind kind = PointerDeviceKind.mouse]) {
     if (_hwnd == 0) return;
-    // 鼠标捕获：窗口一跟着指针动，鼠标消息本来会被投给别的窗口，
-    // 捕获之后一直送到本窗口，pan 才能持续拿到更新。
-    if (kind == PointerDeviceKind.mouse && !_captured) {
-      try {
-        _setCapture(_hwnd);
-        _captured = true;
-      } catch (e, s) {
-        AppLog.error('$tag: SetCapture 调用失败', e, s);
-      }
-    }
-    // 先用系统自己的移动循环（能用就是最跟手的，还带贴边/Aero Snap）
     if (_startSystemMove()) {
-      _releaseDragCapture();
       _dragging = false;
       return;
     }
@@ -481,7 +464,6 @@ class SubWindow {
     final sw = Stopwatch()..start();
     final out = calloc<ffi.UintPtr>();
     try {
-      _releaseCapture();
       _sendMessageTimeout(_hwnd, _wmNcLButtonDown, _htCaption, 0,
           _smtoAbortIfHung, _nativeDragWaitMs, out);
     } catch (e, s) {
@@ -514,16 +496,6 @@ class SubWindow {
     } finally {
       calloc.free(pt);
     }
-  }
-
-  void _releaseDragCapture() {
-    if (!_captured) return;
-    try {
-      _releaseCapture();
-    } catch (_) {
-      // 窗口正在销毁时失败无所谓
-    }
-    _captured = false;
   }
 
   void _beginDartDrag(double x, double y, PointerDeviceKind kind) {
@@ -615,9 +587,12 @@ class SubWindow {
     return (x: originX + dx, y: originY + dy);
   }
 
+  /// 拖动结束（松手或手势被取消）。
+  ///
+  /// 不需要还什么系统资源：鼠标捕获是 Flutter embedder 在 WM_LBUTTONUP 时
+  /// 自己 ReleaseCapture 的，我们没动过它。
   void endDrag() {
     _dragging = false;
-    _releaseDragCapture();
   }
 
   void minimize() {
