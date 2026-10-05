@@ -12,6 +12,7 @@ import 'cd_settings_page.dart';
 import 'sub_window.dart';
 import 'theme.dart';
 import 'timer_page.dart';
+import 'update_banner.dart';
 import 'widgets/big_button.dart';
 import 'widgets/title_bar.dart';
 
@@ -838,88 +839,81 @@ class _MainPageState extends State<MainPage> with WindowListener {
         ? dlVersion
         : (latest.isNotEmpty ? latest : pending);
 
+    // 说什么话交给纯函数（可单测，见 test/update_banner_test.dart）：
+    // 只有 checkOk == true 才允许说"已是最新"。
+    final copy = updateBannerCopy(
+      ready: ready,
+      downloading: downloading,
+      progress: progress,
+      pending: pending,
+      shownVersion: shownVersion,
+      latest: latest,
+      downloadStatus: dlStatus,
+      checking: _checkingUpdate || activity == 'checking',
+      current: current,
+      checkOk: checkOk,
+      checkDetail: checkDetail,
+      lastCheckText: _lastCheckText(),
+    );
+
     late final Widget leading;
-    late final String title;
-    String subtitle = '';
+    final title = copy.title;
+    final subtitle = copy.subtitle;
     List<Widget> actions = <Widget>[];
 
-    if (ready) {
-      leading = Icon(Icons.system_update_alt, size: 30, color: scheme.primary);
-      title = '可一键更新至 v$pending';
-      subtitle = '安装包已经下载好了，点一下就会开始安装（会显示安装进度）';
-      actions = <Widget>[
-        FilledButton.icon(
-          onPressed: _installUpdate,
-          icon: const Icon(Icons.download_done, size: 20),
-          label: const Text('一键更新'),
-        ),
-      ];
-    } else if (downloading) {
-      leading = SizedBox(
-        width: 30,
-        height: 30,
-        child: CircularProgressIndicator(
-            value: progress > 0.005 ? progress : null, strokeWidth: 3),
-      );
-      title = '正在后台下载 v$shownVersion';
-      subtitle = progress > 0.005
-          ? '${(progress * 100).toStringAsFixed(0)}% · 下载完成后这里会出现「一键更新」'
-          : '正在连接下载源…（教室网络慢时会比较久，不影响倒计时和早晚读）';
-    } else if (latest.isNotEmpty) {
-      // 有新版本，但现在既没在下载、也没下载好：
-      // 可能刚下载失败，也可能还没轮到它 —— 必须说出来。
-      // 以前这里显示"当前已是最新版本"，其实是谎报（用户实测反馈过）。
-      final failed = dlStatus == 'failed';
-      leading = Icon(failed ? Icons.error_outline : Icons.system_update,
-          size: 30, color: failed ? scheme.error : scheme.primary);
-      title = failed ? '新版本 v$latest 下载失败' : '发现新版本 v$latest';
-      subtitle = failed
-          ? '会自动延后重试；也可以点右边立即重试（不影响倒计时和早晚读）'
-          : '稍后会自动在后台下载，也可以点右边立刻开始';
-      actions = <Widget>[
-        TextButton(
-          onPressed: _checkingUpdate ? null : _checkUpdate,
-          child: Text(_checkingUpdate ? '请稍候…' : (failed ? '立即重试' : '立即下载')),
-        ),
-      ];
-    } else if (_checkingUpdate || activity == 'checking') {
-      leading = const SizedBox(
+    switch (copy.kind) {
+      case UpdateBannerKind.ready:
+        leading = Icon(Icons.system_update_alt, size: 30, color: scheme.primary);
+        actions = <Widget>[
+          FilledButton.icon(
+            onPressed: _installUpdate,
+            icon: const Icon(Icons.download_done, size: 20),
+            label: const Text('一键更新'),
+          ),
+        ];
+      case UpdateBannerKind.downloading:
+        leading = SizedBox(
           width: 30,
           height: 30,
-          child: CircularProgressIndicator(strokeWidth: 3));
-      title = '正在检查更新…';
-      subtitle = '教室网络较慢时可能要等十几秒';
-    } else if (checkOk != true) {
-      // 「没查成」和「已是最新」必须分开说。
-      // beta29 的实测教训：更新检查静默失败（Supabase 406 + 打包塞进去的临时
-      // GitHub token 早过期），界面却一直显示"当前已是最新版本"，
-      // 装机的那份坚信自己是最新版。checkOk == null 表示这个版本还没查过，
-      // 同样不能冒充"已是最新"。
-      final failed = checkOk == false;
-      leading = Icon(failed ? Icons.cloud_off : Icons.help_outline,
-          size: 30, color: failed ? scheme.error : scheme.onSurfaceVariant);
-      title = failed ? '检查更新失败，暂时不知道有没有新版本' : '还没有检查过更新';
-      subtitle = failed
-          ? '${_lastCheckText()}'
-              '${checkDetail.isEmpty ? '' : '· $checkDetail'}（稍后会自动重试）'
-          : '点右边检查一下（教室网络较慢时可能要等十几秒）';
-      actions = <Widget>[
-        TextButton(
-          onPressed: _checkingUpdate ? null : _checkUpdate,
-          child: Text(_checkingUpdate ? '检查中…' : '检查更新'),
-        ),
-      ];
-    } else {
-      leading = Icon(Icons.verified, size: 30, color: Colors.green.shade600);
-      // 后端还没回话时 version 可能是空的，别显示成"当前已是最新版本 v"
-      title = current.isEmpty ? '当前已是最新版本' : '当前已是最新版本 v$current';
-      subtitle = _lastCheckText();
-      actions = <Widget>[
-        TextButton(
-          onPressed: _checkingUpdate ? null : _checkUpdate,
-          child: Text(_checkingUpdate ? '检查中…' : '检查更新'),
-        ),
-      ];
+          child: CircularProgressIndicator(
+              value: progress > 0.005 ? progress : null, strokeWidth: 3),
+        );
+      case UpdateBannerKind.hasUpdate:
+      case UpdateBannerKind.downloadFailed:
+        final failed = copy.kind == UpdateBannerKind.downloadFailed;
+        leading = Icon(failed ? Icons.error_outline : Icons.system_update,
+            size: 30, color: failed ? scheme.error : scheme.primary);
+        actions = <Widget>[
+          TextButton(
+            onPressed: _checkingUpdate ? null : _checkUpdate,
+            child:
+                Text(_checkingUpdate ? '请稍候…' : (failed ? '立即重试' : '立即下载')),
+          ),
+        ];
+      case UpdateBannerKind.checking:
+        leading = const SizedBox(
+            width: 30,
+            height: 30,
+            child: CircularProgressIndicator(strokeWidth: 3));
+      case UpdateBannerKind.checkFailed:
+      case UpdateBannerKind.neverChecked:
+        final failed = copy.kind == UpdateBannerKind.checkFailed;
+        leading = Icon(failed ? Icons.cloud_off : Icons.help_outline,
+            size: 30, color: failed ? scheme.error : scheme.onSurfaceVariant);
+        actions = <Widget>[
+          TextButton(
+            onPressed: _checkingUpdate ? null : _checkUpdate,
+            child: Text(_checkingUpdate ? '检查中…' : '检查更新'),
+          ),
+        ];
+      case UpdateBannerKind.upToDate:
+        leading = Icon(Icons.verified, size: 30, color: Colors.green.shade600);
+        actions = <Widget>[
+          TextButton(
+            onPressed: _checkingUpdate ? null : _checkUpdate,
+            child: Text(_checkingUpdate ? '检查中…' : '检查更新'),
+          ),
+        ];
     }
 
     return Card(
