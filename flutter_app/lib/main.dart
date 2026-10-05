@@ -671,14 +671,18 @@ class _MainPageState extends State<MainPage> with WindowListener {
     if (!mounted) return;
     final ready = ApiService.asBool(_updateStatus['pending_ready']);
     final downloading = ApiService.asBool(_updateStatus['downloading']);
+    final dlVersion = ApiService.asString(_updateStatus['download_version']);
+    final latest = ApiService.asString(_updateStatus['latest_version']);
     final pending = ApiService.asString(_updateStatus['pending_version']);
     final current = ApiService.asString(_status['version']);
     if (ready) {
       _toast('发现新版本 v$pending，已下载完成，点上方「一键更新」即可安装');
     } else if (downloading) {
-      _toast('发现新版本 v$pending，正在后台下载，完成后可一键更新');
-    } else if (finished) {
+      _toast('发现新版本 v$dlVersion，正在后台下载，完成后可一键更新');
+    } else if (finished && latest.isEmpty) {
       _toast('已是最新版本（v$current）');
+    } else if (latest.isNotEmpty) {
+      _toast('发现新版本 v$latest，即将开始后台下载');
     } else {
       showDialog<void>(
         context: context,
@@ -806,10 +810,18 @@ class _MainPageState extends State<MainPage> with WindowListener {
     final scheme = Theme.of(context).colorScheme;
     final ready = ApiService.asBool(_updateStatus['pending_ready']);
     final downloading = ApiService.asBool(_updateStatus['downloading']);
-    final progress = ApiService.asDouble(_updateStatus['download_progress']);
+    // 后端给的是 0~1 的小数（历史 bug：后端给 0~100，这里又乘了 100）
+    final progress =
+        ApiService.asDouble(_updateStatus['download_progress']).clamp(0.0, 1.0);
     final pending = ApiService.asString(_updateStatus['pending_version']);
+    final dlVersion = ApiService.asString(_updateStatus['download_version']);
+    final dlStatus = ApiService.asString(_updateStatus['download_status']);
+    final latest = ApiService.asString(_updateStatus['latest_version']);
     final current = ApiService.asString(_status['version']);
     final activity = ApiService.asString(_updateStatus['daemon_activity']);
+    final shownVersion = dlVersion.isNotEmpty
+        ? dlVersion
+        : (latest.isNotEmpty ? latest : pending);
 
     late final Widget leading;
     late final String title;
@@ -829,15 +841,36 @@ class _MainPageState extends State<MainPage> with WindowListener {
       ];
     } else if (downloading) {
       leading = SizedBox(
-        width: 30, height: 30,
+        width: 30,
+        height: 30,
         child: CircularProgressIndicator(
-            value: progress > 0 ? progress : null, strokeWidth: 3),
+            value: progress > 0.005 ? progress : null, strokeWidth: 3),
       );
-      title = '正在后台下载 v$pending';
-      subtitle = '${(progress * 100).toStringAsFixed(0)}% · 下载完成后这里会出现「一键更新」';
+      title = '正在后台下载 v$shownVersion';
+      subtitle = progress > 0.005
+          ? '${(progress * 100).toStringAsFixed(0)}% · 下载完成后这里会出现「一键更新」'
+          : '正在连接下载源…（教室网络慢时会比较久，不影响倒计时和早晚读）';
+    } else if (latest.isNotEmpty) {
+      // 有新版本，但现在既没在下载、也没下载好：
+      // 可能刚下载失败，也可能还没轮到它 —— 必须说出来。
+      // 以前这里显示"当前已是最新版本"，其实是谎报（用户实测反馈过）。
+      final failed = dlStatus == 'failed';
+      leading = Icon(failed ? Icons.error_outline : Icons.system_update,
+          size: 30, color: failed ? scheme.error : scheme.primary);
+      title = failed ? '新版本 v$latest 下载失败' : '发现新版本 v$latest';
+      subtitle = failed
+          ? '会自动延后重试；也可以点右边立即重试（不影响倒计时和早晚读）'
+          : '稍后会自动在后台下载，也可以点右边立刻开始';
+      actions = <Widget>[
+        TextButton(
+          onPressed: _checkingUpdate ? null : _checkUpdate,
+          child: Text(_checkingUpdate ? '请稍候…' : (failed ? '立即重试' : '立即下载')),
+        ),
+      ];
     } else if (_checkingUpdate || activity == 'checking') {
       leading = const SizedBox(
-          width: 30, height: 30,
+          width: 30,
+          height: 30,
           child: CircularProgressIndicator(strokeWidth: 3));
       title = '正在检查更新…';
       subtitle = '教室网络较慢时可能要等十几秒';
@@ -1241,8 +1274,8 @@ class _MainPageState extends State<MainPage> with WindowListener {
 
         // ---- 你可能不知道的后台行为 ----
         _section('程序在后台做了什么', <Widget>[
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 8),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: Text(
               '以下行为都是刻意设计的，写在这里是为了让老师和网管心里有数：\n\n'
               '1. 关闭窗口后程序不退出，继续在托盘里运行（自动更新和早读悬浮球需要它）。'
@@ -1254,7 +1287,8 @@ class _MainPageState extends State<MainPage> with WindowListener {
               '4. 早晚读的班级密码保存在 D:\\IdiotLaunch\\data 下（做过混淆处理，'
               '但同一台电脑的其他账号可以读到）。公用电脑建议不要勾选「记住登录」。\n'
               '5. 所有数据都在 D:\\IdiotLaunch\\data，C 盘被冰点还原不会影响它。',
-              style: TextStyle(fontSize: 14, height: 1.8),
+              style: TextStyle(
+                  fontSize: 14, height: 1.8, color: scheme.onSurfaceVariant),
             ),
           ),
         ]),

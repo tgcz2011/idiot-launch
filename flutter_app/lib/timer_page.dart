@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'app_log.dart';
 import 'format.dart';
 import 'sub_window.dart';
+import 'widgets/duration_picker.dart';
 
 /// 倒计时 / 秒表（独立子窗口）。
 ///
@@ -14,7 +15,7 @@ import 'sub_window.dart';
 /// [hwnd] 由父窗口通过窗口通道传下来，避免两个子窗口互相抢错窗口。
 ///
 /// 设计目标：老师站在讲台/大屏幕前，一两次点击就能用 ——
-/// 所以选时长全部用大按钮（预设 + 步进），不依赖拖动滚轮。
+/// 预设大按钮 + 时/分滚轮（可以拖，也可以滚鼠标滚轮）。
 class TimerPage extends StatefulWidget {
   const TimerPage({super.key, this.hwnd = 0, this.nativeShow});
 
@@ -43,7 +44,12 @@ class _TimerPageState extends State<TimerPage> {
   bool _fullscreen = false;
   String? _audioWarning;
 
-  static const List<int> _presetMinutes = <int>[5, 10, 15, 25, 45, 60];
+  // 滚轮控制器由**页面**持有。放进滚轮组件内部的话，页面一重建控制器就被重建，
+  // 拖动立刻被弹回原来的位置 —— 用户实测"倒计时时间改不了（拖动）"就是这个。
+  late final FixedExtentScrollController _hourCtrl =
+      FixedExtentScrollController(initialItem: 0);
+  late final FixedExtentScrollController _minCtrl =
+      FixedExtentScrollController(initialItem: 5);
 
   @override
   void initState() {
@@ -56,9 +62,27 @@ class _TimerPageState extends State<TimerPage> {
         heightPx: (530 * dpr).round(),
         title: '倒计时',
         hwnd: widget.hwnd,
+        scale: dpr,
         nativeShow: widget.nativeShow,
       );
     });
+  }
+
+  /// 把滚轮拨到指定位置（点预设时用，否则轮子会和显示的数字不一致）。
+  void _syncWheels(int hours, int minutes) {
+    if (_hourCtrl.hasClients) _hourCtrl.jumpToItem(hours.clamp(0, 12));
+    if (_minCtrl.hasClients) _minCtrl.jumpToItem(minutes.clamp(0, 59));
+  }
+
+  void _applyPreset(int minutes) {
+    final h = minutes ~/ 60;
+    final m = minutes % 60;
+    setState(() {
+      _pickHours = h;
+      _pickMinutes = m;
+    });
+    _syncWheels(h, m);
+    _startWith(Duration(minutes: minutes));
   }
 
   // ---------- 计时逻辑（基于真实时间，不受卡顿/休眠影响） ----------
@@ -78,16 +102,6 @@ class _TimerPageState extends State<TimerPage> {
       case _Phase.overtime:
         return DateTime.now().difference(_endAt!);
     }
-  }
-
-  int get _totalMinutes => _pickHours * 60 + _pickMinutes;
-
-  void _setTotalMinutes(int minutes) {
-    final clamped = minutes.clamp(0, 12 * 60 + 59);
-    setState(() {
-      _pickHours = clamped ~/ 60;
-      _pickMinutes = clamped % 60;
-    });
   }
 
   void _startTicker() {
@@ -178,6 +192,8 @@ class _TimerPageState extends State<TimerPage> {
     _tick?.cancel();
     _player.dispose();
     _focus.dispose();
+    _hourCtrl.dispose();
+    _minCtrl.dispose();
     _win.dispose();
     super.dispose();
   }
@@ -203,6 +219,7 @@ class _TimerPageState extends State<TimerPage> {
               onClose: _win.close,
               dragStart: _win.beginDrag,
               dragUpdate: _win.updateDrag,
+              onDragEnd: _win.endDrag,
             ),
             Expanded(
               child: Center(
@@ -242,57 +259,19 @@ class _TimerPageState extends State<TimerPage> {
     }
   }
 
-  // ---------- 选择时长（全部按钮，不依赖拖动） ----------
+  // ---------- 选择时长（预设 + 滚轮） ----------
+  //
+  // 滚轮拖动交给 DurationPicker：控制器由本 State 持有（拖了才不会被弹回去）。
 
   Widget _buildPicker(ColorScheme scheme) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 14),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: <Widget>[
-          Text(formatDuration(_picked),
-              style: TextStyle(
-                  fontSize: 44,
-                  fontWeight: FontWeight.w800,
-                  color: scheme.primary,
-                  fontFeatures: const <FontFeature>[
-                    FontFeature.tabularFigures()
-                  ])),
-          const SizedBox(height: 2),
-          Text('点预设立即开始，或用下面的 −/+ 调整',
-              style: TextStyle(fontSize: 14, color: scheme.onSurfaceVariant)),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            alignment: WrapAlignment.center,
-            children: _presetMinutes
-                .map((m) => SizedBox(
-                      width: 104,
-                      height: 48,
-                      child: FilledButton.tonal(
-                        onPressed: () => _startWith(Duration(minutes: m)),
-                        child: Text(m == 60 ? '1 小时' : '$m 分钟',
-                            style: const TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.w600)),
-                      ),
-                    ))
-                .toList(),
-          ),
-          const SizedBox(height: 16),
-          _StepperRow(
-            label: '小时',
-            value: _pickHours,
-            onDelta: (d) => _setTotalMinutes(_totalMinutes + d * 60),
-          ),
-          const SizedBox(height: 8),
-          _StepperRow(
-            label: '分钟',
-            value: _pickMinutes,
-            onDelta: (d) => _setTotalMinutes(_totalMinutes + d),
-          ),
-        ],
-      ),
+    return DurationPicker(
+      hourController: _hourCtrl,
+      minuteController: _minCtrl,
+      hours: _pickHours,
+      minutes: _pickMinutes,
+      onHoursChanged: (i) => setState(() => _pickHours = i),
+      onMinutesChanged: (i) => setState(() => _pickMinutes = i),
+      onPreset: _applyPreset,
     );
   }
 
@@ -430,6 +409,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
         heightPx: (580 * dpr).round(),
         title: '秒表',
         hwnd: widget.hwnd,
+        scale: dpr,
         nativeShow: widget.nativeShow,
       );
     });
@@ -529,6 +509,7 @@ class _StopwatchPageState extends State<StopwatchPage> {
               onClose: _win.close,
               dragStart: _win.beginDrag,
               dragUpdate: _win.updateDrag,
+              onDragEnd: _win.endDrag,
             ),
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 14),
@@ -662,6 +643,7 @@ class _WindowBar extends StatelessWidget {
     required this.onClose,
     required this.dragStart,
     required this.dragUpdate,
+    required this.onDragEnd,
   });
 
   final String title;
@@ -671,8 +653,12 @@ class _WindowBar extends StatelessWidget {
   final VoidCallback onToggleFullscreen;
   final VoidCallback onMinimize;
   final VoidCallback onClose;
-  final VoidCallback dragStart;
-  final void Function(double dx, double dy) dragUpdate;
+
+  /// 拖动窗口：参数是 Flutter 的逻辑坐标（**不是 delta**）。
+  /// 用绝对坐标算位置，避免 DPI 缩放导致"拖动不跟手"。
+  final void Function(double x, double y) dragStart;
+  final void Function(double x, double y) dragUpdate;
+  final VoidCallback onDragEnd;
 
   @override
   Widget build(BuildContext context) {
@@ -689,8 +675,10 @@ class _WindowBar extends StatelessWidget {
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onPanStart: (_) => dragStart(),
-              onPanUpdate: (d) => dragUpdate(d.delta.dx, d.delta.dy),
+              onPanStart: (d) => dragStart(d.globalPosition.dx, d.globalPosition.dy),
+              onPanUpdate: (d) =>
+                  dragUpdate(d.globalPosition.dx, d.globalPosition.dy),
+              onPanEnd: (_) => onDragEnd(),
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: Align(
@@ -774,66 +762,3 @@ class _BarButton extends StatelessWidget {
   }
 }
 
-/// 一行"−5 / −1 / 值 / +1 / +5"的大按钮步进器。
-///
-/// 用它代替滚轮：讲台上鼠标拖动容易失手，而且拖动一旦被别的手势抢走就完全改不了时间
-/// （用户实测："倒计时时间改不了（拖动）"）。按钮永远可靠。
-class _StepperRow extends StatelessWidget {
-  const _StepperRow({
-    required this.label,
-    required this.value,
-    required this.onDelta,
-  });
-
-  final String label;
-  final int value;
-  final ValueChanged<int> onDelta;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    Widget btn(String text, int delta) => SizedBox(
-          width: 50,
-          height: 46,
-          child: FilledButton.tonal(
-            onPressed: () => onDelta(delta),
-            style: FilledButton.styleFrom(
-                padding: EdgeInsets.zero,
-                backgroundColor: scheme.surfaceContainerHighest),
-            child: Text(text,
-                style:
-                    const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-          ),
-        );
-
-    return Row(
-      children: <Widget>[
-        SizedBox(
-            width: 46,
-            child: Text(label,
-                style:
-                    TextStyle(fontSize: 15, color: scheme.onSurfaceVariant))),
-        btn('-5', -5),
-        const SizedBox(width: 6),
-        btn('-1', -1),
-        Expanded(
-          child: Center(
-            child: Text(
-              value.toString().padLeft(2, '0'),
-              style: TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.w700,
-                  color: scheme.onSurface,
-                  fontFeatures: const <FontFeature>[
-                    FontFeature.tabularFigures()
-                  ]),
-            ),
-          ),
-        ),
-        btn('+1', 1),
-        const SizedBox(width: 6),
-        btn('+5', 5),
-      ],
-    );
-  }
-}

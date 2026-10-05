@@ -8,13 +8,13 @@ class CustomTitleBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Container(
       height: 32,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
+        color: scheme.surface,
         border: Border(
-            bottom: BorderSide(
-                color: Theme.of(context).colorScheme.outlineVariant, width: 1)),
+            bottom: BorderSide(color: scheme.outlineVariant, width: 1)),
       ),
       child: Row(
         children: [
@@ -26,9 +26,15 @@ class CustomTitleBar extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 child: Row(
                   children: [
-                    Icon(Icons.touch_app, size: 16, color: Theme.of(context).colorScheme.primary),
+                    Icon(Icons.touch_app, size: 16, color: scheme.primary),
                     const SizedBox(width: 8),
-                    Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                    // 颜色必须显式写：以前靠继承，浅色模式下会解析到浅色文字上，
+                    // 用户实测"标题栏字体浅色看不见"。
+                    Text(title,
+                        style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                            color: scheme.onSurface)),
                   ],
                 ),
               ),
@@ -76,7 +82,9 @@ class TitleBarButton extends StatelessWidget {
           hoverColor: isClose
               ? scheme.error.withValues(alpha: 0.85)
               : scheme.onSurface.withValues(alpha: 0.08),
-          child: Icon(icon, size: 18, color: isClose ? null : scheme.onSurfaceVariant),
+          child: Icon(icon,
+              size: 18,
+              color: isClose ? scheme.onError : scheme.onSurfaceVariant),
         ),
       ),
     );

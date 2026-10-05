@@ -1,3 +1,4 @@
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import 'api.dart';
@@ -260,6 +261,10 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
                       Text(label,
                           style: TextStyle(
                               fontSize: 15,
+                              // 颜色必须显式写：浅色/深色主题下都能看清
+                              color: selected
+                                  ? scheme.onPrimaryContainer
+                                  : scheme.onSurface,
                               fontWeight:
                                   selected ? FontWeight.w600 : FontWeight.w400)),
                     ],
@@ -346,16 +351,12 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
         const SizedBox(height: 8),
         const Text('壁纸源'),
         const SizedBox(height: 6),
-        TextField(
+        _mediaSourceField(
           controller: _wallUrlCtrl,
           enabled: _isCustomExam,
-          decoration: InputDecoration(
-            isDense: true,
-            border: const OutlineInputBorder(),
-            hintText: _isCustomExam
-                ? '网页地址，或本地 视频/图片/动图 文件'
-                : '跟随倒计时页预设（切换类型即可修改）',
-          ),
+          hint: _isCustomExam
+              ? '网页地址，或点"浏览…"选本地 视频/图片/动图 文件'
+              : '跟随倒计时页预设（切换类型即可修改）',
         ),
         const SizedBox(height: 14),
         const Text('画幅'),
@@ -398,16 +399,12 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
         const SizedBox(height: 8),
         const Text('屏保源'),
         const SizedBox(height: 6),
-        TextField(
+        _mediaSourceField(
           controller: _ssUrlCtrl,
           enabled: _isCustomExam,
-          decoration: InputDecoration(
-            isDense: true,
-            border: const OutlineInputBorder(),
-            hintText: _isCustomExam
-                ? '网页地址，或本地 视频/图片/动图 文件'
-                : '跟随倒计时页预设',
-          ),
+          hint: _isCustomExam
+              ? '网页地址，或点"浏览…"选本地 视频/图片/动图 文件'
+              : '跟随倒计时页预设',
         ),
         const SizedBox(height: 14),
         Text('空闲 $timeout 秒后启动屏保'),
@@ -512,6 +509,103 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
     );
   }
 
+  // ---------- 本地文件选择（系统文件选择窗口） ----------
+  //
+  // Qt 版设置里就有"浏览…"按钮（QFileDialog），Flutter 版一直没有，
+  // 用户只能手打路径。这里用 file_selector（官方插件，调的是系统原生对话框），
+  // 选出来的路径直接填进输入框；后端 media.resolve() 认本地文件路径，
+  // 会自己起 127.0.0.1 的临时服务喂给 WebView2。
+
+  static const List<String> _mediaExtensions = <String>[
+    'mp4', 'webm', 'mkv', 'mov', 'm4v', 'ogv',
+    'gif', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'svg', 'ico',
+  ];
+
+  Future<void> _pickMediaFile(TextEditingController controller) async {
+    try {
+      final XFile? file = await openFile(
+        confirmButtonText: '选择',
+        acceptedTypeGroups: <XTypeGroup>[
+          XTypeGroup(label: '视频/图片/动图', extensions: _mediaExtensions),
+          XTypeGroup(label: '视频', extensions: <String>[
+            'mp4', 'webm', 'mkv', 'mov', 'm4v', 'ogv',
+          ]),
+          XTypeGroup(label: '图片/动图', extensions: <String>[
+            'gif', 'png', 'jpg', 'jpeg', 'bmp', 'webp', 'svg', 'ico',
+          ]),
+          XTypeGroup(label: '全部文件'),
+        ],
+      );
+      if (file == null || file.path.isEmpty) return;
+      if (!mounted) return;
+      final wasPreset = !_isCustomExam;
+      setState(() {
+        controller.text = file.path;
+        // 选了本地文件就必须走"自定义"：中/高考预设会把地址覆盖回预设页面，
+        // 不切的话用户会发现"选了文件但壁纸没变"。
+        _config['exam_type'] = 'custom';
+        _section('wallpaper')['url'] = _wallUrlCtrl.text.trim();
+        _section('screensaver')['url'] = _ssUrlCtrl.text.trim();
+      });
+      _showSnack(wasPreset
+          ? '已选好文件，倒计时类型自动切到「自定义」才会用它（记得点保存）'
+          : '已选好文件（记得点保存）');
+    } catch (e, s) {
+      AppLog.error('打开文件选择窗口失败', e, s);
+      if (mounted) _showSnack('打不开文件选择窗口：$e', error: true);
+    }
+  }
+
+  /// 壁纸/屏保源输入框 + "浏览…"按钮。
+  Widget _mediaSourceField({
+    required TextEditingController controller,
+    required String hint,
+    required bool enabled,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: <Widget>[
+        Expanded(
+          child: TextField(
+            controller: controller,
+            enabled: enabled,
+            // 只为刷新"清空"按钮的显示状态
+            onChanged: (_) => setState(() {}),
+            decoration: InputDecoration(
+              isDense: true,
+              border: const OutlineInputBorder(),
+              hintText: hint,
+              suffixIcon: controller.text.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.clear, size: 18),
+                      tooltip: '清空',
+                      onPressed: enabled
+                          ? () => setState(() => controller.clear())
+                          : null,
+                    ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          height: 46,
+          child: OutlinedButton.icon(
+            // 故意不跟随 enabled：预设模式下也允许"选个文件"，
+            // 选完自动切到自定义（否则按钮会是灰的，用户以为没做这个功能）。
+            onPressed: () => _pickMediaFile(controller),
+            icon: const Icon(Icons.folder_open, size: 18),
+            label: const Text('浏览…'),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: scheme.onSurface,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _aboutRow(String label, String value) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 5),
@@ -525,7 +619,11 @@ class _CdSettingsDialogState extends State<CdSettingsDialog> {
                     fontSize: 14,
                     color: Theme.of(context).colorScheme.onSurfaceVariant)),
           ),
-          Expanded(child: Text(value, style: const TextStyle(fontSize: 14))),
+          Expanded(
+              child: Text(value,
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface))),
         ],
       ),
     );

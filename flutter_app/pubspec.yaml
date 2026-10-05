@@ -1,7 +1,7 @@
 name: idiot_launch
 description: "傻瓜启动器 — 一键启动中考/高考倒计时、早晚读、计时器"
 publish_to: 'none'
-version: 3.0.0+28
+version: 3.0.0+29
 
 environment:
   sdk: ^3.13.4
@@ -15,6 +15,7 @@ dependencies:
   audioplayers: ^6.1.0
   desktop_multi_window: ^0.3.0
   ffi: ^2.1.3
+  file_selector: ^1.1.0
 
 dev_dependencies:
   flutter_test:

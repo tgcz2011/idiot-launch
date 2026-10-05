@@ -76,6 +76,15 @@ IdiotLaunchBackend.exe --server（后端进程）
 另外：创建子窗口要起一个新的 Flutter 引擎，这一步跑在进程主线程上，主窗口会短暂无响应
 （1-2 秒）—— 调用方必须先弹 loading 并在文案里说明，这是"看起来卡死"和"明确告知"的区别。
 
+**窗口拖动必须按 DPI 换算，而且要用绝对位置**（beta28 实测"拖动不跟手"）：
+
+- Flutter 手势给的是**逻辑**像素，`SetWindowPos` 要**物理**像素。
+  把逻辑位移直接当物理像素用，125% 缩放时窗口只走 80%、150% 时只走 2/3，越拖越落后；
+- 不要累加 `delta`（事件合并/丢弃会永久丢距离），要记下"窗口原位 + 指针起点"，
+  每次用 `origin + (now - start) * devicePixelRatio` 算绝对位置
+  （`SubWindow.dragTarget`，有单测 `test/sub_window_drag_test.dart`）。
+- `SubWindow.attach(scale: dpr)` 传入缩放比例。
+
 **不要在别处重复实现这些调用。**
 
 ## 三、数据与状态
@@ -108,6 +117,14 @@ IdiotLaunchBackend.exe --server（后端进程）
    Supabase `latest_version` 表 → GitHub `/tags` → `/releases` → 302 重定向，逐级兜底。
 2. 有新版本 → 后台线程用 aria2 从 11 个源并发下载到 `data\IdiotLaunch_Setup_<版本>.exe`
    → 校验 SHA-256 → 写 `pending_launcher_path` → 托盘弹一次"更新已就绪"。
+   下载过程中**每一步进度都要写进 `state.launcher_download`**（`set_download_state`），
+   界面横幅的百分比只看这个字段。历史上它只在开始/结束写两次，于是界面永远是 0%
+   （用户实测"自动更新下载始终是 0%"）。
+   `/api/status`、`/api/update/status` 返回的 `download_progress` 是 **0~1 的小数**
+   （前端乘 100 显示；以前后端给 0~100、前端又乘 100）。
+   下载被打断（关程序/装更新/断网）后状态会停在 `downloading`，
+   `get_download_state()` 用 `updated_at` 超过 `DOWNLOAD_STALE_SECONDS` 判为 `interrupted`，
+   daemon 启动时也会清一次，避免界面永远显示"正在后台下载"。
 3. 安装触发方式二选一：
    - 用户点横幅「一键更新」→ `POST /api/update/install` → 后端**先回包**，
      再起线程 `start_update_installer(silent=False)` 用 `/SILENT` 启动安装包
@@ -143,12 +160,12 @@ tools/                    版本号与元数据生成、资源生成、单元测
 | 方法 | 路径 | 用途 |
 |------|------|------|
 | GET | `/api/version` | 存活探测（前端 ping 用） |
-| GET | `/api/status` | 版本/壁纸状态/登录状态/daemon 活动/下载进度/设置 |
+| GET | `/api/status` | 版本/壁纸状态/登录状态/daemon 活动/下载进度（`download_progress` 为 **0~1 小数**）/设置 |
 | GET/POST | `/api/settings` | 读取/保存设置 |
 | GET | `/api/morning/config` | 早读登录状态与时间段 |
 | GET | `/api/morning/students` | 学生名单（失败时 `success=false` + 中文原因） |
 | POST | `/api/morning/login` / `logout` / `open` | 登录（先校验后保存）/ 退出登录（连缓存一起清）/ 打开浏览器 |
-| GET | `/api/update/status` | 更新状态（含 `pending_ready`、`last_check_at`） |
+| GET | `/api/update/status` | 更新状态：`pending_ready`、`last_check_at`、`latest_version`、`downloading`、`download_status`、`download_version`、`download_progress`（**0~1 小数**） |
 | POST | `/api/update/check` / `install` | 触发检查 / 一键更新 |
 | GET/POST | `/api/cd/config` | 壁纸&屏保配置（POST 返回 `restart_required`） |
 | POST | `/api/countdown/start` / `stop` / `custom` / `settings` | 启动/关闭壁纸等 |
@@ -196,12 +213,20 @@ CI（`.github/workflows/release.yml`）会：
 - **死代码已清理**：`src/main.py`（旧 tkinter 界面）、`src/timer_dialog.py`、
   `countdown_app/update.py`（CD 自带更新器）、`IdiotLaunch.spec`、`tools/edge_test*.py` 等。
   如果哪天要恢复旧 GUI，请从 git 历史里取。
+- **壁纸/屏保选本地文件用官方 `file_selector` 插件**（`CdSettingsDialog` 的「浏览…」）。
+  它会给 Windows 构建多带一个 `file_selector_windows_plugin.dll`（安装包自带，不用额外处理）。
+  想省掉这个依赖就得自己 FFI 调 `GetOpenFileNameW`，struct 布局容易出错，不划算。
+- **文字颜色一律显式写**。`TextStyle(fontSize: xx)` 的 `color` 是 null，
+  一旦继承链断开就会变成看不见的文字（beta27 真实出现过："标题栏和壁纸设置的字体看不见"）。
+  防回归：`test/contrast_test.dart` 会把控件真的渲染出来，
+  逐个取 RichText 实际生效的颜色按 WCAG 校验对比度（浅色/深色各一遍）。
 
 ## 八、改代码时的检查清单
 
 - [ ] 改了版本号相关文件？跑一遍 `tools/bump_version.py`，别手改。
 - [ ] 改了后端接口？同步更新 `flutter_app/lib/api.dart` 和本文件第五节的表格。
-- [ ] 碰了子窗口？确认没有新增阻塞式 Win32 调用（见第二节）。
+- [ ] 碰了子窗口？确认没有新增阻塞式 Win32 调用（见第二节），拖动要用绝对位置 + DPI 换算。
+- [ ] 写了新的 `TextStyle(...)`？显式带 `color`（见第七节最后一条）。
 - [ ] 碰了进程退出？确认托盘退出、安装前退出、`--quit` 三条路径都能真的结束进程。
 - [ ] 加了后台行为？在「设置 → 程序在后台做了什么」里加一条说明。
 - [ ] 提交前：`python tools/test_core.py`、`cd flutter_app; dart analyze; flutter test`。

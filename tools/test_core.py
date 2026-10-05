@@ -143,6 +143,63 @@ class TestManualUpdateCheck(unittest.TestCase):
                 core.STATE_FILE = old_state
 
 
+class TestDownloadState(unittest.TestCase):
+    """回归：界面上的"正在后台下载 N%"完全依赖这几个函数。
+
+    用户实测（beta27/beta28）：进度永远是 0%，而且状态一直卡在 downloading，
+    看起来像一直在下载。根因就是进度没写进 launcher_download、且中断后没人清。
+    """
+
+    def setUp(self):
+        import src.core as core
+        import time
+
+        self.core = core
+        self.time = time
+        self._old = core.STATE_FILE
+        self._tmp = tempfile.TemporaryDirectory()
+        core.STATE_FILE = os.path.join(self._tmp.name, "state.json")
+
+    def tearDown(self):
+        self.core.STATE_FILE = self._old
+        self._tmp.cleanup()
+
+    def test_progress_is_written_and_readable(self):
+        self.core.set_download_state("9.9.9", 42.5, "downloading",
+                                     "D:/x/Setup.exe", "notes")
+        dl = self.core.get_download_state()
+        self.assertEqual(dl["status"], "downloading")
+        self.assertEqual(dl["progress"], 42.5)
+        self.assertEqual(dl["version"], "9.9.9")
+        self.assertTrue(dl.get("updated_at"))
+
+    def test_stale_downloading_is_reported_as_interrupted(self):
+        self.core.set_download_state("9.9.9", 10.0, "downloading")
+        st = self.core.load_state()
+        st["launcher_download"]["updated_at"] = (
+            self.time.time() - self.core.DOWNLOAD_STALE_SECONDS - 5)
+        self.core.save_state(st)
+        self.assertEqual(self.core.get_download_state()["status"], "interrupted")
+
+    def test_startup_clears_leftover_download(self):
+        # 用户遇到的情况：state 里留着"正在下载 beta27"，但当前已经是 beta28
+        self.core.set_download_state("3.0.0.0-beta1", 0.0, "downloading")
+        self.core._clear_stale_download_on_start()
+        self.assertEqual(self.core.get_download_state(), {},
+                         "启动时必须清掉上次没下完的状态，否则界面永远显示下载中")
+
+    def test_clear_download_state(self):
+        self.core.set_download_state("9.9.9", 5.0, "failed")
+        self.core.clear_download_state("测试")
+        self.assertEqual(self.core.get_download_state(), {})
+
+    def test_progress_is_clamped(self):
+        self.core.set_download_state("9.9.9", 999, "downloading")
+        self.assertEqual(self.core.get_download_state()["progress"], 100.0)
+        self.core.set_download_state("9.9.9", -5, "downloading")
+        self.assertEqual(self.core.get_download_state()["progress"], 0.0)
+
+
 class TestProcessKillSafety(unittest.TestCase):
     """回归：结束进程前必须确认映像名，绝不能误杀（PID 会被复用）。"""
 

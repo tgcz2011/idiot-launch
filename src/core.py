@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 # ── 常量 ──────────────────────────────────────────────
@@ -51,6 +52,10 @@ STARTUP_CHECK_GRACE = 10 * 60
 DOWNLOAD_TIMEOUT = 900
 DOWNLOAD_RETRY = 3
 MAX_DOWNLOAD_FAILURES = 3
+# 下载进度多久没更新就认为这次下载已经死了。
+# 用户实测反馈：下载被"退出程序/安装更新/断网"打断后，状态一直停在 downloading，
+# 界面就永远显示"正在后台下载 0%"，看上去像卡住了。
+DOWNLOAD_STALE_SECONDS = 300
 
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
 DAEMON_QUIT_EVENT = "IdiotLaunch_Quit"
@@ -70,7 +75,7 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta28"
+LAUNCHER_VERSION = "3.0.0.0-beta29"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
@@ -680,12 +685,97 @@ def _installer_files(dest_path: str):
 
 
 def _remove_installer(dest_path: str) -> None:
+    if not dest_path:
+        return
     for p in list(_installer_files(dest_path)):
         try:
             if os.path.isfile(p):
                 os.remove(p)
         except OSError:
             pass
+
+
+# ── 下载状态（界面靠它显示进度） ───────────────────────
+
+def set_download_state(version: str, percent: float, status: str,
+                       installer: str = "", release_notes: str = "") -> None:
+    """把下载进度写进 state.json。
+
+    历史 bug：下载过程中只更新了 daemon.progress，launcher_download.progress
+    永远停在 0 —— 界面于是永远显示"正在后台下载 0%"，看起来像卡死了。
+    """
+    with _state_lock:
+        st = load_state()
+        st["launcher_download"] = {
+            "version": str(version),
+            "progress": round(max(0.0, min(100.0, float(percent))), 1),
+            "status": status,
+            "installer": installer,
+            "release_notes": release_notes,
+            "updated_at": time.time(),
+        }
+        save_state(st)
+
+
+def clear_download_state(reason: str = "") -> None:
+    with _state_lock:
+        st = load_state()
+        if st.pop("launcher_download", None) is None:
+            return
+        save_state(st)
+    if reason:
+        log_daemon(f"清除下载状态：{reason}")
+
+
+def get_download_state() -> dict:
+    """界面用的下载状态（带"是不是已经死了"的判断）。
+
+    超过 DOWNLOAD_STALE_SECONDS 没有进度更新，就认为这次下载已经结束。
+    程序被关掉、装更新、断网都会留下半截 downloading 状态，
+    不清掉的话界面会永远显示"正在后台下载"。
+    """
+    dl = dict(load_state().get("launcher_download") or {})
+    if not dl:
+        return {}
+    if dl.get("status") == "downloading":
+        updated = float(dl.get("updated_at", 0) or 0)
+        if not updated or time.time() - updated > DOWNLOAD_STALE_SECONDS:
+            dl["status"] = "interrupted"
+    return dl
+
+
+def _current_download_installer() -> str:
+    """正在下载的安装包路径（清理残留时不能删它）。"""
+    dl = get_download_state()
+    if dl.get("status") == "downloading":
+        return str(dl.get("installer", "") or "")
+    return ""
+
+
+def _clear_stale_download_on_start() -> None:
+    """daemon 启动时收拾上一次没下完的下载状态。
+
+    实测（beta27→beta28）：上一次下载被中断后 launcher_download 一直停在
+    downloading/0%，界面永远显示"正在后台下载 0%"，用户以为一直在下载。
+    """
+    dl = load_state().get("launcher_download") or {}
+    if not dl:
+        return
+    version = str(dl.get("version", ""))
+    status = str(dl.get("status", ""))
+    updated = float(dl.get("updated_at", 0) or 0)
+    reason = ""
+    if not version:
+        reason = "没有版本号"
+    elif compare_versions(version, LAUNCHER_VERSION) <= 0:
+        reason = f"v{version} 已经不高于当前版本"
+    elif status == "failed":
+        reason = f"v{version} 上次下载失败"
+    elif status == "downloading" and (
+            not updated or time.time() - updated > DOWNLOAD_STALE_SECONDS):
+        reason = f"v{version} 上次下载被中断"
+    if reason:
+        clear_download_state(reason)
 
 
 def cleanup_stale_downloads(keep_path: str = "") -> int:
@@ -727,8 +817,39 @@ def cleanup_stale_downloads(keep_path: str = "") -> int:
     return removed
 
 
-def download_installer(url: str, dest_path: str, tag: str = "") -> bool:
-    """aria2 多源分块下载（16 连接/源），失败重试 3 轮。"""
+def _adopt_downloaded_file(dest_path: str, url: str) -> None:
+    """aria2 会优先采用服务器 Content-Disposition 里的文件名，可能不是 --out。
+
+    实测：`--out probe.exe` + GitHub 资源 → 文件被存成
+    `IdiotLaunch_Setup_x.y.z.exe`，于是调用方"下载成功但目标文件不存在"。
+    生产环境两边名字本来就一样，这里只是兜底。
+    """
+    if not dest_path or os.path.isfile(dest_path):
+        return
+    dirname = os.path.dirname(dest_path)
+    wanted = os.path.basename(dest_path)
+    try:
+        name = os.path.basename(urllib.parse.urlparse(url).path)
+    except Exception:
+        name = ""
+    if not name or name == wanted:
+        return
+    src = os.path.join(dirname, name)
+    if not os.path.isfile(src):
+        return
+    try:
+        os.replace(src, dest_path)
+        log_daemon(f"下载落盘文件名与目标不一致，已改名: {name} -> {wanted}")
+    except OSError as e:
+        log_daemon(f"改名下载文件失败: {type(e).__name__}: {e}")
+
+
+def download_installer(url: str, dest_path: str, tag: str = "",
+                       on_progress=None) -> bool:
+    """aria2 多源分块下载（16 连接/源），失败重试 3 轮。
+
+    [on_progress] 让调用方把百分比写进自己的状态（界面要显示进度条）。
+    """
     from src.aria2_downloader import download_with_aria2
     from src.telemetry import report_event
 
@@ -740,11 +861,18 @@ def download_installer(url: str, dest_path: str, tag: str = "") -> bool:
         set_daemon_status(
             "downloading", float(percent),
             f"下载中 {percent}% ({speed // 1024} KB/s)", download_tag=tag)
+        if on_progress is not None:
+            try:
+                on_progress(percent)
+            except Exception:
+                pass
 
     for attempt in range(DOWNLOAD_RETRY):
         log_daemon(f"aria2 下载尝试 ({attempt + 1}/{DOWNLOAD_RETRY})，{len(urls)} 个源")
         ok = download_with_aria2(urls, dest_path,
                                  progress_callback=_progress, timeout=DOWNLOAD_TIMEOUT)
+        if ok:
+            _adopt_downloaded_file(dest_path, url)
         if ok and os.path.isfile(dest_path):
             duration = int(time.time() - start_time)
             size_mb = round(os.path.getsize(dest_path) / 1024 / 1024, 1)
@@ -945,29 +1073,32 @@ _launcher_download_lock = threading.Lock()
 
 def _launcher_download_worker(url: str, dest: str, version: str,
                               release_notes: str, expected_sha256: str = "") -> None:
-    update_state({"launcher_download": {
-        "version": version, "progress": 0.0, "status": "downloading",
-        "installer": dest, "release_notes": release_notes}})
+    def _on_progress(percent):
+        set_download_state(version, percent, "downloading", dest, release_notes)
 
-    ok = download_installer(url, dest, tag="launcher")
+    set_download_state(version, 0.0, "downloading", dest, release_notes)
+
+    ok = download_installer(url, dest, tag="launcher", on_progress=_on_progress)
     if not ok:
         with _state_lock:
             st = load_state()
-            st["launcher_download"] = {"version": version, "progress": 0.0,
-                                       "status": "failed"}
             st["download_failures"] = int(st.get("download_failures", 0)) + 1
             st["download_failed_at"] = time.time()
             save_state(st)
+        # 状态必须改成 failed：留在 downloading 界面就会一直显示"下载中 0%"
+        set_download_state(version, 0.0, "failed", dest, release_notes)
         set_daemon_status("idle", 0, "更新下载失败，稍后重试")
         return
 
     if not os.path.isfile(dest) or os.path.getsize(dest) < LAUNCHER_MIN_SIZE:
         _remove_installer(dest)
+        set_download_state(version, 0.0, "failed", dest, release_notes)
         set_daemon_status("idle", 0, "下载文件不完整，已删除")
         return
 
     if not verify_sha256(dest, expected_sha256):
         log_daemon(f"SHA-256 校验失败，删除安装包: {os.path.basename(dest)}")
+        set_download_state(version, 0.0, "failed", dest, release_notes)
         set_daemon_status("idle", 0, "更新包校验失败，已拒绝更新，将重新下载")
         _remove_installer(dest)
         return
@@ -975,10 +1106,7 @@ def _launcher_download_worker(url: str, dest: str, version: str,
     if compare_versions(version, LAUNCHER_VERSION) <= 0:
         log_daemon(f"下载完成但当前已是 v{LAUNCHER_VERSION}，跳过")
         _remove_installer(dest)
-        with _state_lock:
-            st = load_state()
-            st.pop("launcher_download", None)
-            save_state(st)
+        clear_download_state(f"下载到的 v{version} 不高于当前版本")
         set_daemon_status("idle", 0, "已是最新版本")
         return
 
@@ -987,11 +1115,9 @@ def _launcher_download_worker(url: str, dest: str, version: str,
         st["pending_launcher_path"] = dest
         st["pending_launcher_version"] = version
         st["launcher_release_notes"] = release_notes
-        st["launcher_download"] = {"version": version, "progress": 100.0,
-                                   "status": "complete", "installer": dest,
-                                   "release_notes": release_notes}
         st["download_failures"] = 0
         save_state(st)
+    set_download_state(version, 100.0, "complete", dest, release_notes)
     set_daemon_status("idle", 0, f"已下载 v{version}，可一键更新")
     log_daemon(f"v{version} 下载完成（SHA-256 通过），等待安装")
     notify_tray("更新已就绪", f"傻瓜启动器 v{version} 已下载完成，可一键更新。")
@@ -1022,9 +1148,10 @@ def _check_and_download_launcher_update() -> None:
         return
 
     now = time.time()
-    # 连续下载失败时退避，避免在断网的教室网络里一直空转
+    # 连续下载失败时退避，避免在断网的教室网络里一直空转。
+    # 用户手动点"检查更新/重试"时（force）不受退避限制。
     failures = int(state.get("download_failures", 0))
-    if failures >= MAX_DOWNLOAD_FAILURES:
+    if not force and failures >= MAX_DOWNLOAD_FAILURES:
         backoff = min(6 * 3600, 600 * failures)
         if now - state.get("download_failed_at", 0) < backoff:
             return
@@ -1051,8 +1178,8 @@ def _check_and_download_launcher_update() -> None:
     with _state_lock:
         st = load_state()
         st["launcher_last_check"] = now
-        if latest:
-            st["latest_seen_version"] = latest["version"]
+        # 每次检查都刷新：没有新版本时清掉，否则界面会一直说有新版本
+        st["latest_seen_version"] = latest["version"] if latest else ""
         save_state(st)
 
     if not latest:
@@ -1337,6 +1464,13 @@ def daemon_run() -> int:
 
     quit_event = _event_create(DAEMON_QUIT_EVENT)
 
+    # 上一次下载可能被"退出程序 / 安装更新 / 断网"打断，留下半截 downloading 状态，
+    # 界面就会一直显示"正在后台下载 0%"（用户实测反馈）。启动先收拾干净。
+    try:
+        _clear_stale_download_on_start()
+    except Exception as e:
+        log_daemon(f"清理下载状态失败: {type(e).__name__}: {e}")
+
     # 启动后 10 分钟内已经检查过就不再重复检查（避免频繁开关程序刷接口）。
     # 同样只置 force_check、不清零时间戳，否则界面会短暂显示"还没有检查过更新"。
     with _state_lock:
@@ -1359,6 +1493,11 @@ def daemon_run() -> int:
                     info = pending_update_info()
                     if info:
                         keep = os.path.basename(info["path"])
+                    else:
+                        # 正在下载的安装包绝不能被当成"旧安装包"删掉
+                        inflight = _current_download_installer()
+                        if inflight:
+                            keep = os.path.basename(inflight)
                     cleanup_stale_downloads(keep_path=keep)
 
                 if now - _morning_periods_last_check > 600:
@@ -1452,6 +1591,7 @@ __all__ = [
     "parse_version", "compare_versions", "is_beta_version",
     "log_daemon", "load_state", "save_state", "update_state",
     "set_daemon_status", "get_daemon_status", "send_command", "poll_command",
+    "set_download_state", "clear_download_state", "get_download_state",
     "launch_countdown", "launch_custom", "launch_settings",
     "is_running", "quit_countdown",
     "load_morning_config", "save_morning_config", "is_morning_logged_in",

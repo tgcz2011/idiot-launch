@@ -246,8 +246,15 @@ class SubWindow {
   int _heightPx = 440;
   String _title = '';
 
-  int _dragX = 0;
-  int _dragY = 0;
+  /// 逻辑像素 → 物理像素的比例（= Flutter 的 devicePixelRatio）。
+  double _scale = 1.0;
+
+  // 拖动：记录"窗口原位 + 指针起点"，之后一律算绝对位置。
+  int _dragOriginX = 0;
+  int _dragOriginY = 0;
+  double _dragStartX = 0;
+  double _dragStartY = 0;
+  bool _dragging = false;
 
   bool get isReady => _hwnd != 0;
 
@@ -258,16 +265,19 @@ class SubWindow {
   /// [hwnd] 由父窗口通过窗口通道传下来（确定性，不会抢错窗口）。
   /// 传 0 时回退到"本进程 + 标题为空"的自动查找。
   /// [nativeShow] 是拿不到 HWND 时的兜底显示手段（window_show，作用于自己的窗口）。
+  /// [scale] 传 devicePixelRatio，拖动时要做逻辑→物理换算。
   void attach({
     required int widthPx,
     required int heightPx,
     required String title,
     int hwnd = 0,
+    double scale = 1.0,
     Future<void> Function()? nativeShow,
   }) {
     _widthPx = widthPx;
     _heightPx = heightPx;
     _title = title;
+    if (scale > 0) _scale = scale;
 
     if (hwnd != 0) {
       _take(hwnd);
@@ -375,25 +385,65 @@ class SubWindow {
     }
   }
 
-  void beginDrag() {
+  /// 开始拖动窗口。[x]/[y] 是 Flutter 给的逻辑坐标（窗口内）。
+  ///
+  /// 记录"窗口当前物理位置 + 指针逻辑起点"，之后用绝对位置算，
+  /// 而不是累加 delta。原因：
+  ///   1) Flutter 的 delta 是逻辑像素，SetWindowPos 要物理像素 —— 125% 缩放的
+  ///      屏幕上窗口只会走 80% 的距离（用户实测"拖动不跟手"）；
+  ///   2) 事件被合并/丢弃时累加会永久丢距离。
+  void beginDrag(double x, double y) {
     if (_hwnd == 0) return;
     final rc = calloc<_Rect>();
     try {
       if (_getWindowRect(_hwnd, rc) != 0) {
-        _dragX = rc.ref.left;
-        _dragY = rc.ref.top;
+        _dragOriginX = rc.ref.left;
+        _dragOriginY = rc.ref.top;
       }
+      _dragStartX = x;
+      _dragStartY = y;
+      _dragging = true;
     } finally {
       calloc.free(rc);
     }
   }
 
-  void updateDrag(double dx, double dy) {
-    if (_hwnd == 0) return;
-    _dragX += dx.round();
-    _dragY += dy.round();
-    _setWindowPos(_hwnd, 0, _dragX, _dragY, 0, 0,
+  void updateDrag(double x, double y) {
+    if (_hwnd == 0 || !_dragging) return;
+    final target = SubWindow.dragTarget(
+      originX: _dragOriginX,
+      originY: _dragOriginY,
+      startX: _dragStartX,
+      startY: _dragStartY,
+      x: x,
+      y: y,
+      scale: _scale,
+    );
+    _setWindowPos(_hwnd, 0, target.x, target.y, 0, 0,
         _swpAsyncWindowPos | _swpNoSize | _swpNoZOrder | _swpNoActivate);
+  }
+
+  /// 拖动时的目标窗口位置（纯函数，方便单测）。
+  ///
+  /// [scale] 是 devicePixelRatio：Flutter 给的是**逻辑**像素，SetWindowPos 要**物理**像素。
+  /// 以前把逻辑像素的 delta 直接当物理像素用，125% 缩放的屏幕上窗口只走 80% 的距离，
+  /// 越拖越落后 —— 用户实测"拖动不跟手"。
+  static ({int x, int y}) dragTarget({
+    required int originX,
+    required int originY,
+    required double startX,
+    required double startY,
+    required double x,
+    required double y,
+    required double scale,
+  }) {
+    final dx = ((x - startX) * scale).round();
+    final dy = ((y - startY) * scale).round();
+    return (x: originX + dx, y: originY + dy);
+  }
+
+  void endDrag() {
+    _dragging = false;
   }
 
   void minimize() {

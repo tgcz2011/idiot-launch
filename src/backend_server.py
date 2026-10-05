@@ -41,6 +41,7 @@ from src.core import (  # noqa: E402
     load_settings,
     load_state,
     log_daemon,
+    get_download_state,
     open_folder,
     open_morning_reading,
     pending_update_info,
@@ -78,6 +79,34 @@ class ApiHandler(BaseHTTPRequestHandler):
         pass  # 不往 stderr 写（打包后 stderr 是 None）
 
     # ---- 工具 ----
+    def _download_fields(self):
+        """下载相关字段（前端横幅用它显示进度）。
+
+        `download_progress` 是 **0~1 的小数**（前端乘 100 显示百分比，也可以直接
+        喂给 LinearProgressIndicator）。历史 bug 有两个：
+          1) 后端返回 0~100，前端又乘 100 → 会显示 10000%；
+          2) 下载过程中这个字段根本没被更新过，永远是 0
+             → 用户实测"自动更新下载始终是 0%"。
+        """
+        dl = get_download_state()
+        pct = float(dl.get("progress", 0) or 0)
+        return {
+            "downloading": dl.get("status") == "downloading",
+            "download_status": dl.get("status", ""),
+            "download_version": dl.get("version") or None,
+            "download_progress": round(max(0.0, min(1.0, pct / 100.0)), 4),
+        }
+
+    def _latest_seen_version(self):
+        """检查到的新版本号（只在新于当前版本时返回，否则 None）。"""
+        try:
+            latest = str(load_state().get("latest_seen_version") or "")
+            if latest and compare_versions(latest, LAUNCHER_VERSION) > 0:
+                return latest
+        except Exception:
+            pass
+        return None
+
     def _send_json(self, data, status=200):
         try:
             body = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -125,7 +154,6 @@ class ApiHandler(BaseHTTPRequestHandler):
             state = load_state()
             cfg = morning_config.load()
             daemon = get_daemon_status() or {}
-            dl = state.get("launcher_download") or {}
             info = pending_update_info()
             settings = load_settings()
             morning_class = ""
@@ -144,9 +172,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "pending_update": info["version"] if info else None,
                 "pending_ready": bool(info),
                 "has_update": bool(info),
-                "downloading": dl.get("status") == "downloading",
-                "download_progress": float(dl.get("progress", 0) or 0),
-                "download_status": dl.get("status", ""),
+                **self._download_fields(),
+                "latest_version": self._latest_seen_version(),
                 "release_notes": state.get("launcher_release_notes", ""),
                 "last_check_at": state.get("launcher_last_check", 0),
                 "activate_requested": bool(state.get("activate_requested", False)),
@@ -186,7 +213,6 @@ class ApiHandler(BaseHTTPRequestHandler):
         elif path == "/api/update/status":
             state = load_state()
             daemon = get_daemon_status() or {}
-            dl = state.get("launcher_download") or {}
             info = pending_update_info()
             self._send_json({
                 "current_version": LAUNCHER_VERSION,
@@ -196,9 +222,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "pending_version": info["version"] if info else None,
                 "pending_ready": bool(info),
                 "has_update": bool(info),
-                "downloading": dl.get("status") == "downloading",
-                "download_progress": float(dl.get("progress", 0) or 0),
-                "download_status": dl.get("status", ""),
+                **self._download_fields(),
+                "latest_version": self._latest_seen_version(),
                 "release_notes": state.get("launcher_release_notes", ""),
                 "last_check_at": state.get("launcher_last_check", 0),
             })
