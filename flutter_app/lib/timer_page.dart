@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -654,9 +655,9 @@ class _WindowBar extends StatelessWidget {
   final VoidCallback onMinimize;
   final VoidCallback onClose;
 
-  /// 拖动窗口：参数是 Flutter 的逻辑坐标（**不是 delta**）。
-  /// 用绝对坐标算位置，避免 DPI 缩放导致"拖动不跟手"。
-  final void Function(double x, double y) dragStart;
+  /// 拖动窗口：参数是 Flutter 的逻辑坐标（**不是 delta**）和输入设备类型。
+  /// 鼠标交给系统移动循环（跟手、任何 DPI 都对），触摸走逐帧拖动。
+  final void Function(double x, double y, PointerDeviceKind kind) dragStart;
   final void Function(double x, double y) dragUpdate;
   final VoidCallback onDragEnd;
 
@@ -675,10 +676,14 @@ class _WindowBar extends StatelessWidget {
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onPanStart: (d) => dragStart(d.globalPosition.dx, d.globalPosition.dy),
+              onPanStart: (d) => dragStart(d.globalPosition.dx,
+                  d.globalPosition.dy, d.kind ?? PointerDeviceKind.mouse),
               onPanUpdate: (d) =>
                   dragUpdate(d.globalPosition.dx, d.globalPosition.dy),
               onPanEnd: (_) => onDragEnd(),
+              // 手势被抢走/取消也要收尾：鼠标捕获必须还回去，
+              // 否则整个桌面的鼠标消息都会被投到本窗口
+              onPanCancel: onDragEnd,
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: Align(
@@ -726,7 +731,7 @@ class _WindowBar extends StatelessWidget {
   }
 }
 
-class _BarButton extends StatelessWidget {
+class _BarButton extends StatefulWidget {
   const _BarButton({
     required this.icon,
     required this.tooltip,
@@ -742,20 +747,35 @@ class _BarButton extends StatelessWidget {
   final bool danger;
 
   @override
+  State<_BarButton> createState() => _BarButtonState();
+}
+
+class _BarButtonState extends State<_BarButton> {
+  bool _hover = false;
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 危险按钮（关窗）平时用深灰（浅色模式下看得见），
+    // 悬停变红底时才换成 onError（浅色模式下是白色）。
+    final Color color = widget.danger && _hover
+        ? scheme.onError
+        : (widget.active ? scheme.primary : scheme.onSurfaceVariant);
     return Tooltip(
-      message: tooltip,
+      message: widget.tooltip,
       waitDuration: const Duration(milliseconds: 500),
-      child: InkWell(
-        onTap: onTap,
-        hoverColor: danger ? scheme.error.withValues(alpha: 0.85) : null,
-        child: SizedBox(
-          width: 46,
-          height: 44,
-          child: Icon(icon,
-              size: 20,
-              color: active ? scheme.primary : scheme.onSurfaceVariant),
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: InkWell(
+          onTap: widget.onTap,
+          hoverColor:
+              widget.danger ? scheme.error.withValues(alpha: 0.9) : null,
+          child: SizedBox(
+            width: 46,
+            height: 44,
+            child: Icon(widget.icon, size: 20, color: color),
+          ),
         ),
       ),
     );

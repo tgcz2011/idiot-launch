@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ffi' as ffi;
+import 'dart:ui' show PointerDeviceKind;
 
 import 'package:ffi/ffi.dart';
 
@@ -27,6 +28,10 @@ import 'app_log.dart';
 //     不会出现"点了没反应"。
 //   * 关闭用 PostMessage，移动/缩放一律 SWP_ASYNCWINDOWPOS，设标题用
 //     SendMessageTimeoutW + SMTO_ABORTIFHUNG。
+//   * 拖动：鼠标拖动先 SetCapture（beta29 实测"拖动不跟手"的真正原因 ——
+//     没有捕获，窗口一动光标就跑到窗口外面，后续鼠标消息收不到）；
+//     触摸由系统自动捕获。逐帧按"窗口原位 + 指针起点 × devicePixelRatio"
+//     算绝对位置，不用累加 delta（DPI 缩放 + 丢事件都不会偏）。
 // ============================================================================
 
 final ffi.DynamicLibrary _user32 = ffi.DynamicLibrary.open('user32.dll');
@@ -122,6 +127,22 @@ final _SendMessageTimeoutDart _sendMessageTimeout =
     _user32.lookupFunction<_SendMessageTimeoutNative, _SendMessageTimeoutDart>(
         'SendMessageTimeoutW');
 
+typedef _NoArgIntNative = ffi.Int32 Function();
+typedef _NoArgIntDart = int Function();
+final _NoArgIntDart _releaseCapture =
+    _user32.lookupFunction<_NoArgIntNative, _NoArgIntDart>('ReleaseCapture');
+
+typedef _SetCaptureNative = ffi.IntPtr Function(ffi.IntPtr hWnd);
+typedef _SetCaptureDart = int Function(int hWnd);
+final _SetCaptureDart _setCapture =
+    _user32.lookupFunction<_SetCaptureNative, _SetCaptureDart>('SetCapture');
+
+typedef _GetCursorPosNative = ffi.Int32 Function(ffi.Pointer<_Point> p);
+typedef _GetCursorPosDart = int Function(ffi.Pointer<_Point> p);
+final _GetCursorPosDart _getCursorPos =
+    _user32.lookupFunction<_GetCursorPosNative, _GetCursorPosDart>(
+        'GetCursorPos');
+
 typedef _MonitorFromWindowNative = ffi.IntPtr Function(
     ffi.IntPtr hWnd, ffi.Uint32 dwFlags);
 typedef _MonitorFromWindowDart = int Function(int hWnd, int dwFlags);
@@ -148,6 +169,13 @@ final class _Rect extends ffi.Struct {
   external int right;
   @ffi.Int32()
   external int bottom;
+}
+
+final class _Point extends ffi.Struct {
+  @ffi.Int32()
+  external int x;
+  @ffi.Int32()
+  external int y;
 }
 
 final class _MonitorInfo extends ffi.Struct {
@@ -184,6 +212,12 @@ const int _wmClose = 0x0010;
 const int _wmSetText = 0x000C;
 const int _smtoAbortIfHung = 0x0002;
 const int _monitorDefaultToNearest = 2;
+
+/// 让系统进入"移动窗口"模态循环的消息（window_manager.startDragging 用的同一套）
+const int _wmNcLButtonDown = 0x00A1;
+const int _htCaption = 2;
+/// 模态循环会一直跑到用户松手；给它一个上限，免得我们这边被无限挂住
+const int _nativeDragWaitMs = 30000;
 
 // ---- 顶层窗口枚举 -----------------------------------------------------------
 
@@ -249,12 +283,21 @@ class SubWindow {
   /// 逻辑像素 → 物理像素的比例（= Flutter 的 devicePixelRatio）。
   double _scale = 1.0;
 
-  // 拖动：记录"窗口原位 + 指针起点"，之后一律算绝对位置。
+  // 拖动：窗口原位 + 指针起点（鼠标用屏幕绝对坐标，触摸用"窗口当前位置 + 相对位移"）
   int _dragOriginX = 0;
   int _dragOriginY = 0;
+  int _cursorStartX = 0;
+  int _cursorStartY = 0;
   double _dragStartX = 0;
   double _dragStartY = 0;
   bool _dragging = false;
+  /// 本次拖动是否用 GetCursorPos 的屏幕坐标（鼠标=true，触摸=false）
+  bool _useCursor = false;
+  /// 系统移动循环不可用只记一次日志，别每次拖动都刷
+  bool _systemMoveLogged = false;
+
+  /// 鼠标捕获是否已生效（拖动结束/取消时必须还回去）
+  bool _captured = false;
 
   bool get isReady => _hwnd != 0;
 
@@ -385,21 +428,117 @@ class SubWindow {
     }
   }
 
-  /// 开始拖动窗口。[x]/[y] 是 Flutter 给的逻辑坐标（窗口内）。
+  /// 开始拖动窗口。[x]/[y] 是 Flutter 给的逻辑坐标（窗口内），只在兜底路径用。
   ///
-  /// 记录"窗口当前物理位置 + 指针逻辑起点"，之后用绝对位置算，
-  /// 而不是累加 delta。原因：
-  ///   1) Flutter 的 delta 是逻辑像素，SetWindowPos 要物理像素 —— 125% 缩放的
-  ///      屏幕上窗口只会走 80% 的距离（用户实测"拖动不跟手"）；
-  ///   2) 事件被合并/丢弃时累加会永久丢距离。
-  void beginDrag(double x, double y) {
+  /// **主路径：交给系统自己的"移动窗口"模态循环**
+  /// （ReleaseCapture + WM_NCLBUTTONDOWN/HTCAPTION，和主窗口
+  /// windowManager.startDragging 完全同一套消息）。
+  ///
+  /// 为什么不能自己 SetWindowPos（beta28/beta29 两版都栽在这）：
+  /// Flutter 给的指针坐标是**相对窗口**的。窗口一跟着指针动，指针相对窗口的
+  /// 位置就跟着变，"指针走了多少"和"窗口走了多少"搅在一起：
+  ///   * 按绝对位置算 → 窗口动 30px 又弹回原位（实测十步只走 60%，来回跳）；
+  ///   * 按 delta 累加   → 每步只能拿到一半的位移（同样实测）。
+  /// 这不是 bug 是信息不足：相对坐标里根本推不出指针的屏幕绝对位置。
+  /// 系统移动循环在屏幕坐标里跟踪指针（并且自己 SetCapture），
+  /// 光标/手指到哪窗口跟到哪，任何 DPI 都对，还自带贴边/Aero Snap。
+  ///
+  /// 代价：拖动期间本窗口的 Dart 线程会阻塞在模态循环里（不重绘、定时器延后）。
+  /// 倒计时/秒表都按"结束时间戳"算时间，不会走时，松手立刻恢复；
+  /// 主窗口的标题栏本来就是这么拖的，行为一致。
+  ///
+  /// 万一这条消息在本窗口上不成立（立刻返回且窗口没动），
+  /// 退回到逐帧 SetWindowPos 的兜底拖动，至少还拖得动。
+  void beginDrag(double x, double y,
+      [PointerDeviceKind kind = PointerDeviceKind.mouse]) {
     if (_hwnd == 0) return;
+    // 鼠标捕获：窗口一跟着指针动，鼠标消息本来会被投给别的窗口，
+    // 捕获之后一直送到本窗口，pan 才能持续拿到更新。
+    if (kind == PointerDeviceKind.mouse && !_captured) {
+      try {
+        _setCapture(_hwnd);
+        _captured = true;
+      } catch (e, s) {
+        AppLog.error('$tag: SetCapture 调用失败', e, s);
+      }
+    }
+    // 先用系统自己的移动循环（能用就是最跟手的，还带贴边/Aero Snap）
+    if (_startSystemMove()) {
+      _releaseDragCapture();
+      _dragging = false;
+      return;
+    }
+    if (!_systemMoveLogged) {
+      _systemMoveLogged = true;
+      AppLog.info('$tag: 系统移动循环在本窗口上不可用，改用逐帧拖动');
+    }
+    _beginDartDrag(x, y, kind);
+  }
+
+  /// 触发系统移动循环。返回 true 表示真的拖动过。
+  bool _startSystemMove() {
+    final before = _windowRect();
+    final sw = Stopwatch()..start();
+    final out = calloc<ffi.UintPtr>();
+    try {
+      _releaseCapture();
+      _sendMessageTimeout(_hwnd, _wmNcLButtonDown, _htCaption, 0,
+          _smtoAbortIfHung, _nativeDragWaitMs, out);
+    } catch (e, s) {
+      AppLog.error('$tag: 系统窗口拖动失败', e, s);
+      return false;
+    } finally {
+      calloc.free(out);
+      sw.stop();
+    }
+    // 真拖动过：模态循环要跑到松手才回来，耗时远大于几十毫秒
+    if (sw.elapsedMilliseconds < 50 && _windowRect() == before) return false;
+    return true;
+  }
+
+  ({int left, int top})? _windowRect() {
+    final rc = calloc<_Rect>();
+    try {
+      if (_getWindowRect(_hwnd, rc) == 0) return null;
+      return (left: rc.ref.left, top: rc.ref.top);
+    } finally {
+      calloc.free(rc);
+    }
+  }
+
+  ({int x, int y})? _cursorPos() {
+    final pt = calloc<_Point>();
+    try {
+      if (_getCursorPos(pt) == 0) return null;
+      return (x: pt.ref.x, y: pt.ref.y);
+    } finally {
+      calloc.free(pt);
+    }
+  }
+
+  void _releaseDragCapture() {
+    if (!_captured) return;
+    try {
+      _releaseCapture();
+    } catch (_) {
+      // 窗口正在销毁时失败无所谓
+    }
+    _captured = false;
+  }
+
+  void _beginDartDrag(double x, double y, PointerDeviceKind kind) {
     final rc = calloc<_Rect>();
     try {
       if (_getWindowRect(_hwnd, rc) != 0) {
         _dragOriginX = rc.ref.left;
         _dragOriginY = rc.ref.top;
       }
+      final cur = _cursorPos();
+      if (cur != null) {
+        _cursorStartX = cur.x;
+        _cursorStartY = cur.y;
+      }
+      _useCursor = kind == PointerDeviceKind.mouse && cur != null;
       _dragStartX = x;
       _dragStartY = y;
       _dragging = true;
@@ -413,6 +552,12 @@ class SubWindow {
     final target = SubWindow.dragTarget(
       originX: _dragOriginX,
       originY: _dragOriginY,
+      cursorStartX: _cursorStartX,
+      cursorStartY: _cursorStartY,
+      cursorX: _useCursor ? _cursorPos()?.x : null,
+      cursorY: _useCursor ? _cursorPos()?.y : null,
+      windowNowX: _windowRect()?.left,
+      windowNowY: _windowRect()?.top,
       startX: _dragStartX,
       startY: _dragStartY,
       x: x,
@@ -425,25 +570,54 @@ class SubWindow {
 
   /// 拖动时的目标窗口位置（纯函数，方便单测）。
   ///
+  /// 关键点：**Flutter 给的指针坐标是相对窗口的**。
+  /// 窗口一跟着指针动，指针相对窗口的位置就变了 —— 直接用这个坐标算位置，
+  /// "指针走了多少"和"窗口走了多少"会互相抵消：实测窗口动 30px 又弹回原位，
+  /// 十步只走了 60%；改用 delta 累加每步只剩一半（实测 FAST-BACK 也正好一半）。
+  /// 这是信息不足，不是算错。
+  ///
+  /// 所以鼠标拖动直接读 **GetCursorPos 的屏幕绝对坐标**（[cursorX]/[cursorY]），
+  /// 与 Flutter 的坐标语义无关，1:1 跟手。
+  ///
+  /// 触摸没有光标位置，用**重建**屏幕坐标：窗口当前位置 + 指针相对窗口的位置
+  /// （[windowNowX] + ([x] - [startX]) × [scale]）。窗口自己动多少就补回多少，
+  /// 反馈被抵消掉，同样 1:1。
+  ///
   /// [scale] 是 devicePixelRatio：Flutter 给的是**逻辑**像素，SetWindowPos 要**物理**像素。
-  /// 以前把逻辑像素的 delta 直接当物理像素用，125% 缩放的屏幕上窗口只走 80% 的距离，
-  /// 越拖越落后 —— 用户实测"拖动不跟手"。
   static ({int x, int y}) dragTarget({
     required int originX,
     required int originY,
+    required int cursorStartX,
+    required int cursorStartY,
+    int? cursorX,
+    int? cursorY,
+    int? windowNowX,
+    int? windowNowY,
     required double startX,
     required double startY,
     required double x,
     required double y,
     required double scale,
   }) {
+    if (cursorX != null && cursorY != null) {
+      // 鼠标：屏幕绝对坐标做差，最准
+      return (
+        x: originX + (cursorX - cursorStartX),
+        y: originY + (cursorY - cursorStartY),
+      );
+    }
+    // 触摸/触控笔：窗口当前位置 + 相对位移（把窗口自己的位移补回来）
     final dx = ((x - startX) * scale).round();
     final dy = ((y - startY) * scale).round();
+    if (windowNowX != null && windowNowY != null) {
+      return (x: windowNowX + dx, y: windowNowY + dy);
+    }
     return (x: originX + dx, y: originY + dy);
   }
 
   void endDrag() {
     _dragging = false;
+    _releaseDragCapture();
   }
 
   void minimize() {

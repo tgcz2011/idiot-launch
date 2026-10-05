@@ -229,6 +229,15 @@ class _MainPageState extends State<MainPage> with WindowListener {
       windowManager.setPreventClose(true);
       _initBackend();
       _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) => _pollStatus());
+      // 开发/验收用：设 IDIOT_LAUNCH_AUTO_WINDOW=timer|stopwatch 启动，
+      // 3 秒后自动打开工具窗口。子窗口的拖动/DPI 只能靠真机验证
+      // （见 HANDOFF 第二节"真机验证拖动的方法"），手动点是脚本做不到的。
+      // 不设这个环境变量就完全没影响。
+      final auto = Platform.environment['IDIOT_LAUNCH_AUTO_WINDOW'] ?? '';
+      if (auto == 'timer' || auto == 'stopwatch') {
+        Future<void>.delayed(
+            const Duration(seconds: 3), () => _createToolWindow(auto));
+      }
     } catch (e, s) {
       AppLog.error('initState 异常', e, s);
     }
@@ -876,7 +885,8 @@ class _MainPageState extends State<MainPage> with WindowListener {
       subtitle = '教室网络较慢时可能要等十几秒';
     } else {
       leading = Icon(Icons.verified, size: 30, color: Colors.green.shade600);
-      title = '当前已是最新版本 v$current';
+      // 后端还没回话时 version 可能是空的，别显示成"当前已是最新版本 v"
+      title = current.isEmpty ? '当前已是最新版本' : '当前已是最新版本 v$current';
       subtitle = _lastCheckText();
       actions = <Widget>[
         TextButton(

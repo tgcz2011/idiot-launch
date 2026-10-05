@@ -76,14 +76,57 @@ IdiotLaunchBackend.exe --server（后端进程）
 另外：创建子窗口要起一个新的 Flutter 引擎，这一步跑在进程主线程上，主窗口会短暂无响应
 （1-2 秒）—— 调用方必须先弹 loading 并在文案里说明，这是"看起来卡死"和"明确告知"的区别。
 
-**窗口拖动必须按 DPI 换算，而且要用绝对位置**（beta28 实测"拖动不跟手"）：
+**窗口拖动的坑：Flutter 不给屏幕绝对坐标**（beta28、beta29 两轮都栽在这，
+最后靠真机实测才定位）：
 
-- Flutter 手势给的是**逻辑**像素，`SetWindowPos` 要**物理**像素。
-  把逻辑位移直接当物理像素用，125% 缩放时窗口只走 80%、150% 时只走 2/3，越拖越落后；
-- 不要累加 `delta`（事件合并/丢弃会永久丢距离），要记下"窗口原位 + 指针起点"，
-  每次用 `origin + (now - start) * devicePixelRatio` 算绝对位置
-  （`SubWindow.dragTarget`，有单测 `test/sub_window_drag_test.dart`）。
-- `SubWindow.attach(scale: dpr)` 传入缩放比例。
+- Flutter 手势给的指针坐标是**相对窗口**的（`position`/`globalPosition` 在子窗口里
+  都是视口坐标，不是屏幕坐标）。窗口一跟着指针动，指针相对窗口的位置就跟着变：
+  - 用绝对位置算 → 窗口动 30px 又弹回原位。实测（`probe_drag_beta30.ps1`）：
+    鼠标走 300px，窗口只走 179px，中间来回跳；
+  - 用 `delta` 累加 → 解差分方程 `d_k = M_k - d_{k-1}`，稳定收敛到"每步只走一半"。
+    实测反向 FAST-BACK 正好 -150px / 期望 -300px。
+  这两条都不是算错，是**相对坐标里推不出指针的屏幕绝对位置**，信息不足。
+- 正确做法（`SubWindow.dragTarget`，都有单测）：
+  1. **鼠标**：拖动开始时 `GetCursorPos` 记下屏幕坐标，之后每次更新再 `GetCursorPos`
+     做差 → `origin + (cursorNow - cursorStart)`。屏幕坐标里窗口自己走了多少完全不影响，
+     实测 10 步 300px 误差 ≤1px，快速甩动（事件合并）也精确。
+  2. **触摸/触控笔**：没有光标坐标，用**重建**：`窗口当前位置 + (局部坐标 - 起点) × dpr`。
+     窗口自己动多少就补回多少，反馈被抵消，同样 1:1。
+- 鼠标拖动前要 `SetCapture(hwnd)`：否则窗口一动，鼠标消息就按光标位置投给别的窗口了，
+  pan 收不到更新。（捕获必须在 `onPanEnd`/`onPanCancel` 里 `ReleaseCapture`，
+  否则整个桌面的鼠标消息都会被投到本窗口。）
+- 逻辑像素 → 物理像素仍要乘 `devicePixelRatio`（`SubWindow.attach(scale: dpr)`），
+  这条单独成立：不乘的话 125% 缩放只走 80%。
+- `WM_NCLBUTTONDOWN/HTCAPTION`（`window_manager.startDragging` 那套系统移动循环）
+  在 `desktop_multi_window` 的子窗口上**不生效**（实测：消息被处理但模态循环没起来，
+  `SendMessageTimeoutW` 立刻返回）。代码里仍然先试一次（别的环境可能可用，
+  能用就是最跟手的），失败自动退回上面的逐帧拖动并记一条 info 日志。
+
+**倒计时选时长必须允许鼠标/触摸拖动**（beta29 实测"手指按在滚轮上拖没反应"）：
+
+- Flutter 桌面端默认 `ScrollBehavior.dragDevices` **不含 mouse**（桌面习惯是滚轮），
+  而教室里的希沃把手指触摸提升成鼠标消息 → 拖动完全没反应；
+- 所以 `widgets/duration_picker.dart` 里显式 `ScrollConfiguration(...dragDevices: 全部指针类型)`；
+- 单测必须用 `startGesture(kind: PointerDeviceKind.mouse)` 才抓得到这个 bug
+  （`tester.drag` 默认是 touch，会假通过 —— 这个坑真踩过。
+
+**按钮图标的颜色要按"平时状态"校验**（beta29 实测"关闭 × 在浅色模式下看不见"）：
+关闭按钮平时用 `onSurfaceVariant`（深灰），只有悬停底色变红时才换成 `onError`；
+`onError` 在浅色模式下是白色，平时叠在白底上就是白底白字。
+`test/contrast_test.dart` 现在把图标字形也纳入校验（`includeIcons: true`），
+故意把 `onError` 换回平时状态时该测试会失败（浅色 1.04:1、深色 1.42:1）。
+
+**真机验证拖动的方法**（比"改完看着像对"可靠得多，值得每次动拖动时跑一遍）：
+
+1. `flutter build windows --debug`，用 `IDIOT_LAUNCH_AUTO_WINDOW=timer`
+   （或 `stopwatch`）启动 `build\windows\x64\runner\Debug\IdiotLaunch.exe`，
+   3 秒后自动打开工具窗口；
+2. 跑 `probe_drag_beta30.ps1`（在 `D:\idl`，不进仓库）：把子窗口 `SetWindowPos` 抬到最前
+   （否则主窗口会把鼠标事件全吃掉），`mouse_event` 按下 → 分 10 步移动 30px →
+   每步读 `GetWindowRect` 和期望值比较 → 松手，再反向甩一次（验证事件合并）；
+3. 通过标准：每步误差 ≤ 几 px、`END moved` 与期望一致。
+   注意 pwsh 是 DPI-unaware：截图是**物理**像素，`GetWindowRect`/`SetCursorPos` 是
+   虚拟化坐标，两者差一个系统缩放（这台机器 1.25）。
 
 **不要在别处重复实现这些调用。**
 
@@ -219,13 +262,20 @@ CI（`.github/workflows/release.yml`）会：
 - **文字颜色一律显式写**。`TextStyle(fontSize: xx)` 的 `color` 是 null，
   一旦继承链断开就会变成看不见的文字（beta27 真实出现过："标题栏和壁纸设置的字体看不见"）。
   防回归：`test/contrast_test.dart` 会把控件真的渲染出来，
-  逐个取 RichText 实际生效的颜色按 WCAG 校验对比度（浅色/深色各一遍）。
+  逐个取 RichText 实际生效的颜色按 WCAG 校验对比度（浅色/深色各一遍，含按钮图标字形）。
+  图标颜色要按**平时状态**校验：只有悬停才成立的颜色（比如浅色模式下的 `onError` 白）
+  平时叠在底色上就是看不见。
 
 ## 八、改代码时的检查清单
 
 - [ ] 改了版本号相关文件？跑一遍 `tools/bump_version.py`，别手改。
 - [ ] 改了后端接口？同步更新 `flutter_app/lib/api.dart` 和本文件第五节的表格。
-- [ ] 碰了子窗口？确认没有新增阻塞式 Win32 调用（见第二节），拖动要用绝对位置 + DPI 换算。
+- [ ] 碰了子窗口？确认没有新增阻塞式 Win32 调用（见第二节）；
+      拖动只能走 `SubWindow.dragTarget`（鼠标用 `GetCursorPos`，触摸用重建坐标），
+      **不要**相信 Flutter 给的指针坐标是屏幕坐标（第二节有实测数据）；
+      改了拖动就跑一遍 `probe_drag_beta30.ps1` 真机验证。
+- [ ] 改了滚轮/拖动交互？单测要用 `PointerDeviceKind.mouse` 再测一遍
+      （默认 touch 测试会漏掉 `dragDevices` 不含 mouse 这个坑）。
 - [ ] 写了新的 `TextStyle(...)`？显式带 `color`（见第七节最后一条）。
 - [ ] 碰了进程退出？确认托盘退出、安装前退出、`--quit` 三条路径都能真的结束进程。
 - [ ] 加了后台行为？在「设置 → 程序在后台做了什么」里加一条说明。

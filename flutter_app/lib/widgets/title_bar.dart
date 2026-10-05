@@ -59,7 +59,7 @@ class CustomTitleBar extends StatelessWidget {
   }
 }
 
-class TitleBarButton extends StatelessWidget {
+class TitleBarButton extends StatefulWidget {
   final IconData icon;
   final VoidCallback onPressed;
   final bool isClose;
@@ -70,21 +70,37 @@ class TitleBarButton extends StatelessWidget {
       this.isClose = false});
 
   @override
+  State<TitleBarButton> createState() => _TitleBarButtonState();
+}
+
+class _TitleBarButtonState extends State<TitleBarButton> {
+  bool _hover = false;
+
+  @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // 关闭按钮平时用 onSurfaceVariant（浅色模式下是深灰，看得见），
+    // 只有鼠标悬停、底色变红时才换成 onError。
+    // beta29 的 bug：平时就用 onError —— 浅色模式下 onError 是白色，
+    // 白底白字，× 直接看不见。
+    final Color iconColor = widget.isClose && _hover
+        ? scheme.onError
+        : scheme.onSurfaceVariant;
     return Tooltip(
-      message: isClose ? '关闭窗口（最小化到托盘）' : '',
-      child: SizedBox(
-        width: 48,
-        height: 34,
-        child: InkWell(
-          onTap: onPressed,
-          hoverColor: isClose
-              ? scheme.error.withValues(alpha: 0.85)
-              : scheme.onSurface.withValues(alpha: 0.08),
-          child: Icon(icon,
-              size: 18,
-              color: isClose ? scheme.onError : scheme.onSurfaceVariant),
+      message: widget.isClose ? '关闭窗口（最小化到托盘）' : '',
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: SizedBox(
+          width: 48,
+          height: 34,
+          child: InkWell(
+            onTap: widget.onPressed,
+            hoverColor: widget.isClose
+                ? scheme.error.withValues(alpha: 0.9)
+                : scheme.onSurface.withValues(alpha: 0.08),
+            child: Icon(widget.icon, size: 18, color: iconColor),
+          ),
         ),
       ),
     );

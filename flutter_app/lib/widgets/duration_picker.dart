@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/material.dart';
 
 import '../format.dart';
@@ -5,9 +6,15 @@ import '../format.dart';
 /// 倒计时的"选时长"控件：大号显示 + 预设按钮 + 时/分滚轮。
 ///
 /// 单独抽出来是为了能**单测拖动**（用户实测反馈"倒计时时间拖不动"）。
-/// 关键点：[hourController] / [minuteController] 必须由**外部**持有。
-/// 以前控制器建在滚轮组件内部，页面一重建控制器就被重建，
-/// 拖动立刻被弹回原位 —— 表现就是"拖了没反应"。
+///
+/// 关键点：
+///  1. [hourController] / [minuteController] 必须由**外部**持有。
+///     以前控制器建在滚轮组件内部，页面一重建控制器就被重建，
+///     拖动立刻被弹回原位 —— 表现就是"拖了没反应"。
+///  2. 滚轮必须允许**鼠标/触摸/触控笔**拖动（见 [_Wheel] 里的 ScrollConfiguration）。
+///     Flutter 桌面端默认把鼠标排除在 dragDevices 之外（只能用滚轮滚），
+///     而教室里的希沃触摸屏大多把手指触摸提升成鼠标消息 —— 结果就是
+///     "手指在滚轮上拖，什么都不动"。拖动才是主交互（触摸屏），滚轮只是附带。
 class DurationPicker extends StatelessWidget {
   const DurationPicker({
     super.key,
@@ -48,7 +55,7 @@ class DurationPicker extends StatelessWidget {
                     FontFeature.tabularFigures()
                   ])),
           const SizedBox(height: 2),
-          Text('上下拖动滚轮选时间，或直接点下面的预设',
+          Text('上下拖动数字选时间（触摸屏直接手指拖），或点下面的预设',
               style: TextStyle(fontSize: 14, color: scheme.onSurfaceVariant)),
           const SizedBox(height: 12),
           Wrap(
@@ -133,25 +140,49 @@ class _Wheel extends StatelessWidget {
                   borderRadius: BorderRadius.circular(8),
                 ),
               ),
-              ListWheelScrollView.useDelegate(
-                controller: controller,
-                itemExtent: 44,
-                diameterRatio: 1.8,
-                perspective: 0.002,
-                physics: const FixedExtentScrollPhysics(),
-                onSelectedItemChanged: onChanged,
-                childDelegate: ListWheelChildBuilderDelegate(
-                  childCount: count,
-                  builder: (BuildContext ctx, int i) => Center(
-                    child: Text(
-                      i.toString().padLeft(2, '0'),
-                      style: TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w600,
-                        color: scheme.onSurface,
-                        fontFeatures: const <FontFeature>[
-                          FontFeature.tabularFigures()
-                        ],
+              ScrollConfiguration(
+                // Flutter 桌面端默认把鼠标排除在 dragDevices 之外（桌面习惯是滚轮），
+                // 而触摸屏（希沃）上手指拖动又常常被 Windows 提升成鼠标消息，
+                // 于是"手指按在滚轮上拖"完全没反应。这里显式允许所有指针类型拖动：
+                // 拖动是主交互，滚轮只是附带。
+                behavior: ScrollConfiguration.of(context).copyWith(
+                  dragDevices: const <PointerDeviceKind>{
+                    PointerDeviceKind.touch,
+                    PointerDeviceKind.mouse,
+                    PointerDeviceKind.stylus,
+                    PointerDeviceKind.invertedStylus,
+                    PointerDeviceKind.trackpad,
+                    PointerDeviceKind.unknown,
+                  },
+                ),
+                child: ListWheelScrollView.useDelegate(
+                  controller: controller,
+                  itemExtent: 44,
+                  diameterRatio: 1.8,
+                  perspective: 0.002,
+                  physics: const FixedExtentScrollPhysics(),
+                  onSelectedItemChanged: onChanged,
+                  childDelegate: ListWheelChildBuilderDelegate(
+                    childCount: count,
+                    // 触摸屏上"点数字"比"拖到数字"更省事：
+                    // 点哪一格就滚到哪一格（拖动时这个 tap 会被拖动抢掉，不冲突）。
+                    builder: (BuildContext ctx, int i) => GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () => controller.animateToItem(i,
+                          duration: const Duration(milliseconds: 140),
+                          curve: Curves.easeOut),
+                      child: Center(
+                        child: Text(
+                          i.toString().padLeft(2, '0'),
+                          style: TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.w600,
+                            color: scheme.onSurface,
+                            fontFeatures: const <FontFeature>[
+                              FontFeature.tabularFigures()
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ),
