@@ -33,7 +33,9 @@ def sync_version(version: str) -> bool:
         print("正确格式: 3.0.0.0 或 3.0.0.0-beta27")
         return False
     major, minor, patch, build, pre_kind, pre_num = m.groups()
-    build_num = pre_num if pre_kind else build
+    # beta 用 beta 号当 Flutter 的 build number；正式版用第 4 位。
+    # 正式版第 4 位是 0（如 3.0.0.0）时写成 +0 会被一些工具当成"没设置"，所以至少给 1。
+    build_num = pre_num if pre_kind else (build if int(build) > 0 else "1")
     pubspec_version = f"{major}.{minor}.{patch}+{build_num}"
 
     targets = [

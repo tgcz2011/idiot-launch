@@ -428,6 +428,82 @@ class TestUpdateCheckApiFields(unittest.TestCase):
         self.assertIsNone(self.bs.ApiHandler._latest_seen_version(object()))
 
 
+class TestUpdateChannelSelection(unittest.TestCase):
+    """回归：beta 装机版必须能被拉到正式版。
+
+    历史设计：beta 版只查 `channel=eq.beta&is_latest=eq.true`。
+    正式版发布时那条 beta 记录还在（is_latest 还是 true），
+    查询返回的就是它自己 → 判成"已是最新" → beta 用户永远升不到正式版。
+    现在的规矩：beta 版查所有渠道的 is_latest 再挑最高的；正式版只认 stable。
+    """
+
+    def setUp(self):
+        import src.core as core
+
+        self.core = core
+        self._orig_version = core.LAUNCHER_VERSION
+        self._orig_http = core._http_json
+        self.urls = []
+
+    def tearDown(self):
+        self.core.LAUNCHER_VERSION = self._orig_version
+        self.core._http_json = self._orig_http
+
+    def _stub(self, rows):
+        def fake_http(url, timeout=10, headers=None, label=""):
+            self.urls.append(url)
+            if "latest_version" in url:
+                return rows
+            return None
+
+        self.core._http_json = fake_http
+
+    def test_beta_install_sees_stable_release(self):
+        self.core.LAUNCHER_VERSION = "3.0.0.0-beta32"
+        self._stub([
+            {"version": "3.0.0.0-beta32", "download_url": "beta32",
+             "sha256": "B", "release_notes": ""},
+            {"version": "3.0.0.0", "download_url": "stable",
+             "sha256": "S", "release_notes": "正式版"},
+        ])
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNotNone(info, "beta 装机版看不到正式版就一直卡在 beta")
+        self.assertEqual(info["version"], "3.0.0.0")
+        self.assertEqual(info["sha256"], "S",
+                         "必须挑版本号最高的那条（正式版压过 beta）")
+        # 查询本身不能再按渠道过滤，否则只会拿回自己的 beta 记录
+        self.assertIn("is_latest=eq.true", self.urls[0])
+        self.assertNotIn("channel=eq.beta", self.urls[0])
+
+    def test_beta_install_picks_newer_beta_over_older_stable(self):
+        self.core.LAUNCHER_VERSION = "3.0.0.0-beta32"
+        self._stub([
+            {"version": "3.0.0.0", "download_url": "stable", "sha256": "S"},
+            {"version": "3.0.1.0-beta1", "download_url": "beta1", "sha256": "B"},
+        ])
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNotNone(info)
+        self.assertEqual(info["version"], "3.0.1.0-beta1")
+
+    def test_stable_install_is_not_pulled_to_beta(self):
+        self.core.LAUNCHER_VERSION = "3.0.0.0"
+        self._stub([
+            {"version": "3.0.0.0", "download_url": "stable", "sha256": "S"},
+            {"version": "3.0.1.0-beta1", "download_url": "beta1", "sha256": "B"},
+        ])
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNone(info, "正式版用户不该被拉去装 beta")
+        self.assertIs(self.core.last_check_result()["ok"], True)
+        self.assertIn("channel=eq.stable", self.urls[0])
+
+    def test_stable_install_sees_next_stable(self):
+        self.core.LAUNCHER_VERSION = "3.0.0.0"
+        self._stub([{"version": "3.0.1.0", "download_url": "u", "sha256": "S"}])
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNotNone(info)
+        self.assertEqual(info["version"], "3.0.1.0")
+
+
 class TestProcessKillSafety(unittest.TestCase):
     """回归：结束进程前必须确认映像名，绝不能误杀（PID 会被复用）。"""
 

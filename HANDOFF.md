@@ -271,6 +271,18 @@ CI（`.github/workflows/release.yml`）会：
 4. 计算**按版本号命名的**安装包的 SHA-256，连同 `.sha256` 文件一起上传 Release；
 5. 把版本/下载地址/哈希写进 Supabase `latest_version`（客户端只从这里查更新）。
 
+**渠道规则（发正式版前必看）**：
+
+- 版本名含 `beta/alpha/rc/pre` → `channel=beta`，CI 把**同渠道**的旧记录 `is_latest` 置 false；
+  客户端里 beta 版查"所有渠道的 `is_latest`"，挑版本号最高的那条。
+- 否则 → `channel=stable`，CI 把**所有渠道**的旧记录 `is_latest` 置 false（正式版压过 beta）。
+  正式版客户端只认 `channel=stable`，不会被拉去装 beta。
+- 为什么 beta 版要查所有渠道：以前它只查 `channel=beta`，正式版发布后那条 beta 记录
+  `is_latest` 还是 true，查询返回它自己 → 判成"已是最新" → **beta 装机版永远升不到正式版**。
+  同时，装机版要"看到"正式版还依赖 CI 那一步把 beta 记录的 `is_latest` 清掉
+  （老客户端不认新规则，只能靠这个）。回归测试见
+  `tools/test_core.py::TestUpdateChannelSelection`。
+
 `version_info.txt` / `version_info_backend.txt` **不入库**，构建时生成，避免出现"元数据停留在
 某个历史版本"的经典事故。
 

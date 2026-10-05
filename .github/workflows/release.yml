@@ -202,7 +202,12 @@ jobs:
             "Prefer" = "return=minimal"
           }
           try {
-            Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/latest_version?channel=eq.$channel" -Method Patch -Headers $headers -Body (@{is_latest = $false} | ConvertTo-Json) | Out-Null
+            if ($channel -eq "stable") {
+              # 正式版压过所有渠道：beta 装机版就是靠"beta 那条不再是最新"才看得到正式版的
+              Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/latest_version?is_latest=eq.true" -Method Patch -Headers $headers -Body (@{is_latest = $false} | ConvertTo-Json) | Out-Null
+            } else {
+              Invoke-RestMethod -Uri "$supabaseUrl/rest/v1/latest_version?channel=eq.$channel" -Method Patch -Headers $headers -Body (@{is_latest = $false} | ConvertTo-Json) | Out-Null
+            }
           } catch { Write-Host "No old versions to update" }
           $body = @{
             version = $ver

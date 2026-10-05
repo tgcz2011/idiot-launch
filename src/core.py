@@ -75,7 +75,7 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta32"
+LAUNCHER_VERSION = "3.0.0.0"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
@@ -1006,34 +1006,52 @@ def get_latest_launcher_info() -> dict | None:
     """
     _mark_check(None)  # 先当成"没查成"，查到结果再翻过来
     current_is_beta = is_beta_version(LAUNCHER_VERSION)
-    channel = "beta" if current_is_beta else "stable"
 
     # 方案 1：Supabase（不限流，优先）
+    #
+    # beta 版要能升到**正式版**，所以 beta 版查"所有渠道的 is_latest"再挑版本号最高的；
+    # 正式版只认 stable（正式版用户不该被拉去装 beta）。
+    # 历史教训：以前 beta 版只查 channel=beta，于是正式版一发出来，
+    # beta 装机版查询返回的还是它自己那条 beta 记录 → 判成"已是最新"，
+    # 永远升不到正式版。
     try:
-        url = (f"{SUPABASE_URL}/rest/v1/latest_version"
-               f"?channel=eq.{channel}&is_latest=eq.true"
+        query = ("is_latest=eq.true" if current_is_beta
+                 else "channel=eq.stable&is_latest=eq.true")
+        url = (f"{SUPABASE_URL}/rest/v1/latest_version?{query}"
                f"&select=version,download_url,sha256,release_notes")
         data = _http_json(url, timeout=8, headers={
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
         }, label="Supabase 版本查询")
         if isinstance(data, list) and data:
-            latest = data[0]
-            version = str(latest.get("version", ""))
-            if version and compare_versions(version, LAUNCHER_VERSION) > 0:
-                _mark_check(True, "有新版本")
-                return {
-                    "version": version,
-                    "url": latest.get("download_url", ""),
-                    "size": 0,
-                    "name": f"{LAUNCHER_SETUP_PREFIX}{version}.exe",
-                    "release_notes": latest.get("release_notes", ""),
-                    "sha256": latest.get("sha256", ""),
-                }
-            _mark_check(True, "已是最新")
-            return None  # Supabase 有数据但已是最新（不再打 GitHub API）
+            best = None
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                row_version = str(row.get("version", ""))
+                if not row_version:
+                    continue
+                if not current_is_beta and is_beta_version(row_version):
+                    continue
+                if best is None or compare_versions(
+                        row_version, str(best.get("version", ""))) > 0:
+                    best = row
+            if best is not None:
+                version = str(best.get("version", ""))
+                if compare_versions(version, LAUNCHER_VERSION) > 0:
+                    _mark_check(True, "有新版本")
+                    return {
+                        "version": version,
+                        "url": best.get("download_url", ""),
+                        "size": 0,
+                        "name": f"{LAUNCHER_SETUP_PREFIX}{version}.exe",
+                        "release_notes": best.get("release_notes", ""),
+                        "sha256": best.get("sha256", ""),
+                    }
+                _mark_check(True, "已是最新")
+                return None  # Supabase 有数据但已是最新（不再打 GitHub API）
         if isinstance(data, list):
-            log_daemon(f"Supabase 里没有 channel={channel} 的最新版本记录")
+            log_daemon(f"Supabase 里没有可用的最新版本记录（查询: {query}）")
     except Exception as e:
         log_daemon(f"Supabase 查询异常: {type(e).__name__}: {e}")
 
