@@ -81,7 +81,7 @@ IdiotLaunchBackend.exe --server（后端进程）
 
 - Flutter 手势给的指针坐标是**相对窗口**的（`position`/`globalPosition` 在子窗口里
   都是视口坐标，不是屏幕坐标）。窗口一跟着指针动，指针相对窗口的位置就跟着变：
-  - 用绝对位置算 → 窗口动 30px 又弹回原位。实测（`probe_drag_beta30.ps1`）：
+  - 用绝对位置算 → 窗口动 30px 又弹回原位。实测（`tools/probe_drag.ps1`）：
     鼠标走 300px，窗口只走 179px，中间来回跳；
   - 用 `delta` 累加 → 解差分方程 `d_k = M_k - d_{k-1}`，稳定收敛到"每步只走一半"。
     实测反向 FAST-BACK 正好 -150px / 期望 -300px。
@@ -123,7 +123,7 @@ IdiotLaunchBackend.exe --server（后端进程）
 1. `flutter build windows --debug`，用 `IDIOT_LAUNCH_AUTO_WINDOW=timer`
    （或 `stopwatch`）启动 `build\windows\x64\runner\Debug\IdiotLaunch.exe`，
    3 秒后自动打开工具窗口；
-2. 跑 `probe_drag_beta30.ps1`（在 `D:\idl`，不进仓库）：把子窗口 `SetWindowPos` 抬到最前
+2. 跑 `tools/probe_drag.ps1`（在 `D:\idl`，不进仓库）：把子窗口 `SetWindowPos` 抬到最前
    （否则主窗口会把鼠标事件全吃掉），`mouse_event` 按下 → 分 10 步移动 30px →
    每步读 `GetWindowRect` 和期望值比较 → 松手，再反向甩一次（验证事件合并）；
 3. 通过标准：每步误差 ≤ 几 px、`END moved` 与期望一致。
@@ -182,6 +182,40 @@ IdiotLaunchBackend.exe --server（后端进程）
 
 改这块时请重点验证：更新后进程能自动回来、安装包会被清理、失败时不至于让程序再也起不来。
 
+### 「更新检查」曾经十几年如一日地静默失败（beta32 修）
+
+用户装机实测：**beta29 坚信自己是最新版**（界面横幅一直是"当前已是最新版本"），
+而 Supabase 里 `is_latest=true` 的记录早就是 beta31 了。两个独立原因叠在一起：
+
+1. `_http_json` 给**所有**请求都加了 `Accept: application/vnd.github+json`
+   （GitHub 专用媒体类型）。发给 Supabase 的 PostgREST 直接被判 406：
+   `PGRST107: None of these media types are available: application/vnd.github+json`。
+   主渠道（不限流的那条）从此一次都没成功过。
+   GitHub 的 REST API 一样接受 `application/json`，所以统一改成通用 JSON。
+2. 打包 workflow 把 `secrets.GITHUB_TOKEN` 写进了 `src/_secrets.py`。
+   那是 **Actions 的临时令牌，构建一结束就失效**，却被打进了 exe：
+   装机之后每个 GitHub API 调用都 401，兜底渠道也是废的。
+   现在只接受可选的长期 `UPDATER_PAT`；没有就按未认证走（60 次/小时够用）。
+   另外 `_github_json()` 带 token 失败会**去掉 token 重试一次**。
+
+而 `_http_json` 当年把异常整个吞掉（`except Exception: return None`），
+`get_latest_launcher_info()` 又用 None 同时表示"是最新"和"没查成"，
+于是界面永远显示"已是最新" —— 一句谎话把两个 bug 一起藏了很久。
+
+现在的规矩（改更新逻辑必须保持）：
+
+- `_http_json` **失败必须记日志**（含主机、HTTP 码、响应体前 200 字），不许静默返回 None。
+- `get_latest_launcher_info()` 之后一定读 `last_check_result()`：
+  `{ok: True/False/None, detail}`。None = 本进程还没查过。
+  只有 `ok is True` 才能对用户说"已是最新"，否则界面说"检查更新失败"。
+  daemon 会把结果存进 `state.launcher_check_ok / launcher_check_detail`，
+  `/api/status`、`/api/update/status` 透给前端（`check_ok`、`check_detail`）。
+- 回归测试在 `tools/test_core.py::TestUpdateCheckChannel`：
+  Accept 头不许是 GitHub 专用类型、Supabase 有新版本必须认、全渠道失败必须报
+  `ok=False`、Supabase 回答"就是最新"必须报 `ok=True`、token 失效要能降级重试。
+- 排查线上"查不到更新"的第一站永远是 `data\daemon.log`：
+  现在每次失败都会写清是哪个渠道、什么错。
+
 ## 五、目录与关键文件
 
 ```
@@ -205,12 +239,12 @@ tools/                    版本号与元数据生成、资源生成、单元测
 | 方法 | 路径 | 用途 |
 |------|------|------|
 | GET | `/api/version` | 存活探测（前端 ping 用） |
-| GET | `/api/status` | 版本/壁纸状态/登录状态/daemon 活动/下载进度（`download_progress` 为 **0~1 小数**）/设置 |
+| GET | `/api/status` | 版本/壁纸状态/登录状态/daemon 活动/下载进度（`download_progress` 为 **0~1 小数**）/`check_ok`+`check_detail`（上次更新检查到底成没成）/设置 |
 | GET/POST | `/api/settings` | 读取/保存设置 |
 | GET | `/api/morning/config` | 早读登录状态与时间段 |
 | GET | `/api/morning/students` | 学生名单（失败时 `success=false` + 中文原因） |
 | POST | `/api/morning/login` / `logout` / `open` | 登录（先校验后保存）/ 退出登录（连缓存一起清）/ 打开浏览器 |
-| GET | `/api/update/status` | 更新状态：`pending_ready`、`last_check_at`、`latest_version`、`downloading`、`download_status`、`download_version`、`download_progress`（**0~1 小数**） |
+| GET | `/api/update/status` | 更新状态：`pending_ready`、`last_check_at`、`latest_version`、`check_ok`（True=查到结论 / False=渠道都连不上 / None=还没查过）、`check_detail`、`downloading`、`download_status`、`download_version`、`download_progress`（**0~1 小数**） |
 | POST | `/api/update/check` / `install` | 触发检查 / 一键更新 |
 | GET/POST | `/api/cd/config` | 壁纸&屏保配置（POST 返回 `restart_required`） |
 | POST | `/api/countdown/start` / `stop` / `custom` / `settings` | 启动/关闭壁纸等 |
@@ -275,7 +309,7 @@ CI（`.github/workflows/release.yml`）会：
 - [ ] 碰了子窗口？确认没有新增阻塞式 Win32 调用（见第二节）；
       拖动只能走 `SubWindow.dragTarget`（鼠标用 `GetCursorPos`，触摸用重建坐标），
       **不要**相信 Flutter 给的指针坐标是屏幕坐标（第二节有实测数据）；
-      改了拖动就跑一遍 `probe_drag_beta30.ps1` 真机验证。
+      改了拖动就跑一遍 `tools/probe_drag.ps1` 真机验证。
 - [ ] 改了滚轮/拖动交互？单测要用 `PointerDeviceKind.mouse` 再测一遍
       （默认 touch 测试会漏掉 `dragDevices` 不含 mouse 这个坑）。
 - [ ] 写了新的 `TextStyle(...)`？显式带 `color`（见第七节最后一条）。

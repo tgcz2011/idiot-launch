@@ -77,16 +77,22 @@ jobs:
 
       - name: Build Python backend (PyInstaller)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 只接受长期 PAT（可选）。以前这里塞的是 secrets.GITHUB_TOKEN ——
+          # 那是 Actions 的临时令牌，构建完就失效，却被打进了 exe：
+          # 装机之后所有 GitHub API 调用都是 401，更新兜底渠道等于废掉。
+          UPDATER_PAT: ${{ secrets.UPDATER_PAT }}
         shell: pwsh
         run: |
           $secretsPath = "src\_secrets.py"
-          if ($env:GITHUB_TOKEN) {
-            $pyCode = "GITHUB_TOKEN = '$($env:GITHUB_TOKEN)'`n"
-            [System.IO.File]::WriteAllText($secretsPath, $pyCode, (New-Object System.Text.UTF8Encoding $false))
+          if ($env:UPDATER_PAT) {
+            $pyCode = "GITHUB_TOKEN = '$($env:UPDATER_PAT)'`n"
+            Write-Host "使用 UPDATER_PAT 作为 GitHub token（长期有效）"
           } else {
-            [System.IO.File]::WriteAllText($secretsPath, "GITHUB_TOKEN = ''`n", (New-Object System.Text.UTF8Encoding $false))
+            # 没有长期 token 就别放：未认证 60 次/小时够用，比放个死 token 强
+            $pyCode = "GITHUB_TOKEN = ''`n"
+            Write-Host "未配置 UPDATER_PAT，后端按未认证方式访问 GitHub API"
           }
+          [System.IO.File]::WriteAllText($secretsPath, $pyCode, (New-Object System.Text.UTF8Encoding $false))
           pyinstaller --noconfirm --clean backend.spec
 
       - name: Build Flutter frontend (release)

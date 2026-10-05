@@ -828,6 +828,12 @@ class _MainPageState extends State<MainPage> with WindowListener {
     final latest = ApiService.asString(_updateStatus['latest_version']);
     final current = ApiService.asString(_status['version']);
     final activity = ApiService.asString(_updateStatus['daemon_activity']);
+    // 后端如实上报"这次到底查成没查成"：null = 还没查过，true = 查到了结论，
+    // false = 渠道都连不上（此时 latest 为空并不代表已是最新）
+    final checkOk = _updateStatus['check_ok'] is bool
+        ? _updateStatus['check_ok'] as bool
+        : null;
+    final checkDetail = ApiService.asString(_updateStatus['check_detail']);
     final shownVersion = dlVersion.isNotEmpty
         ? dlVersion
         : (latest.isNotEmpty ? latest : pending);
@@ -883,6 +889,26 @@ class _MainPageState extends State<MainPage> with WindowListener {
           child: CircularProgressIndicator(strokeWidth: 3));
       title = '正在检查更新…';
       subtitle = '教室网络较慢时可能要等十几秒';
+    } else if (checkOk != true) {
+      // 「没查成」和「已是最新」必须分开说。
+      // beta29 的实测教训：更新检查静默失败（Supabase 406 + 打包塞进去的临时
+      // GitHub token 早过期），界面却一直显示"当前已是最新版本"，
+      // 装机的那份坚信自己是最新版。checkOk == null 表示这个版本还没查过，
+      // 同样不能冒充"已是最新"。
+      final failed = checkOk == false;
+      leading = Icon(failed ? Icons.cloud_off : Icons.help_outline,
+          size: 30, color: failed ? scheme.error : scheme.onSurfaceVariant);
+      title = failed ? '检查更新失败，暂时不知道有没有新版本' : '还没有检查过更新';
+      subtitle = failed
+          ? '${_lastCheckText()}'
+              '${checkDetail.isEmpty ? '' : '· $checkDetail'}（稍后会自动重试）'
+          : '点右边检查一下（教室网络较慢时可能要等十几秒）';
+      actions = <Widget>[
+        TextButton(
+          onPressed: _checkingUpdate ? null : _checkUpdate,
+          child: Text(_checkingUpdate ? '检查中…' : '检查更新'),
+        ),
+      ];
     } else {
       leading = Icon(Icons.verified, size: 30, color: Colors.green.shade600);
       // 后端还没回话时 version 可能是空的，别显示成"当前已是最新版本 v"

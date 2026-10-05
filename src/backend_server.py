@@ -176,6 +176,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "latest_version": self._latest_seen_version(),
                 "release_notes": state.get("launcher_release_notes", ""),
                 "last_check_at": state.get("launcher_last_check", 0),
+                "check_ok": state.get("launcher_check_ok"),
+                "check_detail": state.get("launcher_check_detail", ""),
                 "activate_requested": bool(state.get("activate_requested", False)),
                 "settings": settings,
                 "data_dir": UPDATE_DIR,
@@ -226,6 +228,8 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "latest_version": self._latest_seen_version(),
                 "release_notes": state.get("launcher_release_notes", ""),
                 "last_check_at": state.get("launcher_last_check", 0),
+                "check_ok": state.get("launcher_check_ok"),
+                "check_detail": state.get("launcher_check_detail", ""),
             })
 
         elif path == "/api/cd/config":

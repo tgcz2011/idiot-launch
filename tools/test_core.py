@@ -276,6 +276,158 @@ class TestDownloadApiFields(unittest.TestCase):
                          "99.0.0.0")
 
 
+class TestUpdateCheckChannel(unittest.TestCase):
+    """回归：更新检查曾经"永远查不到"，界面还谎报"已是最新"。
+
+    两个真实原因（beta29 装机实测：装着的版本坚信自己是最新版）：
+      1. `_http_json` 给所有请求都加了 `Accept: application/vnd.github+json`
+         （GitHub 专用媒体类型）。Supabase 的 PostgREST 直接判 406：
+         PGRST107 "None of these media types are available"。
+         而异常被整个吞掉 —— 所以一直是静默失败。
+      2. 打包时把 Actions 的临时 GITHUB_TOKEN 塞进了 exe，构建结束就失效，
+         GitHub 兜底渠道全部 401。
+    这里把"请求头"和"查不查得成的结论"都钉住。
+    """
+
+    def setUp(self):
+        import src.core as core
+
+        self.core = core
+        self._orig_version = core.LAUNCHER_VERSION
+        self._orig_http = core._http_json
+        self._orig_token = core.GITHUB_TOKEN
+
+    def tearDown(self):
+        self.core.LAUNCHER_VERSION = self._orig_version
+        self.core._http_json = self._orig_http
+        self.core.GITHUB_TOKEN = self._orig_token
+
+    def test_http_json_accept_header_is_not_github_media_type(self):
+        """Accept 头必须是通用 JSON：发 GitHub 专用类型会被 Supabase 判 406。"""
+        import urllib.request
+
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return b"[]"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None, context=None):
+            seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return _Resp()
+
+        orig = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            self.core._http_json("https://example.supabase.co/rest/v1/x")
+        finally:
+            urllib.request.urlopen = orig
+
+        accept = seen["headers"].get("accept", "")
+        self.assertNotIn("vnd.github", accept.lower(),
+                         "GitHub 专用 Accept 会让 Supabase 返回 406")
+        self.assertIn("json", accept.lower())
+
+    def test_supabase_row_that_is_newer_wins(self):
+        """Supabase 说是新版本就必须认（这是不限流的主渠道）。"""
+        self.core.LAUNCHER_VERSION = "3.0.0.0-beta29"
+
+        def fake_http(url, timeout=10, headers=None, label=""):
+            if "latest_version" in url:
+                return [{
+                    "version": "3.0.0.0-beta31",
+                    "download_url": "https://example/beta31.exe",
+                    "sha256": "ABC",
+                    "release_notes": "notes",
+                }]
+            return None
+
+        self.core._http_json = fake_http
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNotNone(info, "Supabase 有更新的版本却查不到")
+        self.assertEqual(info["version"], "3.0.0.0-beta31")
+        self.assertEqual(self.core.last_check_result()["ok"], True)
+
+    def test_no_reachable_channel_is_reported_as_failure(self):
+        """所有渠道都拿不到时，必须说"没查成"，不能说"已是最新"。"""
+        self.core.LAUNCHER_VERSION = "3.0.0.0-beta29"
+        self.core._http_json = lambda *a, **k: None
+
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNone(info)
+        result = self.core.last_check_result()
+        self.assertIs(result["ok"], False,
+                      "查不到还报 ok=True，界面就会谎报'已是最新'")
+        self.assertTrue(result["detail"])
+
+    def test_supabase_answering_latest_is_not_a_failure(self):
+        """Supabase 明确回答"没有更新的版本"时，ok 必须是 True。"""
+        self.core.LAUNCHER_VERSION = "3.0.0.0-beta31"
+        self.core._http_json = lambda *a, **k: [{"version": "3.0.0.0-beta31"}]
+
+        self.assertIsNone(self.core.get_latest_launcher_info())
+        result = self.core.last_check_result()
+        self.assertIs(result["ok"], True)
+        self.assertEqual(result["detail"], "已是最新")
+
+    def test_github_retries_without_dead_token(self):
+        """带 token 失败（401）要能自动降级成未认证重试。"""
+        calls = []
+
+        def fake_http(url, timeout=10, headers=None, label=""):
+            calls.append(dict(headers or {}))
+            return None if len(calls) == 1 else [{"name": "v9.9.9.9"}]
+
+        self.core._http_json = fake_http
+        self.core.GITHUB_TOKEN = "ghp_dead_token"
+        data = self.core._github_json("https://api.github.com/x")
+        self.assertEqual(len(calls), 2, "带 token 失败后应该再试一次")
+        self.assertIn("Authorization", calls[0])
+        self.assertNotIn("Authorization", calls[1],
+                         "重试必须去掉那个已经失效的 token")
+        self.assertIsNotNone(data)
+
+
+class TestUpdateCheckApiFields(unittest.TestCase):
+    """接口要把"查成没查成"透给前端，否则界面只能靠猜。"""
+
+    def setUp(self):
+        import src.core as core
+
+        self.core = core
+        self._old = core.STATE_FILE
+        self._tmp = tempfile.TemporaryDirectory()
+        core.STATE_FILE = os.path.join(self._tmp.name, "state.json")
+        try:
+            from src import backend_server as bs
+        except Exception as e:  # 缺 GUI 依赖时跳过
+            self.skipTest(f"backend_server 不可导入: {e}")
+            return
+        self.bs = bs
+
+    def tearDown(self):
+        self.core.STATE_FILE = self._old
+        self._tmp.cleanup()
+
+    def test_check_state_is_persisted_and_exposed(self):
+        self.core.save_state({
+            "launcher_check_ok": False,
+            "launcher_check_detail": "连不上更新服务器",
+            "latest_seen_version": "",
+        })
+        state = self.core.load_state()
+        self.assertIs(state.get("launcher_check_ok"), False)
+        self.assertEqual(state.get("launcher_check_detail"), "连不上更新服务器")
+        # 前端读的就是这两个字段
+        self.assertIsNone(self.bs.ApiHandler._latest_seen_version(object()))
+
+
 class TestProcessKillSafety(unittest.TestCase):
     """回归：结束进程前必须确认映像名，绝不能误杀（PID 会被复用）。"""
 

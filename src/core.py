@@ -75,7 +75,7 @@ DOWNLOAD_MIRRORS = [
     "https://gh.api.99988866.xyz/",        # 99988866
 ]
 
-LAUNCHER_VERSION = "3.0.0.0-beta31"
+LAUNCHER_VERSION = "3.0.0.0-beta32"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
@@ -911,21 +911,73 @@ def download_installer(url: str, dest_path: str, tag: str = "",
 
 
 # ── 更新检查 ──────────────────────────────────────────
-def _http_json(url: str, timeout: int = 10, headers: dict = None) -> object | None:
+def _http_json(url: str, timeout: int = 10, headers: dict = None,
+               label: str = "") -> object | None:
+    """取 JSON。失败返回 None，但**一定记日志**。
+
+    Accept 头以前写的是 `application/vnd.github+json`（GitHub 专用媒体类型），
+    发给 Supabase 的 PostgREST 会被判 406：
+        {"code":"PGRST107","message":"None of these media types are available:
+          application/vnd.github+json"}
+    而这里原来把异常整个吞掉 —— 于是"更新检查"几年如一日地静默失败，
+    界面还显示"当前已是最新版本"（beta29 实测：装着的版本坚信自己是最新的）。
+    GitHub 的 REST API 同样接受 `application/json`，所以统一用它。
+    """
+    host = ""
+    for scheme in ("https://", "http://"):
+        if url.startswith(scheme):
+            host = url[len(scheme):].split("/", 1)[0]
+            break
     try:
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "idiot-launch-updater",
-                     "Accept": "application/vnd.github+json", **(headers or {})})
+                     "Accept": "application/json", **(headers or {})})
         with urllib.request.urlopen(
                 req, timeout=timeout, context=ssl.create_default_context()) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return None
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8", "replace")[:200]
+        except Exception:
+            pass
+        log_daemon(f"{label or 'HTTP'} 失败 {host}: HTTP {e.code} {e.reason} {body}")
+    except Exception as e:
+        log_daemon(f"{label or 'HTTP'} 失败 {host}: {type(e).__name__}: {e}")
+    return None
 
 
 def _auth_headers() -> dict:
     return {"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}
+
+
+def _github_json(url: str, timeout: int = 10) -> object | None:
+    """GitHub API。带 token 失败（401/403，比如打包时塞进去的临时 token 早就过期）
+    就**不带 token 再来一次** —— 未认证每小时 60 次，够几小时查一回了，
+    总比彻底查不到强。
+    """
+    headers = _auth_headers()
+    data = _http_json(url, timeout=timeout, headers=headers, label="GitHub API")
+    if data is None and headers:
+        log_daemon("GitHub API 带 token 失败，改用未认证重试")
+        data = _http_json(url, timeout=timeout, label="GitHub API(无 token)")
+    return data
+
+
+# 上一次"查更新"的过程结果。界面必须能区分"确实是最新的"和"根本没查成"——
+# beta29 的实测教训：查不到也显示"当前已是最新版本"，用户被这句话骗了很久。
+_last_check = {"ok": None, "detail": ""}
+
+
+def last_check_result() -> dict:
+    """{ok: True/False/None, detail: str}。None 表示这次进程还没查过。"""
+    return dict(_last_check)
+
+
+def _mark_check(ok: bool | None, detail: str = "") -> None:
+    _last_check["ok"] = None if ok is None else bool(ok)
+    _last_check["detail"] = detail
 
 
 def _get_latest_tag_via_redirect(repo: str) -> str | None:
@@ -947,7 +999,12 @@ def _get_latest_tag_via_redirect(repo: str) -> str | None:
 
 
 def get_latest_launcher_info() -> dict | None:
-    """查最新版本。返回 None 表示"没有更新或查不到"（调用方无需区分）。"""
+    """查最新版本。
+
+    返回 None 有两种完全不同的含义：**确实是最新的**，或者**根本没查成**。
+    调用方要用 `last_check_result()` 区分（界面必须说实话）。
+    """
+    _mark_check(None)  # 先当成"没查成"，查到结果再翻过来
     current_is_beta = is_beta_version(LAUNCHER_VERSION)
     channel = "beta" if current_is_beta else "stable"
 
@@ -959,11 +1016,12 @@ def get_latest_launcher_info() -> dict | None:
         data = _http_json(url, timeout=8, headers={
             "apikey": SUPABASE_ANON_KEY,
             "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-        })
+        }, label="Supabase 版本查询")
         if isinstance(data, list) and data:
             latest = data[0]
             version = str(latest.get("version", ""))
             if version and compare_versions(version, LAUNCHER_VERSION) > 0:
+                _mark_check(True, "有新版本")
                 return {
                     "version": version,
                     "url": latest.get("download_url", ""),
@@ -972,12 +1030,15 @@ def get_latest_launcher_info() -> dict | None:
                     "release_notes": latest.get("release_notes", ""),
                     "sha256": latest.get("sha256", ""),
                 }
+            _mark_check(True, "已是最新")
             return None  # Supabase 有数据但已是最新（不再打 GitHub API）
+        if isinstance(data, list):
+            log_daemon(f"Supabase 里没有 channel={channel} 的最新版本记录")
     except Exception as e:
         log_daemon(f"Supabase 查询异常: {type(e).__name__}: {e}")
 
     # 方案 2：GitHub /tags
-    tags = _http_json(LAUNCHER_TAGS_API, timeout=10, headers=_auth_headers())
+    tags = _github_json(LAUNCHER_TAGS_API, timeout=10)
     if isinstance(tags, list):
         best_tag, best_version = None, None
         for t in tags:
@@ -991,9 +1052,9 @@ def get_latest_launcher_info() -> dict | None:
             if best_version is None or compare_versions(version, best_version) > 0:
                 best_version, best_tag = version, t.get("name")
         if best_tag and best_version:
-            rel = _http_json(
+            rel = _github_json(
                 f"https://api.github.com/repos/tgcz2011/idiot-launch/releases/tags/{best_tag}",
-                timeout=10, headers=_auth_headers())
+                timeout=10)
             expected = f"{LAUNCHER_SETUP_PREFIX}{best_version}.exe"
             if isinstance(rel, dict):
                 for asset in rel.get("assets", []) or []:
@@ -1007,18 +1068,20 @@ def get_latest_launcher_info() -> dict | None:
                             "sha256": asset.get("digest", ""),
                         }
             # release 查不到就按命名规则直接拼下载地址
+            _mark_check(True, "有新版本")
             return {
                 "version": best_version, "size": 0, "name": expected,
                 "url": (f"https://github.com/tgcz2011/idiot-launch/releases/download/"
                         f"{best_tag}/{expected}"),
                 "release_notes": "", "sha256": "",
             }
+        _mark_check(True, "已是最新")
 
     # 方案 3：/releases（beta 版需要）
     if current_is_beta:
-        releases = _http_json(
+        releases = _github_json(
             "https://api.github.com/repos/tgcz2011/idiot-launch/releases?per_page=20",
-            timeout=10, headers=_auth_headers())
+            timeout=10)
         if isinstance(releases, list):
             for rel in releases:
                 if not isinstance(rel, dict) or rel.get("draft"):
@@ -1029,6 +1092,7 @@ def get_latest_launcher_info() -> dict | None:
                 expected = f"{LAUNCHER_SETUP_PREFIX}{version}.exe"
                 for asset in rel.get("assets", []) or []:
                     if asset.get("name") == expected:
+                        _mark_check(True, "有新版本")
                         return {
                             "version": version,
                             "url": asset["browser_download_url"],
@@ -1038,11 +1102,13 @@ def get_latest_launcher_info() -> dict | None:
                             "sha256": asset.get("digest", ""),
                         }
                 break
+            _mark_check(True, "已是最新")
 
     # 方案 4：302 重定向（仅正式版）
     if not current_is_beta:
         version = _get_latest_tag_via_redirect("tgcz2011/idiot-launch")
         if version and compare_versions(version, LAUNCHER_VERSION) > 0:
+            _mark_check(True, "有新版本")
             name = f"{LAUNCHER_SETUP_PREFIX}{version}.exe"
             return {
                 "version": version, "size": 0, "name": name,
@@ -1050,6 +1116,13 @@ def get_latest_launcher_info() -> dict | None:
                         f"v{version}/{name}"),
                 "release_notes": "", "sha256": "",
             }
+        if version:
+            _mark_check(True, "已是最新")
+
+    # 走到这里还没定论 = 所有渠道都没连上。绝不能当成"已是最新"报给用户。
+    if _last_check["ok"] is None:
+        _mark_check(False, "连不上更新服务器")
+        log_daemon("更新检查：所有渠道都失败（详见上面的失败原因）")
     return None
 
 
@@ -1184,8 +1257,11 @@ def _check_and_download_launcher_update() -> None:
     set_daemon_status("checking", 0, "正在检查更新...")
     t0 = time.time()
     latest = get_latest_launcher_info()
+    check = last_check_result()
     duration = round(time.time() - t0, 1)
-    log_daemon(f"更新检查完成 {duration}s: {'有新版本 ' + latest['version'] if latest else '无新版本'}")
+    outcome = ("有新版本 " + latest["version"]) if latest else (
+        "无新版本" if check.get("ok") else f"检查失败（{check.get('detail') or '未知原因'}）")
+    log_daemon(f"更新检查完成 {duration}s: {outcome}")
 
     from src.telemetry import report_event
 
@@ -1193,6 +1269,7 @@ def _check_and_download_launcher_update() -> None:
         "has_update": bool(latest),
         "latest_version": latest["version"] if latest else None,
         "duration": duration,
+        "check_ok": check.get("ok"),
     })
 
     with _state_lock:
@@ -1200,10 +1277,17 @@ def _check_and_download_launcher_update() -> None:
         st["launcher_last_check"] = now
         # 每次检查都刷新：没有新版本时清掉，否则界面会一直说有新版本
         st["latest_seen_version"] = latest["version"] if latest else ""
+        # 查成没查成也要存下来：界面不能再把"没查成"说成"已是最新"
+        st["launcher_check_ok"] = check.get("ok")
+        st["launcher_check_detail"] = check.get("detail", "")
         save_state(st)
 
     if not latest:
-        set_daemon_status("idle", 0, "已是最新版本")
+        if check.get("ok"):
+            set_daemon_status("idle", 0, "已是最新版本")
+        else:
+            set_daemon_status("idle", 0,
+                              f"检查更新失败：{check.get('detail') or '连不上更新服务器'}")
         return
 
     dest = os.path.join(UPDATE_DIR, f"{LAUNCHER_SETUP_PREFIX}{latest['version']}.exe")
