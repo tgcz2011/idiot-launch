@@ -554,6 +554,8 @@ class SubWindow {
   /// 触摸没有光标位置，用**重建**屏幕坐标：窗口当前位置 + 指针相对窗口的位置
   /// （[windowNowX] + ([x] - [startX]) × [scale]）。窗口自己动多少就补回多少，
   /// 反馈被抵消掉，同样 1:1。
+  /// 触摸的事件坐标同样是相对窗口的：embedder 收到 `WM_POINTERDOWN/UPDATE`
+  /// 之后先 `ScreenToClient`（`flutter_window.cc` 617-618 行），和鼠标那条路一样。
   ///
   /// [scale] 是 devicePixelRatio：Flutter 给的是**逻辑**像素，SetWindowPos 要**物理**像素。
   static ({int x, int y}) dragTarget({
