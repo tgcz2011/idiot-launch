@@ -200,6 +200,64 @@ class TestDownloadState(unittest.TestCase):
         self.assertEqual(self.core.get_download_state()["progress"], 0.0)
 
 
+class TestDownloadApiFields(unittest.TestCase):
+    """回归：接口给前端的进度必须是 0~1 的小数。
+
+    历史 bug：后端返回 0~100，前端又乘 100 → 界面会显示 10000%。
+    """
+
+    def setUp(self):
+        import src.core as core
+        import time
+
+        self.core = core
+        self.time = time
+        self._old = core.STATE_FILE
+        self._tmp = tempfile.TemporaryDirectory()
+        core.STATE_FILE = os.path.join(self._tmp.name, "state.json")
+        try:
+            from src import backend_server as bs
+        except Exception as e:  # 缺 GUI 依赖时跳过
+            self.skipTest(f"backend_server 不可导入: {e}")
+            return
+        self.bs = bs
+
+    def tearDown(self):
+        self.core.STATE_FILE = self._old
+        self._tmp.cleanup()
+
+    def test_download_fields_are_fraction(self):
+        # _download_fields 不碰 self，可以拿任意对象当 self 调
+        empty = self.bs.ApiHandler._download_fields(object())
+        self.assertFalse(empty["downloading"])
+        self.assertEqual(empty["download_progress"], 0.0)
+        self.assertIsNone(empty["download_version"])
+
+        self.core.set_download_state("9.9.9", 42.0, "downloading", "D:/x/a.exe")
+        f = self.bs.ApiHandler._download_fields(object())
+        self.assertTrue(f["downloading"])
+        self.assertAlmostEqual(f["download_progress"], 0.42, places=3)
+        self.assertEqual(f["download_status"], "downloading")
+        self.assertEqual(f["download_version"], "9.9.9")
+
+    def test_stale_download_is_not_reported_as_downloading(self):
+        self.core.set_download_state("9.9.9", 5.0, "downloading")
+        st = self.core.load_state()
+        st["launcher_download"]["updated_at"] = (
+            self.time.time() - self.core.DOWNLOAD_STALE_SECONDS - 5)
+        self.core.save_state(st)
+        f = self.bs.ApiHandler._download_fields(object())
+        self.assertFalse(f["downloading"], "卡死的下载不该让界面一直转圈")
+
+    def test_latest_seen_version_only_when_newer(self):
+        self.core.save_state({"latest_seen_version": self.core.LAUNCHER_VERSION})
+        self.assertIsNone(self.bs.ApiHandler._latest_seen_version(object()),
+                          "等于当前版本不算新版本")
+        self.core.save_state({"latest_seen_version": "99.0.0.0"})
+        self.assertEqual(self.bs.ApiHandler._latest_seen_version(object()),
+                         "99.0.0.0")
+
+
 class TestProcessKillSafety(unittest.TestCase):
     """回归：结束进程前必须确认映像名，绝不能误杀（PID 会被复用）。"""
 
