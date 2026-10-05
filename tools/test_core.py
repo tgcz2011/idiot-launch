@@ -188,6 +188,24 @@ class TestDownloadState(unittest.TestCase):
         self.assertEqual(self.core.get_download_state(), {},
                          "启动时必须清掉上次没下完的状态，否则界面永远显示下载中")
 
+    def test_touch_keeps_a_slow_but_alive_download_from_looking_dead(self):
+        # 教室网络慢：进度 5 分钟没动，但下载线程还活着 → 不能被判成中断
+        self.core.set_download_state("9.9.9", 0.0, "downloading")
+        st = self.core.load_state()
+        st["launcher_download"]["updated_at"] = (
+            self.time.time() - self.core.DOWNLOAD_STALE_SECONDS - 5)
+        self.core.save_state(st)
+        self.assertEqual(self.core.get_download_state()["status"], "interrupted")
+        self.core.touch_download_state()
+        self.assertEqual(self.core.get_download_state()["status"], "downloading")
+
+    def test_touch_does_nothing_when_not_downloading(self):
+        self.core.set_download_state("9.9.9", 0.0, "failed")
+        before = self.core.load_state()["launcher_download"]["updated_at"]
+        self.core.touch_download_state()
+        after = self.core.load_state()["launcher_download"]["updated_at"]
+        self.assertEqual(before, after)
+
     def test_clear_download_state(self):
         self.core.set_download_state("9.9.9", 5.0, "failed")
         self.core.clear_download_state("测试")

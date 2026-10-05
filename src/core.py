@@ -752,6 +752,26 @@ def _current_download_installer() -> str:
     return ""
 
 
+def touch_download_state() -> None:
+    """下载线程还活着：把 updated_at 往后推。
+
+    慢网络下可能好几分钟都停在同一个百分比（还在换镜像、建连接、拉分片），
+    不能因为"进度一直没变"就被界面判成"已中断"。
+    daemon 主循环里调用，最多每分钟写一次盘。
+    """
+    with _state_lock:
+        st = load_state()
+        dl = st.get("launcher_download") or {}
+        if dl.get("status") != "downloading":
+            return
+        now = time.time()
+        if now - float(dl.get("updated_at", 0) or 0) < 60:
+            return
+        dl["updated_at"] = now
+        st["launcher_download"] = dl
+        save_state(st)
+
+
 def _clear_stale_download_on_start() -> None:
     """daemon 启动时收拾上一次没下完的下载状态。
 
@@ -1512,6 +1532,10 @@ def daemon_run() -> int:
                     exit_for_update()
 
                 _check_and_download_launcher_update()
+
+                # 下载线程还活着就把状态时间戳往后推（慢网络下进度可能长时间不动）
+                if _launcher_download_thread and _launcher_download_thread.is_alive():
+                    touch_download_state()
 
                 activity = load_state().get("daemon", {}).get("activity", "")
                 if activity not in ("downloading", "updating", "installing", "waiting", "checking"):
