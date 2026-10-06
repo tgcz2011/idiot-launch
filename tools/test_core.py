@@ -30,6 +30,33 @@ from src.core import (  # noqa: E402
     _installer_files,
 )
 
+_TMP_LOG_DIR = None
+_ORIG_DAEMON_LOG = None
+
+
+def setUpModule():
+    """单测不许往用户真正的 daemon.log 里写字。
+
+    2026-10-06 的真实教训：排查"beta32 看不到正式版"时，日志里的
+    「GitHub API 带 token 失败」「所有渠道都失败」其实是单测留下的
+    （测试只改了 STATE_FILE / SETTINGS_FILE，忘了日志文件），白查了一轮。
+    """
+    global _TMP_LOG_DIR, _ORIG_DAEMON_LOG
+    import src.core as core
+
+    _TMP_LOG_DIR = tempfile.TemporaryDirectory()
+    _ORIG_DAEMON_LOG = core.DAEMON_LOG
+    core.DAEMON_LOG = os.path.join(_TMP_LOG_DIR.name, "daemon.log")
+
+
+def tearDownModule():
+    import src.core as core
+
+    if _ORIG_DAEMON_LOG:
+        core.DAEMON_LOG = _ORIG_DAEMON_LOG
+    if _TMP_LOG_DIR:
+        _TMP_LOG_DIR.cleanup()
+
 
 class TestVersionComparison(unittest.TestCase):
     def test_beta_ordering(self):

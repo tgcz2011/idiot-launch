@@ -1278,7 +1278,7 @@ def _check_and_download_launcher_update() -> None:
     check = last_check_result()
     duration = round(time.time() - t0, 1)
     outcome = ("有新版本 " + latest["version"]) if latest else (
-        "无新版本" if check.get("ok") else f"检查失败（{check.get('detail') or '未知原因'}）")
+        "已是最新" if check.get("ok") else f"检查失败（{check.get('detail') or '未知原因'}）")
     log_daemon(f"更新检查完成 {duration}s: {outcome}")
 
     from src.telemetry import report_event
