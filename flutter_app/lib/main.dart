@@ -7,6 +7,7 @@ import 'package:animations/animations.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
+import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'api.dart';
@@ -223,23 +224,6 @@ void main() async {
         );
         return;
       }
-      if (kind == 'prewarm') {
-        // 预热窗口：引擎（这才是点击时卡主界面的那一步）在后台先建好、隐藏着，
-        // 用户点"倒计时/秒表"时只需发一条 use 消息，窗口秒开。
-        AppLog.setWindowTag(3);
-        Future<void> nativeShow() async {
-          try {
-            await controller.show();
-          } catch (_) {}
-        }
-
-        runApp(
-          _SubWindowApp(
-            home: _PrewarmHost(controller: controller, nativeShow: nativeShow),
-          ),
-        );
-        return;
-      }
     }
   } catch (e) {
     AppLog.info('fromCurrentEngine 异常（按主窗口继续）: $e');
@@ -252,9 +236,20 @@ void main() async {
     exit(0);
   }
 
-  const windowOptions = WindowOptions(
-    size: Size(860, 620),
-    minimumSize: Size(760, 560),
+  // 按屏幕可用区域收敛窗口尺寸：有些教室机分辨率小 / 开了缩放，固定 860x620
+  // 会比屏幕还高 → 窗口跑到屏幕上方，标题栏和关闭键都点不到（用户反馈）。
+  double winW = 860;
+  double winH = 620;
+  try {
+    final display = await screenRetriever.getPrimaryDisplay();
+    final wa = display.visibleSize ?? display.size;
+    winW = (wa.width - 40).clamp(640.0, 860.0);
+    winH = (wa.height - 40).clamp(460.0, 620.0);
+  } catch (_) {}
+
+  final windowOptions = WindowOptions(
+    size: Size(winW, winH),
+    minimumSize: const Size(640, 460),
     center: true,
     backgroundColor: Colors.transparent,
     skipTaskbar: false,
@@ -365,11 +360,6 @@ class _MainPageState extends State<MainPage> with WindowListener {
           () => _createToolWindow(auto),
         );
       }
-      // 后台预热一个工具窗口：把"点击时才新建引擎"的那 1-2 秒挪到启动后空闲时，
-      // 这样第一次点「倒计时/秒表」也是秒开、不卡主界面。
-      Future<void>.delayed(const Duration(seconds: 4), () {
-        _prewarmOne();
-      });
     } catch (e, s) {
       AppLog.error('initState 异常', e, s);
     }
@@ -1260,9 +1250,6 @@ class _MainPageState extends State<MainPage> with WindowListener {
 
   // ---------- 工具页 ----------
   bool _creatingWindow = false;
-  // 预热池：后台先建好的隐藏工具窗口（见文件末尾"工具窗口预热池"）
-  final List<_PrewarmedWindow> _prewarm = <_PrewarmedWindow>[];
-  bool _prewarming = false;
 
   /// 创建倒计时/秒表子窗口。
   ///
@@ -1331,171 +1318,112 @@ class _MainPageState extends State<MainPage> with WindowListener {
     }
   }
 
-  /// 后台预热一个隐藏的工具窗口（见文件末尾"工具窗口预热池"）。
-  Future<void> _prewarmOne() async {
-    if (_prewarming || !mounted) return;
-    if (_prewarm.isNotEmpty) return; // 一个就够，多了白占内存
-    _prewarming = true;
-    try {
-      final before = listProcessWindows(visibleOnly: false).toSet();
-      final controller = await WindowController.create(
-        WindowConfiguration(arguments: '$pid:prewarm', hiddenAtLaunch: true),
-      );
-      int hwnd = 0;
-      for (int i = 0; i < 30 && hwnd == 0; i++) {
-        for (final h in listProcessWindows(visibleOnly: false)) {
-          if (!before.contains(h)) {
-            hwnd = h;
-            break;
-          }
-        }
-        if (hwnd == 0) {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-        }
-      }
-      if (hwnd == 0) {
-        AppLog.warn('预热窗口未识别到 HWND，丢弃');
-        return;
-      }
-      for (int i = 0; i < 20; i++) {
-        try {
-          await controller.invokeMethod<void>('set_hwnd', <String, dynamic>{
-            'hwnd': hwnd,
-          });
-          break;
-        } catch (e) {
-          if (i >= 19) AppLog.warn('预热窗口推送 HWND 失败: $e');
-          await Future<void>.delayed(const Duration(milliseconds: 150));
-        }
-      }
-      _prewarm.add(_PrewarmedWindow(controller, hwnd));
-      AppLog.info('已预热一个工具窗口 hwnd=$hwnd');
-    } catch (e) {
-      AppLog.warn('预热工具窗口失败（将回退到按需创建）: $e');
-    } finally {
-      _prewarming = false;
-    }
-  }
-
-  /// 打开工具窗口：优先用预热好的（秒开、不卡主界面），没有就按需创建。
-  Future<void> _openTool(String kind) async {
-    if (_busy) return;
-    while (_prewarm.isNotEmpty) {
-      final w = _prewarm.removeLast();
-      try {
-        await w.controller.invokeMethod<void>('use', <String, dynamic>{
-          'kind': kind,
-        });
-        _prewarmOne(); // 后台再补一个，供下次点击
-        return;
-      } catch (e) {
-        AppLog.warn('复用预热窗口失败，回退按需创建: $e');
-      }
-    }
-    await _createToolWindow(kind);
-  }
-
   Widget _buildToolsPage() {
-    return SingleChildScrollView(
+    return ListView(
       padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text('工具', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 6),
-          Text(
-            '独立小窗口，可以置顶/全屏，讲台上用',
-            style: TextStyle(
-              fontSize: 14,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
+      children: <Widget>[
+        Text('工具', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 6),
+        Text(
+          '独立小窗口，可以置顶 / 全屏，讲台上用',
+          style: TextStyle(
+            fontSize: 14,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 16),
+        _section('计时工具', <Widget>[
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Wrap(
+              spacing: 14,
+              runSpacing: 14,
+              alignment: WrapAlignment.center,
+              children: <Widget>[
+                BigButton(
+                  icon: Icons.timer_outlined,
+                  label: '倒计时',
+                  color: Colors.teal,
+                  onPressed: _busy ? null : () => _createToolWindow('timer'),
+                ),
+                BigButton(
+                  icon: Icons.timer_10_select,
+                  label: '秒表',
+                  color: Colors.indigo,
+                  onPressed: _busy
+                      ? null
+                      : () => _createToolWindow('stopwatch'),
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 14,
-            runSpacing: 14,
-            children: <Widget>[
-              BigButton(
-                icon: Icons.timer_outlined,
-                label: '倒计时',
-                color: Colors.teal,
-                onPressed: _busy ? null : () => _openTool('timer'),
-              ),
-              BigButton(
-                icon: Icons.timer_10_select,
-                label: '秒表',
-                color: Colors.indigo,
-                onPressed: _busy ? null : () => _openTool('stopwatch'),
-              ),
-            ],
-          ),
-        ],
-      ),
+        ]),
+      ],
     );
   }
 
   // ---------- 早读页 ----------
   Widget _buildMorningPage() {
     final scheme = Theme.of(context).colorScheme;
-    return SingleChildScrollView(
+    return ListView(
       padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Text('早晚读', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 16),
-          Card(
-            child: ListTile(
-              leading: Icon(
-                _morningLoggedIn ? Icons.check_circle : Icons.login,
-                color: _morningLoggedIn
-                    ? Colors.green
-                    : scheme.onSurfaceVariant,
-                size: 30,
-              ),
-              title: Text(_morningLoggedIn ? '已登录：$_morningClass' : '未登录'),
-              subtitle: Text(
-                _morningLoggedIn ? '登录信息保存在 D 盘，重启后仍在' : '登录后早晚读页面会自动进入班级',
-              ),
-              trailing: _morningLoggedIn
-                  ? TextButton(
-                      onPressed: () async {
-                        await _api.morningLogout();
-                        await _pollStatus();
-                        _toast('已退出登录');
-                      },
-                      child: const Text('退出登录'),
-                    )
-                  : FilledButton(
-                      onPressed: _showMorningLogin,
-                      child: const Text('登录'),
-                    ),
+      children: <Widget>[
+        Text('早晚读', style: Theme.of(context).textTheme.titleLarge),
+        const SizedBox(height: 16),
+        _section('账号', <Widget>[
+          ListTile(
+            leading: Icon(
+              _morningLoggedIn ? Icons.check_circle : Icons.login,
+              color: _morningLoggedIn ? Colors.green : scheme.onSurfaceVariant,
+              size: 30,
+            ),
+            title: Text(_morningLoggedIn ? '已登录：$_morningClass' : '未登录'),
+            subtitle: Text(
+              _morningLoggedIn ? '登录信息保存在 D 盘，重启后仍在' : '登录后早晚读页面会自动进入班级',
+            ),
+            trailing: _morningLoggedIn
+                ? TextButton(
+                    onPressed: () async {
+                      await _api.morningLogout();
+                      await _pollStatus();
+                      _toast('已退出登录');
+                    },
+                    child: const Text('退出登录'),
+                  )
+                : FilledButton(
+                    onPressed: _showMorningLogin,
+                    child: const Text('登录'),
+                  ),
+          ),
+        ]),
+        _section('快捷操作', <Widget>[
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Wrap(
+              spacing: 14,
+              runSpacing: 14,
+              alignment: WrapAlignment.center,
+              children: <Widget>[
+                BigButton(
+                  icon: Icons.menu_book,
+                  label: '打开早晚读',
+                  color: Colors.teal,
+                  onPressed: _busy ? null : _openMorning,
+                ),
+                BigButton(
+                  icon: Icons.people_alt_outlined,
+                  label: '随机抽学生',
+                  color: Colors.amber,
+                  onPressed: (_morningLoggedIn && !_busy)
+                      ? _showRandomStudent
+                      : null,
+                  disabledHint: _morningLoggedIn ? null : '需要先登录早晚读账号',
+                ),
+              ],
             ),
           ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 14,
-            runSpacing: 14,
-            children: <Widget>[
-              BigButton(
-                icon: Icons.menu_book,
-                label: '打开早晚读',
-                color: Colors.teal,
-                onPressed: _busy ? null : _openMorning,
-              ),
-              BigButton(
-                icon: Icons.people_alt_outlined,
-                label: '随机抽学生',
-                color: Colors.amber,
-                onPressed: (_morningLoggedIn && !_busy)
-                    ? _showRandomStudent
-                    : null,
-                disabledHint: _morningLoggedIn ? null : '需要先登录早晚读账号',
-              ),
-            ],
-          ),
-        ],
-      ),
+        ]),
+      ],
     );
   }
 
@@ -2001,68 +1929,6 @@ class _MorningLoginDialogState extends State<_MorningLoginDialog> {
 // 不再现场建引擎，"未响应"就没了。复用失败或没有预热窗口时，回退到原来的
 // 按需创建（_createToolWindow），行为与之前一致。
 // ============================================================================
-
-class _PrewarmedWindow {
-  _PrewarmedWindow(this.controller, this.hwnd);
-  final WindowController controller;
-  final int hwnd;
-}
-
-class _PrewarmHost extends StatefulWidget {
-  const _PrewarmHost({required this.controller, required this.nativeShow});
-
-  final WindowController controller;
-  final Future<void> Function() nativeShow;
-
-  @override
-  State<_PrewarmHost> createState() => _PrewarmHostState();
-}
-
-class _PrewarmHostState extends State<_PrewarmHost> {
-  int _hwnd = 0;
-  String? _kind;
-
-  @override
-  void initState() {
-    super.initState();
-    _register();
-  }
-
-  Future<void> _register() async {
-    // 父窗口会先推 set_hwnd（带重试），用户点击时再推 use。
-    for (int i = 0; i < 40; i++) {
-      try {
-        await widget.controller.setWindowMethodHandler((call) async {
-          if (call.method == 'set_hwnd') {
-            final a = call.arguments;
-            final h = (a is Map) ? a['hwnd'] : null;
-            if (h is int && mounted) setState(() => _hwnd = h);
-          } else if (call.method == 'use') {
-            final a = call.arguments;
-            final k = (a is Map) ? a['kind'] : null;
-            if (k is String && mounted) setState(() => _kind = k);
-          }
-          return null;
-        });
-        return;
-      } catch (_) {
-        await Future<void>.delayed(const Duration(milliseconds: 150));
-      }
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // 还没被"使用"时什么都不画（窗口保持隐藏）。
-    if (_kind == 'timer') {
-      return TimerPage(hwnd: _hwnd, nativeShow: widget.nativeShow);
-    }
-    if (_kind == 'stopwatch') {
-      return StopwatchPage(hwnd: _hwnd, nativeShow: widget.nativeShow);
-    }
-    return const Scaffold(body: SizedBox.shrink());
-  }
-}
 
 // ============================================================================
 // 侧边导航（自绘，参考 FlClash：选中项有会"动"的圆角药丸背景）

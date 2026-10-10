@@ -54,8 +54,22 @@ class MorningBrowserWindow(QMainWindow):
         self._drag_pos = None
 
         self.setWindowTitle("早晚读")
-        self.setMinimumSize(640, 480)
-        self.resize(1000, 700)
+        self.setMinimumSize(560, 400)
+        # 按屏幕可用区域收敛并居中：小屏/缩放时 1000x700 会比屏幕还高，
+        # 窗口跑到屏幕上方，标题栏上的关闭/全屏键就点不到了（用户反馈）。
+        try:
+            screen = QApplication.primaryScreen()
+            avail = screen.availableGeometry() if screen else None
+            if avail is not None:
+                w = max(560, min(1000, avail.width() - 40))
+                h = max(400, min(700, avail.height() - 40))
+                self.resize(w, h)
+                self.move(avail.left() + (avail.width() - w) // 2,
+                          avail.top() + (avail.height() - h) // 2)
+            else:
+                self.resize(1000, 700)
+        except Exception:
+            self.resize(1000, 700)
 
         # 先建 UI 再显示：原实现先 show() 后 _build_ui()，会先闪一个空白窗
         self._build_ui()

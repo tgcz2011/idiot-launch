@@ -331,6 +331,17 @@ IdiotLaunchBackend.exe --server（后端进程）
 - 顺带修了一个**测试污染**：`TestUpdateChannelSelection` 现在隔离真实
   `settings.json`（用户开过「β 版试用」会让"正式版只认 stable"的用例失真）。
 
+### 回退预热池 + 页面填满 + 窗口尺寸收敛
+
+- **工具窗口预热池回退**：真机实测没改善（用户反馈"反而更不流畅"），
+  恢复成"点击时按需创建 + 顶部加载动画"。`_prewarmOne` / `_openTool` /
+  `_PrewarmedWindow` / `_PrewarmHost` / `main()` 里的 `prewarm` 分支全部删除。
+- **工具页 / 早读页改为 `_section` 卡片**（和设置页一致），内容铺满整宽，
+  不再挤在左上角一小块。按钮在卡片内居中。
+- **窗口尺寸收敛**：主窗口按屏幕可用区算尺寸（`screen_retriever.getPrimaryDisplay()`），
+  最小尺寸降到 640×460；早晚读窗口（`morning_browser`）同样按屏幕收敛并居中。
+  避免小屏 / 开了缩放时窗口比屏幕还高、标题栏和关闭键点不到。
+
 ## 五、目录与关键文件
 
 ```
