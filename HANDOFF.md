@@ -298,7 +298,22 @@ IdiotLaunchBackend.exe --server（后端进程）
   （1-2 秒，期间主窗口"未响应"）。现在启动后 4 秒在后台建好一个**隐藏**的预热窗口
   （`arguments="$pid:prewarm"`），点「倒计时/秒表」时只发一条 `use` 消息让它变身并显示，
   主线程不再现场建引擎。复用失败/没有预热窗口时回退到原来的 `_createToolWindow`，
-  行为与之前一致。子窗口侧 `_PrewarmHost` 负责等待 `set_hwnd`（父窗口推 HWND）与 `use`。
+  行为与之前一致。  子窗口侧 `_PrewarmHost` 负责等待 `set_hwnd`（父窗口推 HWND）与 `use`。
+
+### 计时 / 秒表体验修复（在 beta2 之后）
+
+- **倒计时支持精确到秒**：`DurationPicker` 新增 `showSeconds` + 秒滚轮（`TimerPage` 打开），
+  显示 `hh:mm:ss`（避免 "00:30" 到底指 30 秒还是 30 分）。
+- **秒表窗口布局修复**：窗口改 700×260，时间行与记次行高度**写死**（不再被压没），
+  记次是横向滚动的胶囊。之前 660×200 太矮，记次那一行被挤没了。
+- **全屏重做（倒计时 & 秒表）**：全屏时**隐藏标题栏**，只留"大号时间 + 操作 + 退出全屏键
+  （Esc 也能退）"；时间用 `FittedBox` 铺满并随窗口放大（之前全屏字不放大）。见
+  `_buildFullscreen` / `_toggleFullscreen` / `_exitFullscreen`。
+- **全屏时压住 countdown 屏保**：计时/秒表全屏时用一个命名互斥量
+  `IdiotLaunch_ToolFullscreen` 告诉 countdown"别弹屏保"（壁纸不受影响）。
+  启动器侧见 `flutter_app/lib/fullscreen_guard.dart`（全屏 acquire、退出/关窗/崩溃 release）；
+  countdown 侧见 `countdown_app/main.py::_tool_fullscreen_active`（`_idle_tick` 里判断）。
+- 回归测试：`duration_picker_test` 增加"秒滚轮 + hh:mm:ss"。
 
 ## 五、目录与关键文件
 

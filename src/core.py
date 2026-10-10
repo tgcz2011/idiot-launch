@@ -85,7 +85,7 @@ MIRROR_PROBE_WORKERS = 8
 # 单个镜像探测超时（秒）
 MIRROR_PROBE_TIMEOUT = 4.0
 
-LAUNCHER_VERSION = "3.0.1.0-beta2"
+LAUNCHER_VERSION = "3.0.1.0-beta3"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"

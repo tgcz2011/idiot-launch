@@ -26,6 +26,10 @@ class DurationPicker extends StatelessWidget {
     required this.onMinutesChanged,
     required this.onPreset,
     this.presets = const <int>[5, 10, 15, 25, 45, 60],
+    this.showSeconds = false,
+    this.secondController,
+    this.seconds = 0,
+    this.onSecondsChanged,
   });
 
   final FixedExtentScrollController hourController;
@@ -37,17 +41,28 @@ class DurationPicker extends StatelessWidget {
   final ValueChanged<int> onPreset;
   final List<int> presets;
 
+  /// 是否显示"秒"滚轮（倒计时想精确到秒时打开）。
+  final bool showSeconds;
+  final FixedExtentScrollController? secondController;
+  final int seconds;
+  final ValueChanged<int>? onSecondsChanged;
+
+  static String _two(int v) => v.toString().padLeft(2, '0');
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final picked = Duration(hours: hours, minutes: minutes);
+    // 显示秒时用 hh:mm:ss，避免 "00:30" 到底指 30 秒还是 30 分。
+    final displayText = showSeconds
+        ? '${_two(hours)}:${_two(minutes)}:${_two(seconds)}'
+        : formatDuration(Duration(hours: hours, minutes: minutes));
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 14),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
           Text(
-            formatDuration(picked),
+            displayText,
             style: TextStyle(
               fontSize: 42,
               fontWeight: FontWeight.w800,
@@ -98,6 +113,16 @@ class DurationPicker extends StatelessWidget {
                 unit: '分',
                 onChanged: onMinutesChanged,
               ),
+              if (showSeconds && secondController != null) ...<Widget>[
+                const SizedBox(width: 4),
+                _Wheel(
+                  scheme: scheme,
+                  controller: secondController!,
+                  count: 60,
+                  unit: '秒',
+                  onChanged: onSecondsChanged ?? (_) {},
+                ),
+              ],
             ],
           ),
         ],

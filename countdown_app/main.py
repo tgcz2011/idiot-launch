@@ -119,6 +119,24 @@ def _close_handle(h) -> None:
         ctypes.windll.kernel32.CloseHandle(h)
 
 
+def _tool_fullscreen_active() -> bool:
+    """启动器里是否有计时/秒表窗口正处于全屏。
+
+    靠命名互斥量 IdiotLaunch_ToolFullscreen 判断：能打开 = 有工具在全屏
+    → 这时候不要弹屏保（老师正拿计时/秒表全屏展示，糊上来很尴尬）。
+    句柄由启动器持有，退出全屏或进程结束即自动释放；壁纸不受影响。
+    """
+    try:
+        h = ctypes.windll.kernel32.OpenMutexW(
+            0x00100000, False, "IdiotLaunch_ToolFullscreen")
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def quit_running_instance() -> int:
     """优雅退出已运行的实例（供 --quit 命令使用，不启动 GUI）。
 
@@ -539,6 +557,9 @@ class App:
         if not self.cfg["screensaver"]["enabled"]:
             return
         if self.screensaver_active():
+            return
+        # 计时/秒表正在全屏展示时不弹屏保（壁纸照常）。
+        if _tool_fullscreen_active():
             return
         try:
             timeout = float(self.cfg["screensaver"]["timeout"])

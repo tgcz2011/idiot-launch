@@ -28,33 +28,35 @@ void main() {
     final mc = minCtrl ?? FixedExtentScrollController(initialItem: 5);
     await tester.binding.setSurfaceSize(const Size(420, 620));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    await tester.pumpWidget(MaterialApp(
-      theme: AppTheme.light(),
-      home: Scaffold(
-        body: StatefulBuilder(
-          builder: (BuildContext ctx, StateSetter setState) => Center(
-            child: SizedBox(
-              width: 380,
-              child: DurationPicker(
-                hourController: hc,
-                minuteController: mc,
-                hours: 0,
-                minutes: 5,
-                onHoursChanged: (int i) {
-                  onHours(i);
-                  setState(() {});
-                },
-                onMinutesChanged: (int i) {
-                  onMinutes(i);
-                  setState(() {});
-                },
-                onPreset: (int m) => onPreset?.call(m),
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (BuildContext ctx, StateSetter setState) => Center(
+              child: SizedBox(
+                width: 380,
+                child: DurationPicker(
+                  hourController: hc,
+                  minuteController: mc,
+                  hours: 0,
+                  minutes: 5,
+                  onHoursChanged: (int i) {
+                    onHours(i);
+                    setState(() {});
+                  },
+                  onMinutesChanged: (int i) {
+                    onMinutes(i);
+                    setState(() {});
+                  },
+                  onPreset: (int m) => onPreset?.call(m),
+                ),
               ),
             ),
           ),
         ),
       ),
-    ));
+    );
     await tester.pumpAndSettle();
     addTearDown(() {
       hc.dispose();
@@ -71,25 +73,29 @@ void main() {
 
   testWidgets('拖动分钟滚轮真的能改分钟', (WidgetTester tester) async {
     final seen = <int>[];
-    final mc = await pumpPicker(tester,
-        onMinutes: seen.add, onHours: (_) {});
+    final mc = await pumpPicker(tester, onMinutes: seen.add, onHours: (_) {});
     expect(mc.selectedItem, 5);
 
-    await tester.drag(find.byType(ListWheelScrollView).last,
-        const Offset(0, -132), warnIfMissed: false);
+    await tester.drag(
+      find.byType(ListWheelScrollView).last,
+      const Offset(0, -132),
+      warnIfMissed: false,
+    );
     await tester.pumpAndSettle();
 
     expect(seen, isNotEmpty, reason: '拖动没有触发任何回调 —— 就是"拖不动"的症状');
     expect(seen.last, isNot(5), reason: '拖动后分钟数没变');
-    expect(mc.selectedItem, seen.last,
-        reason: '滚轮位置和回调给的值不一致（会被弹回原位）');
+    expect(mc.selectedItem, seen.last, reason: '滚轮位置和回调给的值不一致（会被弹回原位）');
   });
 
   testWidgets('拖动小时滚轮真的能改小时', (WidgetTester tester) async {
     final seen = <int>[];
     await pumpPicker(tester, onMinutes: (_) {}, onHours: seen.add);
-    await tester.drag(find.byType(ListWheelScrollView).first,
-        const Offset(0, -132), warnIfMissed: false);
+    await tester.drag(
+      find.byType(ListWheelScrollView).first,
+      const Offset(0, -132),
+      warnIfMissed: false,
+    );
     await tester.pumpAndSettle();
     expect(seen, isNotEmpty);
     expect(seen.last, greaterThan(0));
@@ -107,8 +113,7 @@ void main() {
     expect(seen.last, isNot(5));
   });
 
-  testWidgets('鼠标拖动滚轮也能改时间（希沃触摸=鼠标消息时走的就是这条）',
-      (WidgetTester tester) async {
+  testWidgets('鼠标拖动滚轮也能改时间（希沃触摸=鼠标消息时走的就是这条）', (WidgetTester tester) async {
     final seen = <int>[];
     final mc = await pumpPicker(tester, onMinutes: seen.add, onHours: (_) {});
     expect(mc.selectedItem, 5);
@@ -116,8 +121,11 @@ void main() {
     final center = tester.getCenter(find.byType(ListWheelScrollView).last);
     // 关键：kind 必须是 mouse。桌面端 Flutter 默认把鼠标排除在 dragDevices 之外，
     // 不禁用这个默认行为就会"拖了半天没反应"。
-    final gesture = await tester.startGesture(center,
-        kind: PointerDeviceKind.mouse, buttons: kPrimaryButton);
+    final gesture = await tester.startGesture(
+      center,
+      kind: PointerDeviceKind.mouse,
+      buttons: kPrimaryButton,
+    );
     await tester.pump(const Duration(milliseconds: 20));
     await gesture.moveBy(const Offset(0, -50));
     await tester.pump();
@@ -128,8 +136,7 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
 
-    expect(seen, isNotEmpty,
-        reason: '鼠标拖动滚轮没有任何反应 —— 触摸屏手指拖动就是这个症状');
+    expect(seen, isNotEmpty, reason: '鼠标拖动滚轮没有任何反应 —— 触摸屏手指拖动就是这个症状');
     expect(seen.last, isNot(5), reason: '鼠标拖动后分钟数没变');
   });
 
@@ -137,8 +144,10 @@ void main() {
     final seen = <int>[];
     final mc = await pumpPicker(tester, onMinutes: seen.add, onHours: (_) {});
     final center = tester.getCenter(find.byType(ListWheelScrollView).last);
-    final gesture = await tester.startGesture(center,
-        kind: PointerDeviceKind.touch);
+    final gesture = await tester.startGesture(
+      center,
+      kind: PointerDeviceKind.touch,
+    );
     await tester.pump(const Duration(milliseconds: 20));
     await gesture.moveBy(const Offset(0, -60));
     await tester.pump();
@@ -151,8 +160,7 @@ void main() {
     expect(mc.selectedItem, seen.last);
   });
 
-  testWidgets('点滚轮上的数字直接跳到那一格（触摸屏最省事）',
-      (WidgetTester tester) async {
+  testWidgets('点滚轮上的数字直接跳到那一格（触摸屏最省事）', (WidgetTester tester) async {
     final seen = <int>[];
     final mc = await pumpPicker(tester, onMinutes: seen.add, onHours: (_) {});
     final minuteWheel = find.byType(ListWheelScrollView).last;
@@ -166,8 +174,7 @@ void main() {
     expect(mc.selectedItem, 6);
   });
 
-  testWidgets('页面重建后滚轮位置不会被弹回（控制器在外部）',
-      (WidgetTester tester) async {
+  testWidgets('页面重建后滚轮位置不会被弹回（控制器在外部）', (WidgetTester tester) async {
     final hc = FixedExtentScrollController(initialItem: 0);
     final mc = FixedExtentScrollController(initialItem: 5);
     addTearDown(() {
@@ -178,24 +185,24 @@ void main() {
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
     Widget build(int minutes) => MaterialApp(
-          theme: AppTheme.light(),
-          home: Scaffold(
-            body: Center(
-              child: SizedBox(
-                width: 380,
-                child: DurationPicker(
-                  hourController: hc,
-                  minuteController: mc,
-                  hours: 0,
-                  minutes: minutes,
-                  onHoursChanged: (_) {},
-                  onMinutesChanged: (_) {},
-                  onPreset: (_) {},
-                ),
-              ),
+      theme: AppTheme.light(),
+      home: Scaffold(
+        body: Center(
+          child: SizedBox(
+            width: 380,
+            child: DurationPicker(
+              hourController: hc,
+              minuteController: mc,
+              hours: 0,
+              minutes: minutes,
+              onHoursChanged: (_) {},
+              onMinutesChanged: (_) {},
+              onPreset: (_) {},
             ),
           ),
-        );
+        ),
+      ),
+    );
 
     await tester.pumpWidget(build(5));
     await tester.pumpAndSettle();
@@ -206,16 +213,60 @@ void main() {
     // 模拟页面状态变化导致的重建（比如选完时间后刷新显示）
     await tester.pumpWidget(build(20));
     await tester.pumpAndSettle();
-    expect(mc.selectedItem, 20,
-        reason: '重建后滚轮被弹回去了 —— 控制器不能建在滚轮控件内部');
+    expect(mc.selectedItem, 20, reason: '重建后滚轮被弹回去了 —— 控制器不能建在滚轮控件内部');
   });
 
   testWidgets('点预设会回调对应的分钟数', (WidgetTester tester) async {
     final seen = <int>[];
-    await pumpPicker(tester,
-        onMinutes: (_) {}, onHours: (_) {}, onPreset: seen.add);
+    await pumpPicker(
+      tester,
+      onMinutes: (_) {},
+      onHours: (_) {},
+      onPreset: seen.add,
+    );
     await tester.tap(find.text('25 分钟'));
     await tester.pumpAndSettle();
     expect(seen, <int>[25]);
+  });
+
+  testWidgets('打开"秒"后多出秒滚轮，显示 hh:mm:ss', (WidgetTester tester) async {
+    final hc = FixedExtentScrollController(initialItem: 0);
+    final mc = FixedExtentScrollController(initialItem: 0);
+    final sc = FixedExtentScrollController(initialItem: 30);
+    addTearDown(() {
+      hc.dispose();
+      mc.dispose();
+      sc.dispose();
+    });
+    await tester.binding.setSurfaceSize(const Size(560, 620));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: AppTheme.light(),
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 460,
+              child: DurationPicker(
+                hourController: hc,
+                minuteController: mc,
+                hours: 0,
+                minutes: 0,
+                onHoursChanged: (_) {},
+                onMinutesChanged: (_) {},
+                onPreset: (_) {},
+                showSeconds: true,
+                secondController: sc,
+                seconds: 30,
+                onSecondsChanged: (_) {},
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(ListWheelScrollView), findsNWidgets(3));
+    expect(find.text('00:00:30'), findsOneWidget);
   });
 }
