@@ -12,13 +12,13 @@ String formatDuration(Duration d) {
   return h > 0 ? '${_two(h)}:${_two(m)}:${_two(s)}' : '${_two(m)}:${_two(s)}';
 }
 
-/// 秒表显示：mm:ss.cc（厘秒）。
+/// 秒表显示：mm:ss.mmm（毫秒）。
 String formatStopwatch(int milliseconds) {
   final ms = milliseconds < 0 ? 0 : milliseconds;
   final m = ms ~/ 60000;
   final s = (ms % 60000) ~/ 1000;
-  final cs = (ms % 1000) ~/ 10;
-  return '${_two(m)}:${_two(s)}.${_two(cs)}';
+  final milli = ms % 1000;
+  return '${_two(m)}:${_two(s)}.${milli.toString().padLeft(3, '0')}';
 }
 
 /// 剩余时间占比（0~1），用于进度显示。

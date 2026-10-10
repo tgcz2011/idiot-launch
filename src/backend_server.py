@@ -35,6 +35,7 @@ from src.core import (  # noqa: E402
     exit_for_update,
     get_daemon_status,
     get_morning_students,
+    is_countdown_ready,
     is_morning_logged_in,
     is_running,
     launch_countdown,
@@ -165,6 +166,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "version": LAUNCHER_VERSION,
                 "cd_version": CD_VERSION,
                 "countdown_running": is_running(),
+                "countdown_ready": is_countdown_ready(),
                 "morning_logged_in": is_morning_logged_in(),
                 "morning_class": morning_class,
                 "daemon_running": bool(daemon),
@@ -732,6 +734,44 @@ def _daemon_loop():
 
 
 # ── 启动 ──────────────────────────────────────────────
+def _install_crash_reporting() -> None:
+    """把未捕获异常也上报到遥测。
+
+    历史短板：telemetry.report_error 定义了却从没人调用，导致"软件崩了/白屏了"
+    这类最想知道根因的问题，在遥测里一条都没有。这里挂上主线程和子线程的
+    全局异常钩子，异常发生时既有本地日志，也会上报一条 error 事件。
+    """
+    try:
+        import sys as _sys
+        import threading as _threading
+
+        from src.telemetry import report_error
+
+        def _hook(exc_type, exc, tb):
+            try:
+                report_error("uncaught", exc,
+                             {"thread": _threading.current_thread().name})
+            except Exception:
+                pass
+            try:
+                _sys.__excepthook__(exc_type, exc, tb)
+            except Exception:
+                pass
+
+        _sys.excepthook = _hook
+
+        def _thread_hook(args):
+            try:
+                report_error("thread_uncaught", args.exc_value,
+                             {"thread": getattr(args.thread, "name", "")})
+            except Exception:
+                pass
+
+        _threading.excepthook = _thread_hook
+    except Exception:
+        pass
+
+
 def _another_backend_alive() -> bool:
     """已有后端在跑就别再起一个（否则会同时跑两个 daemon、重复下载）。"""
     try:
@@ -760,6 +800,7 @@ def main():
 
     setup_logging("backend")
     os.makedirs(UPDATE_DIR, exist_ok=True)
+    _install_crash_reporting()
 
     if _another_backend_alive():
         log_daemon("检测到已有后端在运行，本次启动直接退出")

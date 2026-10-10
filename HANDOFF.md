@@ -271,6 +271,35 @@ IdiotLaunchBackend.exe --server（后端进程）
   对比度回归测试（`contrast_test.dart`）不受影响。
 - `IdiotLaunch.iss`：`SolidCompression=yes`（安装包更小）。
 
+### 3.0.1.0-beta1 之后的体验 / 健壮性改动
+
+- **倒计时启动加载态对齐**：`/api/status` 新增 `countdown_ready`；countdown 进程把壁纸
+  挂上桌面后写 `data/countdown/wallpaper.ready`（`countdown_app/player.py`）；
+  前端 `_launchWallpaper` 轮询到 ready 才收起"正在启动…"动画（之前后端一返回就收，
+  动画一闪而过、壁纸还在慢悠悠地起）。
+- **秒表窗口**改为紧凑横向长方形（660×200，像希沃白板），记次改为横向滚动的小胶囊。
+- **精度**：倒计时本就精确到秒；秒表 `formatStopwatch` 改为 `mm:ss.mmm`（毫秒），
+  主显示与计次一致。
+- **去掉多余提示文字**：时长选择器的"上下拖动数字选时间…"、秒表的空态提示都删了；
+  倒计时只在"暂停/超时"时显示状态词（运行时不再显示"倒计时中"）。
+- **首次关闭**只用 Windows 通知（`notifyTray`），删掉了应用内"已最小化到托盘"对话框。
+- **单实例唤起**：再次点快捷方式时，已最小化的主窗口会先 `restore()` 再 show/focus
+  （之前只 `show()`，被最小化的窗口唤不起来）。
+- **遥测补短板**：`backend_server._install_crash_reporting()` 挂上
+  `sys.excepthook` / `threading.excepthook`，未捕获异常会上报（之前 `report_error`
+  定义了却没人调用）；daemon 主循环异常也上报；`update_check` 事件带上 `check_detail`
+  （失败原因），不再只看到"失败了"。
+
+### 3.0.1.0-beta2：切页动效 + 工具窗口预热
+
+- **切页改为 shared-axis**：页面区用 `animations` 包的 `PageTransitionSwitcher` +
+  `SharedAxisTransition(horizontal)`（右进左出淡入），更接近 FlClash 的手感。
+- **工具窗口预热池**（`main.dart`）：子窗口每次点击都要在主线程新建 Flutter 引擎
+  （1-2 秒，期间主窗口"未响应"）。现在启动后 4 秒在后台建好一个**隐藏**的预热窗口
+  （`arguments="$pid:prewarm"`），点「倒计时/秒表」时只发一条 `use` 消息让它变身并显示，
+  主线程不再现场建引擎。复用失败/没有预热窗口时回退到原来的 `_createToolWindow`，
+  行为与之前一致。子窗口侧 `_PrewarmHost` 负责等待 `set_hwnd`（父窗口推 HWND）与 `use`。
+
 ## 五、目录与关键文件
 
 ```

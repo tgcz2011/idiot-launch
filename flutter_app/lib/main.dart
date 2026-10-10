@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:ffi' as ffi;
 import 'dart:io';
 
+import 'package:animations/animations.dart';
 import 'package:desktop_multi_window/desktop_multi_window.dart';
 import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
@@ -222,6 +223,23 @@ void main() async {
         );
         return;
       }
+      if (kind == 'prewarm') {
+        // 预热窗口：引擎（这才是点击时卡主界面的那一步）在后台先建好、隐藏着，
+        // 用户点"倒计时/秒表"时只需发一条 use 消息，窗口秒开。
+        AppLog.setWindowTag(3);
+        Future<void> nativeShow() async {
+          try {
+            await controller.show();
+          } catch (_) {}
+        }
+
+        runApp(
+          _SubWindowApp(
+            home: _PrewarmHost(controller: controller, nativeShow: nativeShow),
+          ),
+        );
+        return;
+      }
     }
   } catch (e) {
     AppLog.info('fromCurrentEngine 异常（按主窗口继续）: $e');
@@ -347,6 +365,11 @@ class _MainPageState extends State<MainPage> with WindowListener {
           () => _createToolWindow(auto),
         );
       }
+      // 后台预热一个工具窗口：把"点击时才新建引擎"的那 1-2 秒挪到启动后空闲时，
+      // 这样第一次点「倒计时/秒表」也是秒开、不卡主界面。
+      Future<void>.delayed(const Duration(seconds: 4), () {
+        _prewarmOne();
+      });
     } catch (e, s) {
       AppLog.error('initState 异常', e, s);
     }
@@ -365,54 +388,21 @@ class _MainPageState extends State<MainPage> with WindowListener {
     if (_closing) return;
     _closing = true;
     try {
-      bool firstTimeThisBoot = false;
+      // 第一次关闭由 Windows 通知（气泡）提示就够了（后端按"每次开机一次"去重），
+      // 不再在应用里弹对话框糊用户一脸。
       try {
-        final r = await _api.notifyTray(
+        await _api.notifyTray(
           '傻瓜启动器还在后台运行',
-          '窗口已最小化到托盘。右键托盘图标可以重新打开或彻底退出。',
+          '窗口已最小化到托盘。双击桌面图标可重新打开，右键托盘图标可彻底退出。',
           oncePerBoot: true,
         );
-        firstTimeThisBoot = ApiService.asBool(r['shown']);
       } catch (e) {
         AppLog.warn('托盘提示失败: $e');
-      }
-
-      if (firstTimeThisBoot && mounted) {
-        // 每个开机周期只提示一次，避免每次关窗都打扰
-        _showTrayHintDialog();
-        await Future<void>.delayed(const Duration(milliseconds: 2600));
-        final nav = _hintNavigator;
-        if (nav != null && nav.canPop()) {
-          nav.pop();
-        }
       }
     } finally {
       await windowManager.hide();
       _closing = false;
     }
-  }
-
-  NavigatorState? _hintNavigator;
-
-  void _showTrayHintDialog() {
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) {
-        // 用 NavigatorState 关闭，避免跨 async gap 使用 BuildContext
-        _hintNavigator = Navigator.of(ctx);
-        return AlertDialog(
-          icon: const Icon(Icons.minimize, size: 36),
-          title: const Text('已最小化到托盘'),
-          content: const Text(
-            '傻瓜启动器仍在后台运行（负责自动更新和早晚读悬浮球）。\n\n'
-            '需要重新打开：双击桌面图标，或右键任务栏右下角的托盘图标。\n'
-            '需要彻底退出：右键托盘图标 → 退出（结束后台）。',
-            style: TextStyle(height: 1.6),
-          ),
-        );
-      },
-    );
   }
 
   // ================= 后端与状态 =================
@@ -442,6 +432,13 @@ class _MainPageState extends State<MainPage> with WindowListener {
       if (!mounted) return;
 
       if (s['activate_requested'] == true) {
+        // 另一个进程（再次点快捷方式）请求把本窗口显示出来。
+        // 可能被最小化了，也可能被隐藏到托盘了 —— 两种情况都要能"唤起来"。
+        try {
+          if (await windowManager.isMinimized()) {
+            await windowManager.restore();
+          }
+        } catch (_) {}
         await windowManager.show();
         await windowManager.focus();
         try {
@@ -564,29 +561,67 @@ class _MainPageState extends State<MainPage> with WindowListener {
   // ================= 壁纸 =================
   Future<void> _startCountdown(String exam) async {
     final label = exam == 'zhongkao' ? '中考' : '高考';
-    final ok = await _withLoading<bool>(
+    await _launchWallpaper(
       '正在启动$label倒计时…',
       () => _api.startCountdown(exam),
-      errorTitle: '启动失败',
+      okToast: '已启动$label倒计时',
     );
-    if (ok == true) {
-      setState(() => _cdRunning = true);
-      _toast('已启动$label倒计时，桌面稍后会出现倒计时壁纸');
-      _pollStatus();
-    }
   }
 
   Future<void> _startCustomWallpaper() async {
-    final ok = await _withLoading<bool>(
+    await _launchWallpaper(
       '正在启动自定义壁纸&屏保…',
       _api.startCustomWallpaper,
-      errorTitle: '启动失败',
+      okToast: '已启动自定义壁纸&屏保',
     );
-    if (ok == true) {
+  }
+
+  /// 启动壁纸：加载动画要一直挂到**壁纸真的出现**再收起。
+  ///
+  /// 历史问题：后端一返回就收动画，但壁纸进程还在慢悠悠地起，老师看到的是
+  /// "动画一闪就没了，桌面却半天不出东西"。现在后端在壁纸挂上桌面后会收到
+  /// countdown 进程写的 ready 标记，前端轮询到它才算启动完成。
+  Future<void> _launchWallpaper(
+    String loadingText,
+    Future<bool> Function() action, {
+    required String okToast,
+  }) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    _showLoadingDialog(loadingText);
+    try {
+      final ok = await action();
+      if (!mounted) return;
+      if (ok != true) {
+        Navigator.of(context, rootNavigator: true).pop();
+        _showError('启动失败', '后台没能启动壁纸，请稍后重试（可看「设置 → 打开日志」）。');
+        return;
+      }
+      final ready = await _waitCountdownReady(const Duration(seconds: 25));
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
       setState(() => _cdRunning = true);
-      _toast('已启动自定义壁纸&屏保');
+      _toast(ready ? okToast : '$okToast（启动较慢，桌面稍后会出现）');
       _pollStatus();
+    } catch (e, s) {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+      AppLog.error('启动壁纸失败: $loadingText', e, s);
+      _showError('启动失败', _friendlyError(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// 轮询直到壁纸就绪（或超时）。返回是否就绪。
+  Future<bool> _waitCountdownReady(Duration timeout) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        final s = await _api.getStatus();
+        if (ApiService.asBool(s['countdown_ready'])) return true;
+      } catch (_) {}
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+    return false;
   }
 
   Future<void> _stopCountdown() async {
@@ -944,22 +979,23 @@ class _MainPageState extends State<MainPage> with WindowListener {
                 ),
                 const VerticalDivider(thickness: 1, width: 1),
                 Expanded(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 220),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (Widget child, Animation<double> anim) {
-                      return FadeTransition(
-                        opacity: anim,
-                        child: SlideTransition(
-                          position: Tween<Offset>(
-                            begin: const Offset(0, 0.02),
-                            end: Offset.zero,
-                          ).animate(anim),
-                          child: child,
-                        ),
-                      );
-                    },
+                  child: PageTransitionSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    transitionBuilder:
+                        (
+                          Widget child,
+                          Animation<double> primary,
+                          Animation<double> secondary,
+                        ) {
+                          // shared-axis（横向）：进来的从右侧淡入、出去的往左侧淡出，
+                          // 比"硬切"顺很多，也是最接近 FlClash 的切页手感。
+                          return SharedAxisTransition(
+                            animation: primary,
+                            secondaryAnimation: secondary,
+                            transitionType: SharedAxisTransitionType.horizontal,
+                            child: child,
+                          );
+                        },
                     child: KeyedSubtree(
                       key: ValueKey<int>(_selectedIndex),
                       child: _buildPage(),
@@ -1224,6 +1260,9 @@ class _MainPageState extends State<MainPage> with WindowListener {
 
   // ---------- 工具页 ----------
   bool _creatingWindow = false;
+  // 预热池：后台先建好的隐藏工具窗口（见文件末尾"工具窗口预热池"）
+  final List<_PrewarmedWindow> _prewarm = <_PrewarmedWindow>[];
+  bool _prewarming = false;
 
   /// 创建倒计时/秒表子窗口。
   ///
@@ -1292,6 +1331,70 @@ class _MainPageState extends State<MainPage> with WindowListener {
     }
   }
 
+  /// 后台预热一个隐藏的工具窗口（见文件末尾"工具窗口预热池"）。
+  Future<void> _prewarmOne() async {
+    if (_prewarming || !mounted) return;
+    if (_prewarm.isNotEmpty) return; // 一个就够，多了白占内存
+    _prewarming = true;
+    try {
+      final before = listProcessWindows(visibleOnly: false).toSet();
+      final controller = await WindowController.create(
+        WindowConfiguration(arguments: '$pid:prewarm', hiddenAtLaunch: true),
+      );
+      int hwnd = 0;
+      for (int i = 0; i < 30 && hwnd == 0; i++) {
+        for (final h in listProcessWindows(visibleOnly: false)) {
+          if (!before.contains(h)) {
+            hwnd = h;
+            break;
+          }
+        }
+        if (hwnd == 0) {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        }
+      }
+      if (hwnd == 0) {
+        AppLog.warn('预热窗口未识别到 HWND，丢弃');
+        return;
+      }
+      for (int i = 0; i < 20; i++) {
+        try {
+          await controller.invokeMethod<void>('set_hwnd', <String, dynamic>{
+            'hwnd': hwnd,
+          });
+          break;
+        } catch (e) {
+          if (i >= 19) AppLog.warn('预热窗口推送 HWND 失败: $e');
+          await Future<void>.delayed(const Duration(milliseconds: 150));
+        }
+      }
+      _prewarm.add(_PrewarmedWindow(controller, hwnd));
+      AppLog.info('已预热一个工具窗口 hwnd=$hwnd');
+    } catch (e) {
+      AppLog.warn('预热工具窗口失败（将回退到按需创建）: $e');
+    } finally {
+      _prewarming = false;
+    }
+  }
+
+  /// 打开工具窗口：优先用预热好的（秒开、不卡主界面），没有就按需创建。
+  Future<void> _openTool(String kind) async {
+    if (_busy) return;
+    while (_prewarm.isNotEmpty) {
+      final w = _prewarm.removeLast();
+      try {
+        await w.controller.invokeMethod<void>('use', <String, dynamic>{
+          'kind': kind,
+        });
+        _prewarmOne(); // 后台再补一个，供下次点击
+        return;
+      } catch (e) {
+        AppLog.warn('复用预热窗口失败，回退按需创建: $e');
+      }
+    }
+    await _createToolWindow(kind);
+  }
+
   Widget _buildToolsPage() {
     return SingleChildScrollView(
       padding: const EdgeInsets.all(20),
@@ -1316,13 +1419,13 @@ class _MainPageState extends State<MainPage> with WindowListener {
                 icon: Icons.timer_outlined,
                 label: '倒计时',
                 color: Colors.teal,
-                onPressed: _busy ? null : () => _createToolWindow('timer'),
+                onPressed: _busy ? null : () => _openTool('timer'),
               ),
               BigButton(
                 icon: Icons.timer_10_select,
                 label: '秒表',
                 color: Colors.indigo,
-                onPressed: _busy ? null : () => _createToolWindow('stopwatch'),
+                onPressed: _busy ? null : () => _openTool('stopwatch'),
               ),
             ],
           ),
@@ -1886,6 +1989,78 @@ class _MorningLoginDialogState extends State<_MorningLoginDialog> {
         ),
       ],
     );
+  }
+}
+
+// ============================================================================
+// 工具窗口预热池
+//
+// 子窗口每次点击都会在进程主线程新建一个 Flutter 引擎（约 1-2 秒，期间主窗口
+// 会"未响应"）。这里改成：启动后后台先建好一个**隐藏**的预热窗口；用户点
+// 「倒计时/秒表」时，只给它发一条 use 消息，让它变成对应页面并显示 —— 主线程
+// 不再现场建引擎，"未响应"就没了。复用失败或没有预热窗口时，回退到原来的
+// 按需创建（_createToolWindow），行为与之前一致。
+// ============================================================================
+
+class _PrewarmedWindow {
+  _PrewarmedWindow(this.controller, this.hwnd);
+  final WindowController controller;
+  final int hwnd;
+}
+
+class _PrewarmHost extends StatefulWidget {
+  const _PrewarmHost({required this.controller, required this.nativeShow});
+
+  final WindowController controller;
+  final Future<void> Function() nativeShow;
+
+  @override
+  State<_PrewarmHost> createState() => _PrewarmHostState();
+}
+
+class _PrewarmHostState extends State<_PrewarmHost> {
+  int _hwnd = 0;
+  String? _kind;
+
+  @override
+  void initState() {
+    super.initState();
+    _register();
+  }
+
+  Future<void> _register() async {
+    // 父窗口会先推 set_hwnd（带重试），用户点击时再推 use。
+    for (int i = 0; i < 40; i++) {
+      try {
+        await widget.controller.setWindowMethodHandler((call) async {
+          if (call.method == 'set_hwnd') {
+            final a = call.arguments;
+            final h = (a is Map) ? a['hwnd'] : null;
+            if (h is int && mounted) setState(() => _hwnd = h);
+          } else if (call.method == 'use') {
+            final a = call.arguments;
+            final k = (a is Map) ? a['kind'] : null;
+            if (k is String && mounted) setState(() => _kind = k);
+          }
+          return null;
+        });
+        return;
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // 还没被"使用"时什么都不画（窗口保持隐藏）。
+    if (_kind == 'timer') {
+      return TimerPage(hwnd: _hwnd, nativeShow: widget.nativeShow);
+    }
+    if (_kind == 'stopwatch') {
+      return StopwatchPage(hwnd: _hwnd, nativeShow: widget.nativeShow);
+    }
+    return const Scaffold(body: SizedBox.shrink());
   }
 }
 

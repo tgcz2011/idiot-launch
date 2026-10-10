@@ -37,6 +37,22 @@ def _setup_webview2_audio_policy(mute: bool) -> None:
 WINDOW_TITLE = {"wallpaper": "CountdownWallpaper", "screensaver": "CountdownScreensaver"}
 
 
+def _write_ready_marker() -> None:
+    """壁纸真正挂上桌面后写一个 ready 标记。
+
+    主程序（idiot-launch）靠它把"正在启动倒计时"的加载动画收到壁纸出现之后，
+    而不是后端一返回就收（那样动画会一闪而过，壁纸还在慢悠悠地起）。
+    """
+    try:
+        from . import config
+        path = os.path.join(config.config_dir(), "wallpaper.ready")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(int(time.time())))
+    except Exception:
+        log.exception("write ready marker failed")
+
+
 def _setup_logging(mode: str) -> None:
     from . import config
     path = os.path.join(config.config_dir(), "player-%s.log" % mode)
@@ -145,6 +161,7 @@ def _on_shown(mode: str, window) -> None:
         log.info("host=0x%x raised=%s", host_info["host"], host_info["raised"])
         win32.attach_to_desktop(hwnd, host_info, x, y, w, h)
         log.info("wallpaper attached")
+        _write_ready_marker()
     else:
         # 屏保：全屏置顶 + 隐藏光标与任务栏 + 输入监听退出
         win32.set_ex_style(hwnd, add=win32.WS_EX_TOOLWINDOW | win32.WS_EX_NOACTIVATE,

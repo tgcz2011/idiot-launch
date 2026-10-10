@@ -46,33 +46,37 @@ class DurationPicker extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: <Widget>[
-          Text(formatDuration(picked),
-              style: TextStyle(
-                  fontSize: 42,
-                  fontWeight: FontWeight.w800,
-                  color: scheme.primary,
-                  fontFeatures: const <FontFeature>[
-                    FontFeature.tabularFigures()
-                  ])),
-          const SizedBox(height: 2),
-          Text('上下拖动数字选时间（触摸屏直接手指拖），或点下面的预设',
-              style: TextStyle(fontSize: 14, color: scheme.onSurfaceVariant)),
-          const SizedBox(height: 12),
+          Text(
+            formatDuration(picked),
+            style: TextStyle(
+              fontSize: 42,
+              fontWeight: FontWeight.w800,
+              color: scheme.primary,
+              fontFeatures: const <FontFeature>[FontFeature.tabularFigures()],
+            ),
+          ),
+          const SizedBox(height: 14),
           Wrap(
             spacing: 8,
             runSpacing: 8,
             alignment: WrapAlignment.center,
             children: presets
-                .map((m) => SizedBox(
-                      width: 106,
-                      height: 46,
-                      child: FilledButton.tonal(
-                        onPressed: () => onPreset(m),
-                        child: Text(m == 60 ? '1 小时' : '$m 分钟',
-                            style: const TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.w600)),
+                .map(
+                  (m) => SizedBox(
+                    width: 106,
+                    height: 46,
+                    child: FilledButton.tonal(
+                      onPressed: () => onPreset(m),
+                      child: Text(
+                        m == 60 ? '1 小时' : '$m 分钟',
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
-                    ))
+                    ),
+                  ),
+                )
                 .toList(),
           ),
           const SizedBox(height: 14),
@@ -168,9 +172,11 @@ class _Wheel extends StatelessWidget {
                     // 点哪一格就滚到哪一格（拖动时这个 tap 会被拖动抢掉，不冲突）。
                     builder: (BuildContext ctx, int i) => GestureDetector(
                       behavior: HitTestBehavior.opaque,
-                      onTap: () => controller.animateToItem(i,
-                          duration: const Duration(milliseconds: 140),
-                          curve: Curves.easeOut),
+                      onTap: () => controller.animateToItem(
+                        i,
+                        duration: const Duration(milliseconds: 140),
+                        curve: Curves.easeOut,
+                      ),
                       child: Center(
                         child: Text(
                           i.toString().padLeft(2, '0'),
@@ -179,7 +185,7 @@ class _Wheel extends StatelessWidget {
                             fontWeight: FontWeight.w600,
                             color: scheme.onSurface,
                             fontFeatures: const <FontFeature>[
-                              FontFeature.tabularFigures()
+                              FontFeature.tabularFigures(),
                             ],
                           ),
                         ),
@@ -193,8 +199,10 @@ class _Wheel extends StatelessWidget {
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 6),
-          child: Text(unit,
-              style: TextStyle(fontSize: 16, color: scheme.onSurfaceVariant)),
+          child: Text(
+            unit,
+            style: TextStyle(fontSize: 16, color: scheme.onSurfaceVariant),
+          ),
         ),
       ],
     );

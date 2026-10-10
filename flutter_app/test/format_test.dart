@@ -23,11 +23,11 @@ void main() {
   });
 
   group('formatStopwatch', () {
-    test('毫秒换算成 mm:ss.cc', () {
-      expect(formatStopwatch(0), '00:00.00');
-      expect(formatStopwatch(1234), '00:01.23');
-      expect(formatStopwatch(61000), '01:01.00');
-      expect(formatStopwatch(3661234), '61:01.23');
+    test('毫秒换算成 mm:ss.mmm', () {
+      expect(formatStopwatch(0), '00:00.000');
+      expect(formatStopwatch(1234), '00:01.234');
+      expect(formatStopwatch(61000), '01:01.000');
+      expect(formatStopwatch(3661234), '61:01.234');
     });
   });
 

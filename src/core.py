@@ -85,7 +85,7 @@ MIRROR_PROBE_WORKERS = 8
 # 单个镜像探测超时（秒）
 MIRROR_PROBE_TIMEOUT = 4.0
 
-LAUNCHER_VERSION = "3.0.1.0-beta1"
+LAUNCHER_VERSION = "3.0.1.0-beta2"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
@@ -399,6 +399,28 @@ def _countdown_env() -> dict:
     return env
 
 
+# countdown 进程把窗口真正挂到桌面壁纸层后会写这个标记文件。
+# 主界面据此把"正在启动倒计时"的加载动画收到壁纸真的出现之后，
+# 而不是后端一返回就收（历史问题：动画一闪而过，壁纸还在慢悠悠地起）。
+COUNTDOWN_READY_FILE = os.path.join(LAUNCHER_INSTALL_DIR, "data", "countdown",
+                                    "wallpaper.ready")
+
+
+def _clear_countdown_ready() -> None:
+    try:
+        os.remove(COUNTDOWN_READY_FILE)
+    except OSError:
+        pass
+
+
+def is_countdown_ready() -> bool:
+    """壁纸是否已经挂上桌面（由 countdown 进程写 ready 标记）。"""
+    try:
+        return os.path.isfile(COUNTDOWN_READY_FILE)
+    except Exception:
+        return False
+
+
 def _spawn_countdown(extra_args: list) -> bool:
     try:
         subprocess.Popen(
@@ -414,10 +436,12 @@ def _spawn_countdown(extra_args: list) -> bool:
 
 
 def launch_countdown(exam_type: str) -> bool:
+    _clear_countdown_ready()
     return _spawn_countdown(["--exam", exam_type])
 
 
 def launch_custom() -> bool:
+    _clear_countdown_ready()
     return _spawn_countdown([])
 
 
@@ -1427,6 +1451,8 @@ def _check_and_download_launcher_update() -> None:
         "latest_version": latest["version"] if latest else None,
         "duration": duration,
         "check_ok": check.get("ok"),
+        # 失败原因也要带上，否则遥测只能看到"查失败"，看不到"为什么失败"
+        "check_detail": check.get("detail", ""),
     })
 
     with _state_lock:
@@ -1967,6 +1993,12 @@ def daemon_run() -> int:
                             set_daemon_status("idle", 0, get_daemon_status_detail())
             except Exception as e:
                 log_daemon(f"daemon 主循环异常: {type(e).__name__}: {e}")
+                try:
+                    from src.telemetry import report_error
+
+                    report_error("daemon_loop", e)
+                except Exception:
+                    pass
                 set_daemon_status("idle", 0, f"守护进程异常恢复: {type(e).__name__}")
                 time.sleep(5)
     except KeyboardInterrupt:
@@ -2030,7 +2062,7 @@ __all__ = [
     "set_daemon_status", "get_daemon_status", "send_command", "poll_command",
     "set_download_state", "clear_download_state", "get_download_state",
     "launch_countdown", "launch_custom", "launch_settings",
-    "is_running", "quit_countdown",
+    "is_running", "quit_countdown", "is_countdown_ready",
     "load_morning_config", "save_morning_config", "is_morning_logged_in",
     "verify_morning_login", "get_morning_students", "open_morning_reading",
     "refresh_morning_periods",

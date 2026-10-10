@@ -49,8 +49,9 @@ class _TimerPageState extends State<TimerPage> {
   // 拖动立刻被弹回原来的位置 —— 用户实测"倒计时时间改不了（拖动）"就是这个。
   late final FixedExtentScrollController _hourCtrl =
       FixedExtentScrollController(initialItem: 0);
-  late final FixedExtentScrollController _minCtrl =
-      FixedExtentScrollController(initialItem: 5);
+  late final FixedExtentScrollController _minCtrl = FixedExtentScrollController(
+    initialItem: 5,
+  );
 
   @override
   void initState() {
@@ -232,8 +233,10 @@ class _TimerPageState extends State<TimerPage> {
             if (_audioWarning != null)
               Padding(
                 padding: const EdgeInsets.only(bottom: 6),
-                child: Text(_audioWarning!,
-                    style: TextStyle(fontSize: 14, color: scheme.error)),
+                child: Text(
+                  _audioWarning!,
+                  style: TextStyle(fontSize: 14, color: scheme.error),
+                ),
               ),
             _buildActions(scheme),
           ],
@@ -280,10 +283,9 @@ class _TimerPageState extends State<TimerPage> {
 
   Widget _buildDisplay(ColorScheme scheme) {
     final label = switch (_phase) {
-      _Phase.running => '倒计时中',
       _Phase.paused => '已暂停',
-      _Phase.overtime => '已超时 · 正计时',
-      _Phase.idle => '',
+      _Phase.overtime => '已超时',
+      _ => '',
     };
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -303,14 +305,19 @@ class _TimerPageState extends State<TimerPage> {
             ),
           ),
         ),
-        const SizedBox(height: 4),
-        Text(label,
+        if (label.isNotEmpty) ...<Widget>[
+          const SizedBox(height: 4),
+          Text(
+            label,
             style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: _phase == _Phase.overtime
-                    ? scheme.error
-                    : scheme.onSurfaceVariant)),
+              fontSize: 18,
+              fontWeight: FontWeight.w600,
+              color: _phase == _Phase.overtime
+                  ? scheme.error
+                  : scheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -327,10 +334,15 @@ class _TimerPageState extends State<TimerPage> {
               icon: const Icon(Icons.play_arrow, size: 26),
               label: const Text('开始'),
               style: FilledButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 30, vertical: 16),
-                  textStyle: const TextStyle(
-                      fontSize: 19, fontWeight: FontWeight.w600)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 30,
+                  vertical: 16,
+                ),
+                textStyle: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             )
           else ...<Widget>[
             if (_phase == _Phase.running)
@@ -339,10 +351,15 @@ class _TimerPageState extends State<TimerPage> {
                 icon: const Icon(Icons.pause, size: 26),
                 label: const Text('暂停'),
                 style: FilledButton.styleFrom(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
-                    textStyle: const TextStyle(
-                        fontSize: 19, fontWeight: FontWeight.w600)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 26,
+                    vertical: 16,
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               )
             else if (_phase == _Phase.paused)
               FilledButton.icon(
@@ -350,10 +367,15 @@ class _TimerPageState extends State<TimerPage> {
                 icon: const Icon(Icons.play_arrow, size: 26),
                 label: const Text('继续'),
                 style: FilledButton.styleFrom(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
-                    textStyle: const TextStyle(
-                        fontSize: 19, fontWeight: FontWeight.w600)),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 26,
+                    vertical: 16,
+                  ),
+                  textStyle: const TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
               )
             else
               const SizedBox.shrink(),
@@ -363,9 +385,12 @@ class _TimerPageState extends State<TimerPage> {
               icon: const Icon(Icons.refresh, size: 22),
               label: const Text('重置'),
               style: OutlinedButton.styleFrom(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-                  textStyle: const TextStyle(fontSize: 17)),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 16,
+                ),
+                textStyle: const TextStyle(fontSize: 17),
+              ),
             ),
           ],
         ],
@@ -406,8 +431,8 @@ class _StopwatchPageState extends State<StopwatchPage> {
       if (!mounted) return;
       final dpr = View.of(context).devicePixelRatio;
       _win.attach(
-        widthPx: (400 * dpr).round(),
-        heightPx: (580 * dpr).round(),
+        widthPx: (660 * dpr).round(),
+        heightPx: (200 * dpr).round(),
         title: '秒表',
         hwnd: widget.hwnd,
         scale: dpr,
@@ -457,11 +482,13 @@ class _StopwatchPageState extends State<StopwatchPage> {
           content: Text('当前记录 ${_laps.length} 次记次，重置后全部清空。'),
           actions: <Widget>[
             TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text('取消')),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
             FilledButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text('重置')),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('重置'),
+            ),
           ],
         ),
       );
@@ -512,118 +539,118 @@ class _StopwatchPageState extends State<StopwatchPage> {
               dragUpdate: _win.updateDrag,
               onDragEnd: _win.endDrag,
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              child: FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Text(
-                  formatStopwatch(_elapsedMs),
-                  style: TextStyle(
-                    fontSize: 76,
-                    fontWeight: FontWeight.w800,
-                    color: scheme.onSurface,
-                    fontFeatures: const <FontFeature>[
-                      FontFeature.tabularFigures()
-                    ],
-                  ),
-                ),
-              ),
-            ),
+            // 紧凑横向布局（像希沃白板那样横着的长方形）：
+            // 左边大号毫秒时间，右边一排操作，底部一条可横向滚动的记次。
             Expanded(
-              child: _laps.isEmpty
-                  ? Center(
-                      child: Text('还没有记次（运行时按「记次」或 L 键）',
-                          style: TextStyle(
-                              fontSize: 15, color: scheme.onSurfaceVariant)))
-                  : ListView.builder(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      itemCount: _laps.length,
-                      itemBuilder: (ctx, i) {
-                        final lapNo = _laps.length - i;
-                        final isLatest = i == 0;
-                        return Container(
-                          margin: const EdgeInsets.symmetric(vertical: 3),
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: isLatest
-                                ? scheme.primaryContainer
-                                : scheme.surfaceContainerHighest
-                                    .withValues(alpha: 0.4),
-                            borderRadius: BorderRadius.circular(10),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 10, 18, 10),
+                child: Column(
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Align(
+                            alignment: Alignment.centerLeft,
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                formatStopwatch(_elapsedMs),
+                                style: TextStyle(
+                                  fontSize: 64,
+                                  fontWeight: FontWeight.w800,
+                                  color: scheme.onSurface,
+                                  fontFeatures: const <FontFeature>[
+                                    FontFeature.tabularFigures(),
+                                  ],
+                                ),
+                              ),
+                            ),
                           ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: <Widget>[
-                              Text('第 $lapNo 次',
-                                  style: const TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: FontWeight.w600)),
-                              Text(formatStopwatch(_laps[i]),
-                                  style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w600,
-                                      fontFeatures: <FontFeature>[
-                                        FontFeature.tabularFigures()
-                                      ])),
-                            ],
+                        ),
+                        const SizedBox(width: 10),
+                        if (!_sw.isRunning)
+                          FilledButton.icon(
+                            onPressed: _start,
+                            icon: const Icon(Icons.play_arrow, size: 22),
+                            label: const Text('开始'),
+                          )
+                        else
+                          FilledButton.icon(
+                            onPressed: _pause,
+                            icon: const Icon(Icons.pause, size: 22),
+                            label: const Text('暂停'),
                           ),
-                        );
-                      },
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          onPressed: _sw.isRunning ? _lap : null,
+                          icon: const Icon(Icons.flag),
+                          tooltip: '记次',
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton.filledTonal(
+                          onPressed: _reset,
+                          icon: const Icon(Icons.refresh),
+                          tooltip: '重置',
+                        ),
+                      ],
                     ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 18, top: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: <Widget>[
-                  if (!_sw.isRunning)
-                    FilledButton.icon(
-                      onPressed: _start,
-                      icon: const Icon(Icons.play_arrow, size: 26),
-                      label: const Text('开始'),
-                      style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 28, vertical: 16),
-                          textStyle: const TextStyle(
-                              fontSize: 19, fontWeight: FontWeight.w600)),
-                    )
-                  else
-                    FilledButton.icon(
-                      onPressed: _pause,
-                      icon: const Icon(Icons.pause, size: 26),
-                      label: const Text('暂停'),
-                      style: FilledButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 24, vertical: 16),
-                          textStyle: const TextStyle(
-                              fontSize: 19, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Expanded(
+                      child: _laps.isEmpty
+                          ? const SizedBox.shrink()
+                          : SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
+                                children: <Widget>[
+                                  for (int i = 0; i < _laps.length; i++)
+                                    _lapChip(
+                                      scheme,
+                                      _laps.length - i,
+                                      _laps[i],
+                                      i == 0,
+                                    ),
+                                ],
+                              ),
+                            ),
                     ),
-                  const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    onPressed: _sw.isRunning ? _lap : null,
-                    icon: const Icon(Icons.flag, size: 22),
-                    label: const Text('记次'),
-                    style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 18, vertical: 16),
-                        textStyle: const TextStyle(fontSize: 17)),
-                  ),
-                  const SizedBox(width: 10),
-                  OutlinedButton.icon(
-                    onPressed: _reset,
-                    icon: const Icon(Icons.refresh, size: 22),
-                    label: const Text('重置'),
-                    style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 18, vertical: 16),
-                        textStyle: const TextStyle(fontSize: 17)),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 单条记次（横向排布的小胶囊，越新的越靠左并高亮）。
+  Widget _lapChip(ColorScheme scheme, int no, int ms, bool latest) {
+    return Container(
+      margin: const EdgeInsets.only(right: 8, top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: latest
+            ? scheme.primaryContainer
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: <Widget>[
+          Text(
+            '$no',
+            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            formatStopwatch(ms),
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              fontFeatures: <FontFeature>[FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -668,16 +695,20 @@ class _WindowBar extends StatelessWidget {
       height: 44,
       decoration: BoxDecoration(
         color: scheme.surfaceContainerLow,
-        border:
-            Border(bottom: BorderSide(color: scheme.outlineVariant, width: 1)),
+        border: Border(
+          bottom: BorderSide(color: scheme.outlineVariant, width: 1),
+        ),
       ),
       child: Row(
         children: <Widget>[
           Expanded(
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
-              onPanStart: (d) => dragStart(d.globalPosition.dx,
-                  d.globalPosition.dy, d.kind ?? PointerDeviceKind.mouse),
+              onPanStart: (d) => dragStart(
+                d.globalPosition.dx,
+                d.globalPosition.dy,
+                d.kind ?? PointerDeviceKind.mouse,
+              ),
               onPanUpdate: (d) =>
                   dragUpdate(d.globalPosition.dx, d.globalPosition.dy),
               onPanEnd: (_) => onDragEnd(),
@@ -690,12 +721,19 @@ class _WindowBar extends StatelessWidget {
                   alignment: Alignment.centerLeft,
                   child: Row(
                     children: <Widget>[
-                      Icon(Icons.drag_indicator,
-                          size: 18, color: scheme.onSurfaceVariant),
+                      Icon(
+                        Icons.drag_indicator,
+                        size: 18,
+                        color: scheme.onSurfaceVariant,
+                      ),
                       const SizedBox(width: 6),
-                      Text(title,
-                          style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w600)),
+                      Text(
+                        title,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -714,11 +752,7 @@ class _WindowBar extends StatelessWidget {
             active: isFullscreen,
             onTap: onToggleFullscreen,
           ),
-          _BarButton(
-            icon: Icons.remove,
-            tooltip: '最小化',
-            onTap: onMinimize,
-          ),
+          _BarButton(icon: Icons.remove, tooltip: '最小化', onTap: onMinimize),
           _BarButton(
             icon: Icons.close,
             tooltip: '关闭',
@@ -769,8 +803,9 @@ class _BarButtonState extends State<_BarButton> {
         onExit: (_) => setState(() => _hover = false),
         child: InkWell(
           onTap: widget.onTap,
-          hoverColor:
-              widget.danger ? scheme.error.withValues(alpha: 0.9) : null,
+          hoverColor: widget.danger
+              ? scheme.error.withValues(alpha: 0.9)
+              : null,
           child: SizedBox(
             width: 46,
             height: 44,
@@ -781,4 +816,3 @@ class _BarButtonState extends State<_BarButton> {
     );
   }
 }
-
