@@ -315,6 +315,22 @@ IdiotLaunchBackend.exe --server（后端进程）
   countdown 侧见 `countdown_app/main.py::_tool_fullscreen_active`（`_idle_tick` 里判断）。
 - 回归测试：`duration_picker_test` 增加"秒滚轮 + hh:mm:ss"。
 
+### 真全屏 + 早晚读全屏 + 导航栏按钮修复
+
+- **真全屏**：`sub_window.toggleFullscreen` 进入全屏时用 **HWND_TOPMOST** 置顶，
+  才能真正盖住任务栏（之前只把窗口铺到 `rcMonitor`，而任务栏也是 topmost，
+  照样压在上面 —— 就是"伪全屏"，看着跟最大化没区别）；退出时恢复 z 序
+  （开了"置顶"保持置顶，否则还原）。
+- **计时/秒表全屏保留最上方操作键**：全屏布局改回顶部带 `_WindowBar`
+  （置顶/全屏/最小化/关闭 都在），中间大号时间铺满，底部操作键。
+- **早晚读浏览器加"全屏"键**：`morning_browser._toggle_fullscreen`（`showFullScreen`
+  /`showNormal`，Esc 退出），工具栏保留所以随时能操作/退出。
+- **侧边导航按钮修形**：`_NavRail` 的 Column 加 `crossAxisAlignment: stretch` ——
+  之前按钮宽度只按内容（图标/字）撑，得到的是又窄又高的"竖起来的椭圆"，
+  既不好看也不好点。现在铺满轨道宽度，是正常的圆角矩形。
+- 顺带修了一个**测试污染**：`TestUpdateChannelSelection` 现在隔离真实
+  `settings.json`（用户开过「β 版试用」会让"正式版只认 stable"的用例失真）。
+
 ## 五、目录与关键文件
 
 ```

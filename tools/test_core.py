@@ -470,11 +470,17 @@ class TestUpdateChannelSelection(unittest.TestCase):
         self.core = core
         self._orig_version = core.LAUNCHER_VERSION
         self._orig_http = core._http_json
+        self._orig_settings = core.load_settings
         self.urls = []
+        # 隔离真实设置文件：用户测试时可能点开过「β 版试用」，那会让
+        # "正式版只认 stable" 的用例失真（正式版开着 β 试用本来就该被拉到 β）。
+        # 这里固定成"没选过"，渠道只看构建版本。
+        self.core.load_settings = lambda: dict(core.DEFAULT_SETTINGS)
 
     def tearDown(self):
         self.core.LAUNCHER_VERSION = self._orig_version
         self.core._http_json = self._orig_http
+        self.core.load_settings = self._orig_settings
 
     def _stub(self, rows):
         def fake_http(url, timeout=10, headers=None, label=""):

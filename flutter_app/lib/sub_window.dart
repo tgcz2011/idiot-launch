@@ -40,26 +40,36 @@ final ffi.DynamicLibrary _kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
 // ---- user32 / kernel32 绑定 -------------------------------------------------
 
 typedef _EnumWindowsProcNative = ffi.Int32 Function(
-    ffi.IntPtr hWnd, ffi.IntPtr lParam);
+  ffi.IntPtr hWnd,
+  ffi.IntPtr lParam,
+);
 
 typedef _EnumWindowsNative = ffi.Int32 Function(
-    ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> lpEnumFunc,
-    ffi.IntPtr lParam);
+  ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> lpEnumFunc,
+  ffi.IntPtr lParam,
+);
 typedef _EnumWindowsDart = int Function(
-    ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> lpEnumFunc,
-    int lParam);
+  ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> lpEnumFunc,
+  int lParam,
+);
 
 final _EnumWindowsDart _enumWindows = _user32
     .lookupFunction<_EnumWindowsNative, _EnumWindowsDart>('EnumWindows');
 
 typedef _GetWindowThreadProcessIdNative = ffi.Uint32 Function(
-    ffi.IntPtr hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId);
+  ffi.IntPtr hWnd,
+  ffi.Pointer<ffi.Uint32> lpdwProcessId,
+);
 typedef _GetWindowThreadProcessIdDart = int Function(
-    int hWnd, ffi.Pointer<ffi.Uint32> lpdwProcessId);
+  int hWnd,
+  ffi.Pointer<ffi.Uint32> lpdwProcessId,
+);
 
-final _GetWindowThreadProcessIdDart _getWindowThreadProcessId =
-    _user32.lookupFunction<_GetWindowThreadProcessIdNative,
-        _GetWindowThreadProcessIdDart>('GetWindowThreadProcessId');
+final _GetWindowThreadProcessIdDart _getWindowThreadProcessId = _user32
+    .lookupFunction<
+      _GetWindowThreadProcessIdNative,
+      _GetWindowThreadProcessIdDart
+    >('GetWindowThreadProcessId');
 
 typedef _IntPtr2Native = ffi.IntPtr Function(ffi.IntPtr, ffi.Int32);
 typedef _IntPtr2Dart = int Function(int, int);
@@ -70,62 +80,91 @@ typedef _Int1Dart = int Function(int);
 typedef _Int2Native = ffi.Int32 Function(ffi.IntPtr, ffi.Int32);
 typedef _Int2Dart = int Function(int, int);
 
-final _Int1Dart _getWindowTextLength =
-    _user32.lookupFunction<_Int1Native, _Int1Dart>('GetWindowTextLengthW');
-final _Int1Dart _isWindowVisible =
-    _user32.lookupFunction<_Int1Native, _Int1Dart>('IsWindowVisible');
-final _Int2Dart _showWindow =
-    _user32.lookupFunction<_Int2Native, _Int2Dart>('ShowWindow');
-final _Int2Dart _getWindowLong =
-    _user32.lookupFunction<_IntPtr2Native, _IntPtr2Dart>('GetWindowLongW');
-final _IntPtr3Dart _setWindowLong =
-    _user32.lookupFunction<_IntPtr3Native, _IntPtr3Dart>('SetWindowLongW');
+final _Int1Dart _getWindowTextLength = _user32
+    .lookupFunction<_Int1Native, _Int1Dart>('GetWindowTextLengthW');
+final _Int1Dart _isWindowVisible = _user32
+    .lookupFunction<_Int1Native, _Int1Dart>('IsWindowVisible');
+final _Int2Dart _showWindow = _user32.lookupFunction<_Int2Native, _Int2Dart>(
+  'ShowWindow',
+);
+final _Int2Dart _getWindowLong = _user32
+    .lookupFunction<_IntPtr2Native, _IntPtr2Dart>('GetWindowLongW');
+final _IntPtr3Dart _setWindowLong = _user32
+    .lookupFunction<_IntPtr3Native, _IntPtr3Dart>('SetWindowLongW');
 
 typedef _GetCurrentProcessIdNative = ffi.Uint32 Function();
 typedef _GetCurrentProcessIdDart = int Function();
 final _GetCurrentProcessIdDart _getCurrentProcessId = _kernel32
     .lookupFunction<_GetCurrentProcessIdNative, _GetCurrentProcessIdDart>(
-        'GetCurrentProcessId');
+      'GetCurrentProcessId',
+    );
 
 typedef _GetWindowRectNative = ffi.Int32 Function(
-    ffi.IntPtr hWnd, ffi.Pointer<_Rect> lpRect);
+  ffi.IntPtr hWnd,
+  ffi.Pointer<_Rect> lpRect,
+);
 typedef _GetWindowRectDart = int Function(int hWnd, ffi.Pointer<_Rect> lpRect);
 final _GetWindowRectDart _getWindowRect = _user32
     .lookupFunction<_GetWindowRectNative, _GetWindowRectDart>('GetWindowRect');
 
 typedef _SetWindowPosNative = ffi.Int32 Function(
-    ffi.IntPtr hWnd,
-    ffi.IntPtr hWndInsertAfter,
-    ffi.Int32 x,
-    ffi.Int32 y,
-    ffi.Int32 cx,
-    ffi.Int32 cy,
-    ffi.Uint32 uFlags);
+  ffi.IntPtr hWnd,
+  ffi.IntPtr hWndInsertAfter,
+  ffi.Int32 x,
+  ffi.Int32 y,
+  ffi.Int32 cx,
+  ffi.Int32 cy,
+  ffi.Uint32 uFlags,
+);
 typedef _SetWindowPosDart = int Function(
-    int hWnd, int hWndInsertAfter, int x, int y, int cx, int cy, int uFlags);
+  int hWnd,
+  int hWndInsertAfter,
+  int x,
+  int y,
+  int cx,
+  int cy,
+  int uFlags,
+);
 final _SetWindowPosDart _setWindowPos = _user32
     .lookupFunction<_SetWindowPosNative, _SetWindowPosDart>('SetWindowPos');
 
 typedef _PostMessageNative = ffi.Int32 Function(
-    ffi.IntPtr hWnd, ffi.Uint32 msg, ffi.IntPtr wParam, ffi.IntPtr lParam);
+  ffi.IntPtr hWnd,
+  ffi.Uint32 msg,
+  ffi.IntPtr wParam,
+  ffi.IntPtr lParam,
+);
 typedef _PostMessageDart = int Function(
-    int hWnd, int msg, int wParam, int lParam);
+  int hWnd,
+  int msg,
+  int wParam,
+  int lParam,
+);
 final _PostMessageDart _postMessage = _user32
     .lookupFunction<_PostMessageNative, _PostMessageDart>('PostMessageW');
 
 typedef _SendMessageTimeoutNative = ffi.IntPtr Function(
-    ffi.IntPtr hWnd,
-    ffi.Uint32 msg,
-    ffi.IntPtr wParam,
-    ffi.IntPtr lParam,
-    ffi.Uint32 flags,
-    ffi.Uint32 timeout,
-    ffi.Pointer<ffi.UintPtr> result);
-typedef _SendMessageTimeoutDart = int Function(int hWnd, int msg, int wParam,
-    int lParam, int flags, int timeout, ffi.Pointer<ffi.UintPtr> result);
-final _SendMessageTimeoutDart _sendMessageTimeout =
-    _user32.lookupFunction<_SendMessageTimeoutNative, _SendMessageTimeoutDart>(
-        'SendMessageTimeoutW');
+  ffi.IntPtr hWnd,
+  ffi.Uint32 msg,
+  ffi.IntPtr wParam,
+  ffi.IntPtr lParam,
+  ffi.Uint32 flags,
+  ffi.Uint32 timeout,
+  ffi.Pointer<ffi.UintPtr> result,
+);
+typedef _SendMessageTimeoutDart = int Function(
+  int hWnd,
+  int msg,
+  int wParam,
+  int lParam,
+  int flags,
+  int timeout,
+  ffi.Pointer<ffi.UintPtr> result,
+);
+final _SendMessageTimeoutDart _sendMessageTimeout = _user32
+    .lookupFunction<_SendMessageTimeoutNative, _SendMessageTimeoutDart>(
+      'SendMessageTimeoutW',
+    );
 
 // 注意：这里**故意不导出 SetCapture/ReleaseCapture**。
 // Flutter 的 Windows embedder 已经在 WM_LBUTTONDOWN 时 SetCapture、
@@ -136,24 +175,31 @@ final _SendMessageTimeoutDart _sendMessageTimeout =
 
 typedef _GetCursorPosNative = ffi.Int32 Function(ffi.Pointer<_Point> p);
 typedef _GetCursorPosDart = int Function(ffi.Pointer<_Point> p);
-final _GetCursorPosDart _getCursorPos =
-    _user32.lookupFunction<_GetCursorPosNative, _GetCursorPosDart>(
-        'GetCursorPos');
+final _GetCursorPosDart _getCursorPos = _user32
+    .lookupFunction<_GetCursorPosNative, _GetCursorPosDart>('GetCursorPos');
 
 typedef _MonitorFromWindowNative = ffi.IntPtr Function(
-    ffi.IntPtr hWnd, ffi.Uint32 dwFlags);
+  ffi.IntPtr hWnd,
+  ffi.Uint32 dwFlags,
+);
 typedef _MonitorFromWindowDart = int Function(int hWnd, int dwFlags);
 final _MonitorFromWindowDart _monitorFromWindow = _user32
     .lookupFunction<_MonitorFromWindowNative, _MonitorFromWindowDart>(
-        'MonitorFromWindow');
+      'MonitorFromWindow',
+    );
 
 typedef _GetMonitorInfoNative = ffi.Int32 Function(
-    ffi.IntPtr hMonitor, ffi.Pointer<_MonitorInfo> lpmi);
+  ffi.IntPtr hMonitor,
+  ffi.Pointer<_MonitorInfo> lpmi,
+);
 typedef _GetMonitorInfoDart = int Function(
-    int hMonitor, ffi.Pointer<_MonitorInfo> lpmi);
+  int hMonitor,
+  ffi.Pointer<_MonitorInfo> lpmi,
+);
 final _GetMonitorInfoDart _getMonitorInfo = _user32
     .lookupFunction<_GetMonitorInfoNative, _GetMonitorInfoDart>(
-        'GetMonitorInfoW');
+      'GetMonitorInfoW',
+    );
 
 // ---- 结构体 -----------------------------------------------------------------
 
@@ -198,6 +244,7 @@ const int _swpNoZOrder = 0x0004;
 const int _swpNoActivate = 0x0010;
 const int _swpFrameChanged = 0x0020;
 const int _swpShowWindow = 0x0040;
+
 /// 关键：把请求投递给窗口所属线程，本线程立即返回，不会因为对方忙而死等。
 const int _swpAsyncWindowPos = 0x4000;
 
@@ -213,6 +260,7 @@ const int _monitorDefaultToNearest = 2;
 /// 让系统进入"移动窗口"模态循环的消息（window_manager.startDragging 用的同一套）
 const int _wmNcLButtonDown = 0x00A1;
 const int _htCaption = 2;
+
 /// 模态循环会一直跑到用户松手；给它一个上限，免得我们这边被无限挂住
 const int _nativeDragWaitMs = 30000;
 
@@ -244,8 +292,10 @@ final ffi.Pointer<ffi.NativeFunction<_EnumWindowsProcNative>> _enumProcPtr =
 ///
 /// [visibleOnly]=false 时连隐藏窗口一起列出（子窗口刚创建时是隐藏的）。
 /// [emptyTitleOnly]=true 时只列标题为空的窗口（插件创建的窗口标题为空，主窗口有标题）。
-List<int> listProcessWindows(
-    {bool visibleOnly = true, bool emptyTitleOnly = false}) {
+List<int> listProcessWindows({
+  bool visibleOnly = true,
+  bool emptyTitleOnly = false,
+}) {
   _enumResult.clear();
   _enumPid = _getCurrentProcessId();
   _enumVisibleOnly = visibleOnly;
@@ -288,8 +338,10 @@ class SubWindow {
   double _dragStartX = 0;
   double _dragStartY = 0;
   bool _dragging = false;
+
   /// 本次拖动是否用 GetCursorPos 的屏幕坐标（鼠标=true，触摸=false）
   bool _useCursor = false;
+
   /// 系统移动循环不可用只记一次日志，别每次拖动都刷
   bool _systemMoveLogged = false;
 
@@ -342,8 +394,10 @@ class SubWindow {
 
   void _trySearch() {
     if (_hwnd != 0) return;
-    final candidates =
-        listProcessWindows(visibleOnly: false, emptyTitleOnly: true);
+    final candidates = listProcessWindows(
+      visibleOnly: false,
+      emptyTitleOnly: true,
+    );
     if (candidates.isEmpty) return;
     _take(candidates.last);
   }
@@ -351,8 +405,8 @@ class SubWindow {
   void _take(int hwnd) {
     final style = _getWindowLong(hwnd, _gwlStyle);
     if ((style & _wsCaption) != 0) {
-      final stripped = style &
-          ~(_wsCaption | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
+      final stripped =
+          style & ~(_wsCaption | _wsSysMenu | _wsMinimizeBox | _wsMaximizeBox);
       _setWindowLong(hwnd, _gwlStyle, stripped);
       if ((_getWindowLong(hwnd, _gwlStyle) & _wsCaption) != 0) {
         return; // 样式没生效，留给下一轮
@@ -390,8 +444,15 @@ class SubWindow {
   void _applyFrame() {
     if (_hwnd == 0) return;
     final r = _centeredRect(_widthPx, _heightPx);
-    _setWindowPos(_hwnd, 0, r[0], r[1], r[2], r[3],
-        _swpAsyncWindowPos | _swpNoZOrder | _swpFrameChanged | _swpNoActivate);
+    _setWindowPos(
+      _hwnd,
+      0,
+      r[0],
+      r[1],
+      r[2],
+      r[3],
+      _swpAsyncWindowPos | _swpNoZOrder | _swpFrameChanged | _swpNoActivate,
+    );
   }
 
   /// 显示窗口（创建时是隐藏的，改好样式再显示 → 不会闪 800x600 的原生窗口）。
@@ -400,12 +461,18 @@ class SubWindow {
     _shown = true;
     _showWindow(_hwnd, _swShow);
     _setWindowPos(
-        _hwnd, 0, 0, 0, 0, 0,
-        _swpAsyncWindowPos |
-            _swpNoMove |
-            _swpNoSize |
-            _swpNoZOrder |
-            _swpShowWindow);
+      _hwnd,
+      0,
+      0,
+      0,
+      0,
+      0,
+      _swpAsyncWindowPos |
+          _swpNoMove |
+          _swpNoSize |
+          _swpNoZOrder |
+          _swpShowWindow,
+    );
   }
 
   void _setTitle(String title) {
@@ -415,7 +482,14 @@ class SubWindow {
     try {
       // 对方线程卡住时直接超时返回，绝不把自己的 UI 线程挂死
       _sendMessageTimeout(
-          _hwnd, _wmSetText, 0, ptr.address, _smtoAbortIfHung, 1000, out);
+        _hwnd,
+        _wmSetText,
+        0,
+        ptr.address,
+        _smtoAbortIfHung,
+        1000,
+        out,
+      );
     } finally {
       calloc.free(ptr);
       calloc.free(out);
@@ -444,8 +518,11 @@ class SubWindow {
   /// 已经 `SetCapture`、WM_LBUTTONUP 时 `ReleaseCapture`
   /// （`flutter_window.cc` 里"Capture the pointer in case the user drags outside
   /// the client area"）。自己再调一次反而会把它的捕获还回去（踩过一次）。
-  void beginDrag(double x, double y,
-      [PointerDeviceKind kind = PointerDeviceKind.mouse]) {
+  void beginDrag(
+    double x,
+    double y, [
+    PointerDeviceKind kind = PointerDeviceKind.mouse,
+  ]) {
     if (_hwnd == 0) return;
     if (_startSystemMove()) {
       _dragging = false;
@@ -464,8 +541,15 @@ class SubWindow {
     final sw = Stopwatch()..start();
     final out = calloc<ffi.UintPtr>();
     try {
-      _sendMessageTimeout(_hwnd, _wmNcLButtonDown, _htCaption, 0,
-          _smtoAbortIfHung, _nativeDragWaitMs, out);
+      _sendMessageTimeout(
+        _hwnd,
+        _wmNcLButtonDown,
+        _htCaption,
+        0,
+        _smtoAbortIfHung,
+        _nativeDragWaitMs,
+        out,
+      );
     } catch (e, s) {
       AppLog.error('$tag: 系统窗口拖动失败', e, s);
       return false;
@@ -536,8 +620,15 @@ class SubWindow {
       y: y,
       scale: _scale,
     );
-    _setWindowPos(_hwnd, 0, target.x, target.y, 0, 0,
-        _swpAsyncWindowPos | _swpNoSize | _swpNoZOrder | _swpNoActivate);
+    _setWindowPos(
+      _hwnd,
+      0,
+      target.x,
+      target.y,
+      0,
+      0,
+      _swpAsyncWindowPos | _swpNoSize | _swpNoZOrder | _swpNoActivate,
+    );
   }
 
   /// 拖动时的目标窗口位置（纯函数，方便单测）。
@@ -613,12 +704,23 @@ class SubWindow {
   bool toggleTopMost() {
     if (_hwnd == 0) return _isTopMost;
     _isTopMost = !_isTopMost;
-    _setWindowPos(_hwnd, _isTopMost ? _hwndTopMost : _hwndNoTopMost, 0, 0, 0, 0,
-        _swpAsyncWindowPos | _swpNoMove | _swpNoSize | _swpNoActivate);
+    _setWindowPos(
+      _hwnd,
+      _isTopMost ? _hwndTopMost : _hwndNoTopMost,
+      0,
+      0,
+      0,
+      0,
+      _swpAsyncWindowPos | _swpNoMove | _swpNoSize | _swpNoActivate,
+    );
     return _isTopMost;
   }
 
   /// 全屏：铺满当前显示器（含任务栏区域），再次调用还原。
+  ///
+  /// 关键：进入时要把窗口设为 **HWND_TOPMOST**。任务栏本身也是 topmost，
+  /// 普通窗口即使铺满 rcMonitor 也会被任务栏压在下面 —— 那就成了"伪全屏"
+  /// （看起来跟最大化没区别）。置顶之后才能真正盖住任务栏（B 站全屏就是这效果）。
   bool toggleFullscreen() {
     if (_hwnd == 0) return _isFullscreen;
     if (!_isFullscreen) {
@@ -629,15 +731,31 @@ class SubWindow {
         if (mon == 0 || _getMonitorInfo(mon, mi) == 0) return false;
         final m = mi.ref.rcMonitor;
         _isFullscreen = true;
-        _setWindowPos(_hwnd, 0, m.left, m.top, m.right - m.left,
-            m.bottom - m.top,
-            _swpAsyncWindowPos | _swpNoZOrder | _swpFrameChanged | _swpNoActivate);
+        _setWindowPos(
+          _hwnd,
+          _hwndTopMost,
+          m.left,
+          m.top,
+          m.right - m.left,
+          m.bottom - m.top,
+          _swpAsyncWindowPos | _swpFrameChanged | _swpNoActivate,
+        );
       } finally {
         calloc.free(mi);
       }
     } else {
       _isFullscreen = false;
       _applyFrame();
+      // 退出全屏：恢复 z 序（开了"置顶"就保持置顶，否则还原为普通层级）
+      _setWindowPos(
+        _hwnd,
+        _isTopMost ? _hwndTopMost : _hwndNoTopMost,
+        0,
+        0,
+        0,
+        0,
+        _swpAsyncWindowPos | _swpNoMove | _swpNoSize | _swpNoActivate,
+      );
     }
     return _isFullscreen;
   }

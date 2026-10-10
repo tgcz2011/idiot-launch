@@ -2092,10 +2092,13 @@ class _NavRail extends StatelessWidget {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
-      width: 86,
+      width: 96,
       color: scheme.surfaceContainerLow,
-      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
       child: Column(
+        // stretch 是关键：否则按钮宽度只按内容（图标/字）撑，得到的是一个
+        // 又窄又高的"竖起来的椭圆"，既不好看也不好点。
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: <Widget>[
           for (int i = 0; i < _navItems.length; i++)
             _NavRailButton(

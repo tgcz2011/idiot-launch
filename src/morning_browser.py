@@ -50,6 +50,7 @@ class MorningBrowserWindow(QMainWindow):
         self.config = config or morning_config.load()
         self._auto_login_done = False
         self._always_on_top = True
+        self._fullscreen = False
         self._drag_pos = None
 
         self.setWindowTitle("早晚读")
@@ -159,6 +160,17 @@ class MorningBrowserWindow(QMainWindow):
         refresh_btn.clicked.connect(self._reload)
         tb_layout.addWidget(refresh_btn)
 
+        # 全屏按钮（铺满整个屏幕，含任务栏；再点一次/按 Esc 退出）
+        self.fs_btn = QPushButton("全屏")
+        self.fs_btn.setToolTip("铺满整个屏幕（再点一次退出，Esc 也可以）")
+        self.fs_btn.setStyleSheet(
+            "background-color: rgba(255,255,255,0.2); color: white; "
+            "border: none; padding: 5px 12px; border-radius: 4px; font-size: 12px;"
+        )
+        self.fs_btn.setCursor(Qt.PointingHandCursor)
+        self.fs_btn.clicked.connect(self._toggle_fullscreen)
+        tb_layout.addWidget(self.fs_btn)
+
         # 最小化按钮
         min_btn = QPushButton("—")
         min_btn.setStyleSheet(
@@ -248,6 +260,26 @@ class MorningBrowserWindow(QMainWindow):
         self._always_on_top = not self._always_on_top
         self._update_window_flags()
         self.top_btn.setText("置顶：开" if self._always_on_top else "置顶：关")
+
+    def _toggle_fullscreen(self):
+        """全屏：铺满整个屏幕（含任务栏）；顶部工具栏保留，所以还能操作/退出。"""
+        self._fullscreen = not self._fullscreen
+        if self._fullscreen:
+            self.showFullScreen()
+            self.fs_btn.setText("退出全屏")
+            log.info("morning browser fullscreen on")
+        else:
+            self.showNormal()
+            self.fs_btn.setText("全屏")
+            log.info("morning browser fullscreen off")
+
+    def keyPressEvent(self, event):
+        from PySide6.QtCore import Qt as _Qt
+
+        if event.key() == _Qt.Key_Escape and self._fullscreen:
+            self._toggle_fullscreen()
+            return
+        super().keyPressEvent(event)
 
     def _show_load_error(self):
         """网页打不开时给中文说明，而不是让老师看 Chromium 的英文报错页。"""
