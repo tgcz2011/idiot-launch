@@ -26,6 +26,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 # ── 常量 ──────────────────────────────────────────────
 APP_NAME = "傻瓜启动器"
@@ -60,22 +61,31 @@ DOWNLOAD_STALE_SECONDS = 300
 DAEMON_MUTEX = "IdiotLaunch_Daemon_Single"
 DAEMON_QUIT_EVENT = "IdiotLaunch_Quit"
 
-# 下载镜像源（aria2 会同时从多个源分块下载，空字符串 = GitHub 直连）
+# 下载镜像源（aria2 会同时从多个源分块下载，空字符串 = GitHub 直连）。
+#
+# 2026 现实：这些公共前缀代理域名命中率极不稳定（ghproxy.com / ghps.cc 等老牌
+# 早已停服）。所以列表只是"候选池"，真正下载前会先并发探测（见
+# pick_working_mirrors），只把**当前这台电脑真的连得上**的前缀交给 aria2，
+# 避免死源拖慢首包、或返回错误页把分片污染（最后还有 SHA-256 兜底）。
 DOWNLOAD_MIRRORS = [
-    "",                                    # GitHub 直连（最可靠）
-    "https://ghproxy.com/",                # ghproxy 老牌
-    "https://mirror.ghproxy.com/",         # ghproxy 镜像
-    "https://gh-proxy.com/",               # GH-Proxy
-    "https://ghfast.top/",                 # ghfast
-    "https://ghproxy.net/",                # ghproxy.net
-    "https://gh.llkk.cc/",                 # LLKK 公益加速
-    "https://hub.gitmirror.com/",          # GitMirror
+    "",                                    # GitHub 直连（通就能用，最可信）
+    "https://gh-proxy.com/",               # 2026 实测 raw/archive/api 全通
+    "https://ghproxy.net/",                # 无广告、支持断点续传
+    "https://ghfast.top/",
+    "https://gh.llkk.cc/",                 # 国内 CDN，多数宽带连通好
+    "https://gh.ddlc.top/",
+    "https://hub.gitmirror.com/",          # 大体积 Release 较稳
     "https://ghproxy.homeboyc.cn/",        # 大文件稳定
-    "https://ghps.cc/",                    # ghps
-    "https://gh.api.99988866.xyz/",        # 99988866
+    "https://gh.zwy.one/",                 # 2026 实测速度档最优
+    "https://github.akams.cn/",
+    "https://ghproxy.cc/",
 ]
+# 探测镜像时最多同时并发多少个请求
+MIRROR_PROBE_WORKERS = 8
+# 单个镜像探测超时（秒）
+MIRROR_PROBE_TIMEOUT = 4.0
 
-LAUNCHER_VERSION = "3.0.0.0"
+LAUNCHER_VERSION = "3.0.1.0-beta1"
 LAUNCHER_GITHUB_API = "https://api.github.com/repos/tgcz2011/idiot-launch/releases/latest"
 LAUNCHER_TAGS_API = "https://api.github.com/repos/tgcz2011/idiot-launch/tags?per_page=30"
 LAUNCHER_SETUP_PREFIX = "IdiotLaunch_Setup_"
@@ -103,6 +113,11 @@ DEFAULT_SETTINGS = {
     "auto_update": True,      # 是否允许后台自动下载/静默安装更新
     "telemetry": True,        # 是否上报匿名运行统计
     "show_tray_hint": True,   # 关闭窗口时是否提示"已最小化到托盘"
+    # β 版试用：
+    #   None  = 没选过，按当前构建版本决定（beta 版自带 β 行为）
+    #   True  = 主动试用 β（开启时立即升到 β；之后一直按 β 渠道查）
+    #   False = 只要正式版（关闭后停查 β，待在下一个正式版发布时自动升级过去）
+    "beta_trial": None,
 }
 
 
@@ -289,6 +304,30 @@ def is_auto_update_enabled() -> bool:
         return bool(load_settings().get("auto_update", True))
     except Exception:
         return True
+
+
+def beta_trial_setting():
+    """β 版试用的原始设置值：None（未选）/ True / False。"""
+    try:
+        return load_settings().get("beta_trial")
+    except Exception:
+        return None
+
+
+def effective_beta_channel() -> bool:
+    """当前该不该按 β 渠道查更新。
+
+    规则（产品要求）：
+      * 用户显式选过（True/False）→ 以用户为准。
+      * 没选过 → 按构建版本：beta/alpha/rc 版自带 β 行为，正式版只认正式版。
+    关闭 β（False）后即使当前正跑着 β 版，也只查正式版：
+    由于 compare_versions 里"同号正式版 > 预发布版"，它会自然等到
+    一个 ≥ 当前主版本的正式版出现才升级过去，不会退回更老的正式版。
+    """
+    v = beta_trial_setting()
+    if v is None:
+        return is_beta_version(LAUNCHER_VERSION)
+    return bool(v)
 
 
 def idle_threshold_seconds() -> int:
@@ -738,8 +777,12 @@ def get_download_state() -> dict:
     if not dl:
         return {}
     if dl.get("status") == "downloading":
+        # 下载线程还活着就绝不判死：系统休眠、主循环卡顿都会让 updated_at
+        # 长时间不动，但下载其实是好的（慢网络下进度也可能几分钟不变）。
+        worker = globals().get("_launcher_download_thread")
+        alive = bool(worker is not None and worker.is_alive())
         updated = float(dl.get("updated_at", 0) or 0)
-        if not updated or time.time() - updated > DOWNLOAD_STALE_SECONDS:
+        if not alive and (not updated or time.time() - updated > DOWNLOAD_STALE_SECONDS):
             dl["status"] = "interrupted"
     return dl
 
@@ -864,6 +907,56 @@ def _adopt_downloaded_file(dest_path: str, url: str) -> None:
         log_daemon(f"改名下载文件失败: {type(e).__name__}: {e}")
 
 
+def _probe_one(url: str, prefix: str, timeout: float) -> tuple | None:
+    """探测单个前缀镜像是否可用，返回 (前缀, 延迟秒) 或 None。
+
+    只发一个 `Range: bytes=0-0` 的 GET（拿 1 字节），不拉整个文件。
+    200（不支持 Range 但仍可用）或 206（部分内容）都算通。
+    """
+    target = (prefix + url) if prefix else url
+    try:
+        req = urllib.request.Request(
+            target, headers={"User-Agent": "idiot-launch-updater",
+                             "Range": "bytes=0-0"})
+        t0 = time.time()
+        with urllib.request.urlopen(
+                req, timeout=timeout, context=ssl.create_default_context()) as resp:
+            code = getattr(resp, "status", 200)
+            if code in (200, 206):
+                return (prefix, time.time() - t0)
+    except Exception:
+        return None
+    return None
+
+
+def pick_working_mirrors(url: str, mirrors=None) -> list:
+    """并发探测候选镜像，返回**可用**前缀、按延迟从快到慢排序。
+
+    - 结果里一定带上"直连"（若可用）—— 它最可信。
+    - 探测全部失败（离线/全被墙）时，原样返回候选列表交给 aria2 自己试，
+      免得因为探不通就完全不下。
+    """
+    mirrors = list(DOWNLOAD_MIRRORS if mirrors is None else mirrors)
+    result: list = []
+    try:
+        with ThreadPoolExecutor(max_workers=MIRROR_PROBE_WORKERS) as ex:
+            futures = [ex.submit(_probe_one, url, m, MIRROR_PROBE_TIMEOUT)
+                       for m in mirrors]
+            for fut in futures:
+                item = fut.result()
+                if item:
+                    result.append(item)
+    except Exception as e:
+        log_daemon(f"镜像探测异常: {type(e).__name__}: {e}")
+    if not result:
+        log_daemon("镜像探测：全部不可用，回退为让 aria2 自行尝试")
+        return mirrors
+    result.sort(key=lambda x: x[1])
+    ordered = [prefix for prefix, _delay in result]
+    log_daemon("镜像探测：可用 " + ", ".join((p or "(直连)") for p in ordered))
+    return ordered
+
+
 def download_installer(url: str, dest_path: str, tag: str = "",
                        on_progress=None) -> bool:
     """aria2 多源分块下载（16 连接/源），失败重试 3 轮。
@@ -874,7 +967,9 @@ def download_installer(url: str, dest_path: str, tag: str = "",
     from src.telemetry import report_event
 
     _ensure_update_dir()
-    urls = [(m + url) if m else url for m in DOWNLOAD_MIRRORS]
+    # 先探活再下：只把当前真的连得上的镜像交给 aria2，死源不拖后腿。
+    mirrors = pick_working_mirrors(url)
+    urls = [(m + url) if m else url for m in mirrors]
     start_time = time.time()
 
     def _progress(percent, speed):
@@ -1005,7 +1100,9 @@ def get_latest_launcher_info() -> dict | None:
     调用方要用 `last_check_result()` 区分（界面必须说实话）。
     """
     _mark_check(None)  # 先当成"没查成"，查到结果再翻过来
-    current_is_beta = is_beta_version(LAUNCHER_VERSION)
+    # 渠道由"用户设置 + 构建版本"共同决定（见 effective_beta_channel）：
+    # 正式版用户不会被拉去装 beta；β 试用关闭后即使正跑着 β 也只查正式版。
+    current_is_beta = effective_beta_channel()
 
     # 方案 1：Supabase（不限流，优先）
     #
@@ -1175,6 +1272,48 @@ def pending_update_info() -> dict | None:
 
 def has_pending_launcher_update() -> bool:
     return pending_update_info() is not None
+
+
+def begin_beta_trial() -> None:
+    """用户开启 β 版试用：立刻检查更新，且下载好就立即安装（不再等空闲）。
+
+    见 apply_launcher_update_if_pending 里对 auto_install_ready 的处理。
+    """
+    with _state_lock:
+        st = load_state()
+        st["force_check"] = True
+        st["auto_install_ready"] = True
+        st["download_failures"] = 0
+        save_state(st)
+    log_daemon("β 版试用已开启：立即检查并更新到 β 版")
+
+
+def end_beta_trial() -> None:
+    """用户关闭 β 版试用：停查 β 渠道。
+
+    * 丢掉"已经下载好、但还没装"的 β 安装包（否则关闭后还会把 β 装上去）；
+    * 之后只按正式版渠道检查。由于 compare_versions 里同号正式版 > 预发布版，
+      它会自然等到一个 ≥ 当前主版本的正式版出现才升级过去，不会退回更老的正式版；
+    * 立刻触发一次检查，让用户马上看到"当前就是最终正式版 / 已有该升的正式版"。
+    """
+    with _state_lock:
+        st = load_state()
+        st.pop("auto_install_ready", None)
+        st["force_check"] = True
+        save_state(st)
+
+    info = pending_update_info()
+    if info and is_beta_version(info["version"]):
+        _remove_installer(info["path"])
+        with _state_lock:
+            s = load_state()
+            s.pop("pending_launcher_path", None)
+            s.pop("pending_launcher_version", None)
+            s.pop("launcher_download", None)
+            save_state(s)
+        log_daemon(f"β 版试用已关闭：已丢弃待安装的 β 版 {info['version']}，停查 β 渠道")
+    else:
+        log_daemon("β 版试用已关闭：停查 β 渠道，等待下一个正式版")
 
 
 # ── 下载线程 ──────────────────────────────────────────
@@ -1347,10 +1486,60 @@ def _check_and_download_launcher_update() -> None:
 INSTALLER_COMMON_FLAGS = ["/SUPPRESSMSGBOXES", "/NORESTART", "/AutoUpdate=1"]
 
 
-def start_update_installer(installer: str, silent: bool = False) -> bool:
-    """启动安装包。silent=True 完全无界面，False 显示安装包自带的进度条。"""
+def _spawn_relaunch_watchdog(installer_pid: int) -> None:
+    """装完/装失败后，保证程序还能回来。
+
+    为什么不自己守：安装包会 `taskkill /F /IM IdiotLaunchBackend.exe`，
+    任何用这个 exe 跑的守卫都会被它一起杀掉。所以用独立的 powershell.exe
+    （不在杀名单里、也不占安装目录的文件）等安装包退出，再把程序拉起来。
+
+    场景覆盖：
+      * 安装成功且安装包自己重启了程序 → 看门狗发现进程已在，什么都不做；
+      * 安装成功但 [Code] 重启那步没执行 → 看门狗把程序拉起来；
+      * 安装失败/被安全软件拦掉、旧程序已被杀 → 看门狗把旧程序拉起来，
+        至少不让老师"点一下更新，软件就没了"。
+    """
+    if not installer_pid:
+        return
+    app = LAUNCHER_INSTALL_EXE
+    log_path = os.path.join(UPDATE_DIR, "update_watchdog.log")
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        f"$ipid={int(installer_pid)};"
+        f"$app='{app}';"
+        f"$log='{log_path}';"
+        "function L($m){ Add-Content -Path $log -Value ((Get-Date).ToString('s')+' '+$m) };"
+        "L ('watchdog started, waiting installer pid '+$ipid);"
+        "try { Wait-Process -Id $ipid -Timeout 1800 } catch {};"
+        "L 'installer exited';"
+        "Start-Sleep -Seconds 3;"
+        "for($i=0;$i -lt 90;$i++){"
+        "  if(Get-Process -Name 'IdiotLaunch' -ErrorAction SilentlyContinue){ L 'app already running'; break };"
+        "  if(Test-Path $app){"
+        "    try{ Start-Process -FilePath $app -WorkingDirectory (Split-Path $app); L 'relaunched app'; break }"
+        "    catch{ L ('relaunch failed: '+$_.Exception.Message) }"
+        "  } else { L 'app exe missing, retry' };"
+        "  Start-Sleep -Seconds 2"
+        "}"
+    )
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps],
+            creationflags=0x00000008 | 0x00000200,  # DETACHED_PROCESS | NEW_PROCESS_GROUP
+            close_fds=True,
+        )
+        log_daemon(f"已启动更新看门狗（installer pid={installer_pid}）")
+    except Exception as e:
+        log_daemon(f"启动更新看门狗失败: {type(e).__name__}: {e}")
+
+
+def start_update_installer(installer: str, silent: bool = False):
+    """启动安装包。silent=True 完全无界面，False 显示安装包自带的进度条。
+
+    返回安装包进程 pid（成功）或 None（失败）。
+    """
     if not installer or not os.path.isfile(installer):
-        return False
+        return None
     mode = "/VERYSILENT" if silent else "/SILENT"
     try:
         proc = subprocess.Popen(
@@ -1360,7 +1549,7 @@ def start_update_installer(installer: str, silent: bool = False) -> bool:
         )
     except Exception as e:
         log_daemon(f"启动更新安装包失败: {type(e).__name__}: {e}")
-        return False
+        return None
 
     log_daemon(f"更新安装包已启动（{mode}）: {os.path.basename(installer)}")
     # 给安装包 2 秒确认还活着：被安全软件拦掉/参数错误会立刻退出
@@ -1369,9 +1558,9 @@ def start_update_installer(installer: str, silent: bool = False) -> bool:
         if proc.poll() is not None:
             if proc.returncode != 0:
                 log_daemon(f"安装包异常退出，返回码 {proc.returncode}，放弃本次更新")
-                return False
+                return None
             break
-    return True
+    return proc.pid
 
 
 def exit_for_update() -> None:
@@ -1395,12 +1584,30 @@ def apply_launcher_update_if_pending(force: bool = False) -> bool:
 
     force=True：用户点击「一键更新」→ 立即执行
     force=False：daemon 循环调用 → 只有连续 3 次确认空闲才执行
+    另外：state 里带 auto_install_ready 标记时（β 试用开启）→ 一旦下载好就立即装，
+          不再等空闲判定。
     """
     if not getattr(sys, "frozen", False):
         return False
     info = pending_update_info()
     if not info:
         return False
+
+    # β 试用开启后置的"就绪即装"标记：用户是主动要的，直接装（显示进度条）。
+    auto_ready = bool(load_state().get("auto_install_ready"))
+    if auto_ready and not force:
+        with _state_lock:
+            st = load_state()
+            st.pop("auto_install_ready", None)
+            save_state(st)
+        log_daemon(f"β 试用：立即安装 v{info['version']}")
+        set_daemon_status("updating", 0, f"正在更新到 v{info['version']}...")
+        pid = start_update_installer(info["path"], silent=False)
+        if not pid:
+            set_daemon_status("idle", 0, "更新程序启动失败，可稍后重试")
+            return False
+        _spawn_relaunch_watchdog(pid)
+        return True
 
     if not force:
         if not is_auto_update_enabled():
@@ -1423,9 +1630,16 @@ def apply_launcher_update_if_pending(force: bool = False) -> bool:
         set_daemon_status("updating", 0, f"正在更新到 v{info['version']}...")
         silent = False
 
-    if not start_update_installer(info["path"], silent=silent):
+    # 走到这里就是要装了：顺手清掉"就绪即装"标记，免得泄漏到以后的更新里。
+    with _state_lock:
+        st = load_state()
+        if st.pop("auto_install_ready", None) is not None:
+            save_state(st)
+    pid = start_update_installer(info["path"], silent=silent)
+    if not pid:
         set_daemon_status("idle", 0, "更新程序启动失败，可稍后重试")
         return False
+    _spawn_relaunch_watchdog(pid)
     return True
 
 
@@ -1514,6 +1728,83 @@ def _create_shortcut(target: str, shortcut_path: str, icon_path: str = "",
         return False
 
 
+_shortcut_watcher_started = False
+
+
+def _watch_one_dir(path: str) -> None:
+    """阻塞监听单个目录，目录里一有变化就补快捷方式。
+
+    这是给"对抗冰点还原"用的：与其每 30 秒轮询两个路径，不如让系统在
+    快捷方式被删的那一刻通知我们。整个函数在后台线程里跑，异常一律吞掉，
+    失败时调用方会退回原来的轮询，不影响任何既有行为。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateFileW.restype = ctypes.c_void_p
+        k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                                    ctypes.c_void_p]
+        k32.ReadDirectoryChangesW.restype = wintypes.BOOL
+        k32.ReadDirectoryChangesW.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, wintypes.BOOL,
+            wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+            ctypes.c_void_p]
+
+        FILE_LIST_DIRECTORY = 0x0001
+        FILE_SHARE_ALL = 0x00000001 | 0x00000002 | 0x00000004
+        OPEN_EXISTING = 3
+        FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+        FILE_NOTIFY_CHANGE_FILE_NAME = 0x00000001
+        INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+        handle = k32.CreateFileW(path, FILE_LIST_DIRECTORY, FILE_SHARE_ALL, None,
+                                 OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, None)
+        if not handle or handle == INVALID_HANDLE_VALUE:
+            return
+        buf = ctypes.create_string_buffer(4096)
+        returned = wintypes.DWORD(0)
+        while True:
+            ok = k32.ReadDirectoryChangesW(
+                ctypes.c_void_p(handle), buf, len(buf), False,
+                FILE_NOTIFY_CHANGE_FILE_NAME, ctypes.byref(returned), None, None)
+            if not ok:
+                time.sleep(1)
+                continue
+            try:
+                ensure_shortcuts()
+            except Exception:
+                pass
+    except Exception:
+        return
+
+
+def _start_shortcut_watcher() -> bool:
+    """用目录监听替代 30 秒轮询。启动失败返回 False（调用方退回轮询）。"""
+    global _shortcut_watcher_started
+    if os.name != "nt" or _shortcut_watcher_started:
+        return _shortcut_watcher_started
+    dirs = []
+    if os.path.isdir("D:\\"):
+        dirs.append("D:\\")
+    if os.path.isdir(r"C:\Users\Public\Desktop"):
+        dirs.append(r"C:\Users\Public\Desktop")
+    if not dirs:
+        return False
+    try:
+        for d in dirs:
+            threading.Thread(target=_watch_one_dir, args=(d,), daemon=True,
+                             name="shortcut-watch").start()
+    except Exception as e:
+        log_daemon(f"启动快捷方式监听失败: {type(e).__name__}: {e}")
+        return False
+    _shortcut_watcher_started = True
+    log_daemon("快捷方式目录监听已启动（替代 30 秒轮询）")
+    return True
+
+
 def ensure_shortcuts() -> None:
     """保证 D 盘根目录 + 桌面（优先公共桌面）各有一个快捷方式。
 
@@ -1593,6 +1884,14 @@ def daemon_run() -> int:
     except Exception as e:
         log_daemon(f"清理下载状态失败: {type(e).__name__}: {e}")
 
+    # 兜底：上一次被 os._exit 留下、又没被 Job Object 带走的 aria2c，启动时清掉。
+    try:
+        from src.aria2_downloader import kill_orphan_aria2
+
+        kill_orphan_aria2(UPDATE_DIR)
+    except Exception as e:
+        log_daemon(f"清理残留 aria2 失败: {type(e).__name__}: {e}")
+
     # 启动后 10 分钟内已经检查过就不再重复检查（避免频繁开关程序刷接口）。
     # 同样只置 force_check、不清零时间戳，否则界面会短暂显示"还没有检查过更新"。
     with _state_lock:
@@ -1601,14 +1900,26 @@ def daemon_run() -> int:
             st["force_check"] = True
         save_state(st)
 
+    # 快捷方式：优先用目录监听（被删即刻补），监听不可用才退回 30 秒轮询。
+    watcher_ok = _start_shortcut_watcher()
+    try:
+        ensure_shortcuts()  # 启动先确保一次
+    except Exception:
+        pass
+
     _last_cleanup = 0.0
     _morning_periods_last_check = 0.0
+    _shortcuts_last_check = time.time()
     try:
         while True:
             try:
-                ensure_shortcuts()
-
                 now = time.time()
+                # 有监听时不再每轮轮询（低频兜底即可）；没有则维持原来的 30 秒。
+                shortcut_interval = 300.0 if watcher_ok else 30.0
+                if now - _shortcuts_last_check >= shortcut_interval:
+                    _shortcuts_last_check = now
+                    ensure_shortcuts()
+
                 if now - _last_cleanup > 3600:
                     _last_cleanup = now
                     keep = ""
@@ -1727,6 +2038,8 @@ __all__ = [
     "start_update_installer", "exit_for_update",
     "apply_launcher_update_if_pending", "apply_launcher_update_now",
     "apply_launcher_update_idle", "cleanup_stale_downloads",
+    "begin_beta_trial", "end_beta_trial", "effective_beta_channel", "beta_trial_setting",
+    "pick_working_mirrors",
     "daemon_run", "signal_daemon_quit", "set_notifier", "notify_tray",
     "ensure_shortcuts", "disk_free_gb", "open_folder", "data_dir",
     "launcher_install_exists", "get_file_version", "get_installed_version",

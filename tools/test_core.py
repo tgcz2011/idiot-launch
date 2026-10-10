@@ -531,6 +531,72 @@ class TestUpdateChannelSelection(unittest.TestCase):
         self.assertEqual(info["version"], "3.0.1.0")
 
 
+class TestBetaTrialChannel(unittest.TestCase):
+    """β 版试用开关如何决定"该查哪个渠道"。
+
+    产品规则：
+      * 开启（True）：即使当前是正式版，也按 β 渠道查 → 能被拉到 β；
+      * 关闭（False）：即使当前正跑着 β 版，也只查正式版 → "停查 β"，
+        并自然等到一个 ≥ 当前主版本的正式版出现才升级过去；
+      * 没选过（None）：按构建版本决定（beta 版自带 β 行为）。
+    """
+
+    def setUp(self):
+        import src.core as core
+
+        self.core = core
+        self._orig_version = core.LAUNCHER_VERSION
+        self._orig_http = core._http_json
+        self._orig_settings = core.load_settings
+        self.urls = []
+        self._ROWS = [
+            {"version": "3.0.0.0", "download_url": "stable", "sha256": "S"},
+            {"version": "3.0.1.0-beta1", "download_url": "beta1", "sha256": "B"},
+        ]
+
+    def tearDown(self):
+        self.core.LAUNCHER_VERSION = self._orig_version
+        self.core._http_json = self._orig_http
+        self.core.load_settings = self._orig_settings
+
+    def _stub(self, beta_trial):
+        def fake_http(url, timeout=10, headers=None, label=""):
+            self.urls.append(url)
+            if "latest_version" in url:
+                return self._ROWS
+            return None
+
+        self.core._http_json = fake_http
+        cfg = dict(self.core.DEFAULT_SETTINGS)
+        cfg["beta_trial"] = beta_trial
+        self.core.load_settings = lambda: dict(cfg)
+
+    def test_trial_on_stable_build_sees_beta(self):
+        self.core.LAUNCHER_VERSION = "3.0.0.0"  # 正式版
+        self._stub(beta_trial=True)             # 但用户开了 β 试用
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNotNone(info, "开了 β 试用就该能看到 β 版")
+        self.assertEqual(info["version"], "3.0.1.0-beta1")
+        self.assertNotIn("channel=eq.stable", self.urls[0])
+
+    def test_trial_off_on_beta_build_not_pulled_to_newer_beta(self):
+        self.core.LAUNCHER_VERSION = "3.0.0.0-beta40"  # 正跑着 beta
+        self._stub(beta_trial=False)                   # 用户关了试用
+        info = self.core.get_latest_launcher_info()
+        # 关掉后不该再被拉去 3.0.1.0-beta1；同号正式版 3.0.0.0 >= 当前主版本 → 升级过去
+        self.assertIsNotNone(info, "关掉试用后应等到同号正式版并升级过去")
+        self.assertEqual(info["version"], "3.0.0.0")
+        self.assertIn("channel=eq.stable", self.urls[0])
+
+    def test_trial_unset_follows_build_version(self):
+        self.core.LAUNCHER_VERSION = "3.0.0.0-beta40"
+        self._stub(beta_trial=None)  # 没选过
+        info = self.core.get_latest_launcher_info()
+        self.assertIsNotNone(info)
+        self.assertEqual(info["version"], "3.0.1.0-beta1",
+                         "没设置过的 beta 版应保留原来的 β 行为")
+
+
 class TestProcessKillSafety(unittest.TestCase):
     """回归：结束进程前必须确认映像名，绝不能误杀（PID 会被复用）。"""
 

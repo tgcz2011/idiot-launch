@@ -216,6 +216,61 @@ IdiotLaunchBackend.exe --server（后端进程）
 - 排查线上"查不到更新"的第一站永远是 `data\daemon.log`：
   现在每次失败都会写清是哪个渠道、什么错。
 
+### 更新链路的健壮性补丁与 β 版试用（v3.0.0.0 后续）
+
+**1. 装完有看门狗了（之前没有）**
+`start_update_installer` 现在返回安装包 pid，`apply_launcher_update_if_pending` 会调
+`_spawn_relaunch_watchdog(pid)` 起一个**独立的 powershell.exe**：等安装包退出后，
+若程序没在跑就把 `D:\IdiotLaunch\IdiotLaunch.exe` 拉起来。
+为什么必须用 powershell 而不是自己守：安装包会 `taskkill /F /IM IdiotLaunchBackend.exe`，
+任何用这个 exe 跑的守卫都会被一起杀掉。日志落在 `data\update_watchdog.log`。
+覆盖三种情况：装成功且安装包已重启（看门狗什么都不做）、装成功但 [Code] 没重启（看门狗拉起）、
+装失败/被拦（看门狗把旧程序拉回来，至少不让"点一下更新软件就没了"）。
+
+**2. aria2c 不再变孤儿**
+后端退出走 `os._exit(0)`，会绕过 `download_with_aria2` 的 `finally`，
+以前会留下继续下载的孤儿 aria2c。现在 `src/aria2_downloader.py` 用
+**kill-on-job-close 的 Job Object** 把 aria2c 绑到本进程：本进程一死，Windows 自动带走它。
+另外把 pid 写到 `data\aria2.pid`，daemon 启动时 `kill_orphan_aria2` 兜底清理
+（只杀映像名确实是 `aria2c.exe` 的那个 pid，不按名字盲杀）。
+
+**3. 下载前先探活镜像**
+`DOWNLOAD_MIRRORS` 只是候选池；`download_installer` 先 `pick_working_mirrors(url)`
+并发（`Range: bytes=0-0` 只取 1 字节）探测每个前缀，只把**当前真的连得上**的、
+按延迟排序的源交给 aria2。死源（ghproxy.com / ghps.cc 这类早已停服的）不再拖慢首包。
+全探不通才回退整表，最后仍有 SHA-256 兜底。
+
+**4. β 版试用开关（`beta_trial`）**
+`DEFAULT_SETTINGS` 里的 `beta_trial` 是三态：`None` 未选（按构建版本）、`True`、`False`。
+渠道由 `effective_beta_channel()` 决定，`get_latest_launcher_info` 用它取代原来的
+`is_beta_version(LAUNCHER_VERSION)`。副作用在后端 `/api/settings` 里处理：
+- 开（`begin_beta_trial`）：置 `force_check` + `auto_install_ready`，
+  立即检查、下载好就装（`apply_launcher_update_if_pending` 见到 `auto_install_ready`
+  就跳过空闲判定直接装，显示安装进度条）。
+- 关（`end_beta_trial`）：停查 β、丢掉待装的 β 包，并立即检查一次。
+  因为 `compare_versions` 里同号正式版 > 预发布版，它会自然等到一个 ≥ 当前主版本的
+  正式版出现才升级过去，不会退回更老的正式版。
+回归测试：`tools/test_core.py::TestBetaTrialChannel`。
+
+### 3.0.1.0-beta1 追加的健壮性 / 体验补丁
+
+- **单实例改用命名互斥量**（`flutter_app/lib/main.dart`）：原来用 `instance.pid` + `OpenProcess`
+  判"是否已有实例"，PID 会被系统复用 → 误判。现在用 `CreateMutexW("Global\IdiotLaunch_SingleInstance")`
+  + `GetLastError()==183`，更可靠；互斥量句柄持有到进程结束。`instance.pid` 仍然写（后端结束前端时要用）。
+  互斥量创建失败时回退老的 PID 逻辑。
+- **快捷方式改为目录监听**（`src/core.py::_start_shortcut_watcher` / `_watch_one_dir`）：
+  用 `ReadDirectoryChangesW` 监听 D 盘根目录和公共桌面，被删即刻补（对抗冰点还原更及时），
+  不再每 30 秒轮询。监听启动失败会自动退回原来的 30 秒轮询；有监听时保留 5 分钟低频兜底。
+- **下载不再误判为"已中断"**（`src/core.py::get_download_state`）：只要下载线程还活着就不判死。
+  系统休眠 / 主循环卡顿会让 `updated_at` 长时间不动，之前会被误报。
+- **前端单次轮询 + 变更才重建**（`flutter_app/lib/main.dart::_pollStatus`）：`/api/status` 已含更新字段
+  （补了 `pending_version`），不再每 5 秒串行打两个接口；状态没变化就不 `setState`（整页重画）。
+- **界面更"活"**：`theme.dart` 支持传入种子色，`main.dart` 读 Windows 强调色
+  （`HKCU\...\DWM\ColorizationColor`）当种子；`BigButton` 重做（悬停抬起 / 按下回缩 / 彩色投影 / 水波纹）；
+  侧边导航改为自绘（选中项有会动的圆角药丸背景，参考 FlClash）；切页与更新横幅加了过渡动画。
+  对比度回归测试（`contrast_test.dart`）不受影响。
+- `IdiotLaunch.iss`：`SolidCompression=yes`（安装包更小）。
+
 ## 五、目录与关键文件
 
 ```

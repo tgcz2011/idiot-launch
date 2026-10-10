@@ -29,7 +29,9 @@ from src.core import (  # noqa: E402
     LAUNCHER_VERSION,
     UPDATE_DIR,
     apply_launcher_update_now,
+    begin_beta_trial,
     compare_versions,
+    end_beta_trial,
     exit_for_update,
     get_daemon_status,
     get_morning_students,
@@ -170,6 +172,7 @@ class ApiHandler(BaseHTTPRequestHandler):
                 "daemon_detail": daemon.get("detail", ""),
                 "daemon_progress": float(daemon.get("progress", 0) or 0),
                 "pending_update": info["version"] if info else None,
+                "pending_version": info["version"] if info else None,
                 "pending_ready": bool(info),
                 "has_update": bool(info),
                 **self._download_fields(),
@@ -347,7 +350,22 @@ class ApiHandler(BaseHTTPRequestHandler):
             threading.Thread(target=_apply, daemon=True).start()
 
         elif path == "/api/settings":
+            before = load_settings()
             saved = save_settings(body)
+            # β 版试用开关的副作用（后端做，前端只负责翻开关）：
+            #   开 → 立即检查 + 下载好就装（升级到 β）；
+            #   关 → 停查 β、丢掉待装的 β 包，等下一个正式版自动升级过去。
+            if "beta_trial" in body:
+                old = before.get("beta_trial")
+                new = saved.get("beta_trial")
+                if old != new:
+                    try:
+                        if new is True:
+                            begin_beta_trial()
+                        elif new is False:
+                            end_beta_trial()
+                    except Exception as e:
+                        log_daemon(f"处理 β 试用开关失败: {type(e).__name__}: {e}")
             self._send_json({"success": True, "settings": saved})
 
         elif path == "/api/notify":

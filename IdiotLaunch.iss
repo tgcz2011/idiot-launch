@@ -8,7 +8,7 @@
 ;           临时文件、壁纸自启注册表项、历史遗留目录）。
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "3.0.0.0"
+#define MyAppVersion "3.0.1.0-beta1"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 #define MyBackendExeName "IdiotLaunchBackend.exe"
@@ -32,7 +32,7 @@ DisableStartupPrompt=yes
 OutputDir=dist
 OutputBaseFilename=IdiotLaunch_Setup_{#MyAppVersion}
 Compression=lzma2/max
-SolidCompression=no
+SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 CloseApplications=yes
