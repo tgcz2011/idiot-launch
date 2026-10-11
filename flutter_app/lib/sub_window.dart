@@ -36,6 +36,29 @@ import 'app_log.dart';
 
 final ffi.DynamicLibrary _user32 = ffi.DynamicLibrary.open('user32.dll');
 final ffi.DynamicLibrary _kernel32 = ffi.DynamicLibrary.open('kernel32.dll');
+final ffi.DynamicLibrary _dwmapi = ffi.DynamicLibrary.open('dwmapi.dll');
+
+// ---- DWM：全屏时关掉系统给窗口画的边框 / 圆角 / 阴影 ----
+typedef _DwmSetWindowAttributeNative = ffi.Int32 Function(
+  ffi.IntPtr hwnd,
+  ffi.Uint32 attr,
+  ffi.Pointer<ffi.Void> value,
+  ffi.Uint32 size,
+);
+typedef _DwmSetWindowAttributeDart = int Function(
+  int hwnd,
+  int attr,
+  ffi.Pointer<ffi.Void> value,
+  int size,
+);
+final _DwmSetWindowAttributeDart _dwmSetWindowAttribute = _dwmapi
+    .lookupFunction<_DwmSetWindowAttributeNative, _DwmSetWindowAttributeDart>(
+      'DwmSetWindowAttribute',
+    );
+
+const int _dwmwaNcRenderingPolicy = 2; // DWMNCRP_*
+const int _dwmwaWindowCornerPreference = 33; // Win11：圆角
+const int _dwmwaBorderColor = 34; // Win11：1px 边框
 
 // ---- user32 / kernel32 绑定 -------------------------------------------------
 
@@ -237,6 +260,9 @@ const int _wsCaption = 0x00C00000;
 const int _wsSysMenu = 0x00080000;
 const int _wsMinimizeBox = 0x00020000;
 const int _wsMaximizeBox = 0x00010000;
+const int _wsThickFrame = 0x00040000;
+const int _wsBorder = 0x00800000;
+const int _wsDlgFrame = 0x00400000;
 
 const int _swpNoSize = 0x0001;
 const int _swpNoMove = 0x0002;
@@ -322,6 +348,9 @@ class SubWindow {
   bool _isTopMost = false;
   bool _isFullscreen = false;
   bool _shown = false;
+
+  /// 进入全屏前的窗口样式（退出时还原）
+  int _preFullscreenStyle = 0;
 
   int _widthPx = 360;
   int _heightPx = 440;
@@ -716,11 +745,61 @@ class SubWindow {
     return _isTopMost;
   }
 
-  /// 全屏：铺满当前显示器（含任务栏区域），再次调用还原。
+  /// 进入/退出全屏时切换"无边框"外观。
   ///
-  /// 关键：进入时要把窗口设为 **HWND_TOPMOST**。任务栏本身也是 topmost，
-  /// 普通窗口即使铺满 rcMonitor 也会被任务栏压在下面 —— 那就成了"伪全屏"
-  /// （看起来跟最大化没区别）。置顶之后才能真正盖住任务栏（B 站全屏就是这效果）。
+  /// 光置顶 + 铺满还不够：窗口本身还带着系统画的**粗调边框（WS_THICKFRAME）**，
+  /// 以及 Win10/11 由 DWM 绘制的**边框、圆角、阴影** —— 铺满时最外那一圈就会
+  /// 露出来（用户看到的"还是没完全覆盖"）。这里去掉这些样式位，并关掉 DWM 的
+  /// 非客户区绘制/圆角/边框，客户区才能和屏幕边缘严丝合缝。
+  void _setFullscreenChrome(bool on) {
+    if (_hwnd == 0) return;
+    try {
+      if (on) {
+        _preFullscreenStyle = _getWindowLong(_hwnd, _gwlStyle);
+        final s =
+            _preFullscreenStyle &
+            ~(_wsCaption |
+                _wsSysMenu |
+                _wsMinimizeBox |
+                _wsMaximizeBox |
+                _wsThickFrame |
+                _wsBorder |
+                _wsDlgFrame);
+        _setWindowLong(_hwnd, _gwlStyle, s);
+        _dwmSetInt(_dwmwaNcRenderingPolicy, 1); // DWMNCRP_DISABLED
+        _dwmSetInt(_dwmwaWindowCornerPreference, 1); // DONOTROUND（Win11）
+        _dwmSetInt(_dwmwaBorderColor, 0xFFFFFFFE); // DWMWA_COLOR_NONE（Win11）
+      } else {
+        if (_preFullscreenStyle != 0) {
+          _setWindowLong(_hwnd, _gwlStyle, _preFullscreenStyle);
+          _preFullscreenStyle = 0;
+        }
+        _dwmSetInt(_dwmwaNcRenderingPolicy, 0); // DWMNCRP_USEWINDOWSTYLE
+      }
+    } catch (e) {
+      AppLog.warn('全屏边框切换失败: $e');
+    }
+  }
+
+  bool _dwmSetInt(int attr, int value) {
+    final p = calloc<ffi.Int32>();
+    try {
+      p.value = value;
+      return _dwmSetWindowAttribute(
+            _hwnd,
+            attr,
+            p.cast<ffi.Void>(),
+            ffi.sizeOf<ffi.Int32>(),
+          ) ==
+          0;
+    } catch (_) {
+      return false;
+    } finally {
+      calloc.free(p);
+    }
+  }
+
+  /// 全屏：铺满当前显示器（含任务栏），再次调用还原。
   bool toggleFullscreen() {
     if (_hwnd == 0) return _isFullscreen;
     if (!_isFullscreen) {
@@ -731,6 +810,8 @@ class SubWindow {
         if (mon == 0 || _getMonitorInfo(mon, mi) == 0) return false;
         final m = mi.ref.rcMonitor;
         _isFullscreen = true;
+        // 先去边框（含 DWM），再铺满 + 置顶，最外一圈才盖得住。
+        _setFullscreenChrome(true);
         _setWindowPos(
           _hwnd,
           _hwndTopMost,
@@ -745,6 +826,7 @@ class SubWindow {
       }
     } else {
       _isFullscreen = false;
+      _setFullscreenChrome(false);
       _applyFrame();
       // 退出全屏：恢复 z 序（开了"置顶"就保持置顶，否则还原为普通层级）
       _setWindowPos(
@@ -754,7 +836,11 @@ class SubWindow {
         0,
         0,
         0,
-        _swpAsyncWindowPos | _swpNoMove | _swpNoSize | _swpNoActivate,
+        _swpAsyncWindowPos |
+            _swpNoMove |
+            _swpNoSize |
+            _swpFrameChanged |
+            _swpNoActivate,
       );
     }
     return _isFullscreen;

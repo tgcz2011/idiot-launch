@@ -8,7 +8,7 @@
 ;           登录信息），选"是"就保留 data 目录。静默卸载（/SILENT）默认不保留。
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "3.0.1.0-beta8"
+#define MyAppVersion "3.0.1.0-beta9"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 #define MyBackendExeName "IdiotLaunchBackend.exe"

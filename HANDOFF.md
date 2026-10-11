@@ -365,6 +365,15 @@ IdiotLaunchBackend.exe --server（后端进程）
 - `SubWindow.reassertFullscreen()`：进入全屏 350ms 后再确认一次"置顶 + 铺满"，
   防止某些桌面在窗口失焦后把任务栏重新压上来（第一次进入时偶发没盖住任务栏）。
 
+### 全屏去掉系统边框（真正铺满到边缘）
+
+- 之前"置顶 + 铺满 rcMonitor"还差最后一步：窗口本身带着 **WS_THICKFRAME**（可调
+  边框）和 **DWM 绘制的边框 / 圆角 / 阴影**，铺满时最外那一圈会露出来。
+- 现在 `SubWindow._setFullscreenChrome(true)` 在进入全屏时：去掉 `WS_THICKFRAME |
+  WS_BORDER | WS_DLGFRAME` 等样式位，并用 `DwmSetWindowAttribute` 关掉非客户区
+  绘制（`DWMNCRP_DISABLED`）、Win11 圆角（`DONOTROUND`）、1px 边框（`COLOR_NONE`）；
+  退出全屏时还原。新增 `dwmapi.dll` 的 `DwmSetWindowAttribute` 绑定。
+
 ## 五、目录与关键文件
 
 ```
