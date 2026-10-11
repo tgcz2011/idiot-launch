@@ -760,6 +760,30 @@ class SubWindow {
     return _isFullscreen;
   }
 
+  /// 重新确认全屏（有些桌面会在窗口失焦后把任务栏重新压上来）。
+  void reassertFullscreen() {
+    if (_hwnd == 0 || !_isFullscreen) return;
+    final mi = calloc<_MonitorInfo>();
+    try {
+      mi.ref.cbSize = ffi.sizeOf<_MonitorInfo>();
+      final mon = _monitorFromWindow(_hwnd, _monitorDefaultToNearest);
+      if (mon == 0 || _getMonitorInfo(mon, mi) == 0) return;
+      final m = mi.ref.rcMonitor;
+      // 不带 NOACTIVATE：把窗口重新提到最前，压住任务栏。
+      _setWindowPos(
+        _hwnd,
+        _hwndTopMost,
+        m.left,
+        m.top,
+        m.right - m.left,
+        m.bottom - m.top,
+        _swpAsyncWindowPos | _swpFrameChanged,
+      );
+    } finally {
+      calloc.free(mi);
+    }
+  }
+
   void dispose() {
     _locateTimer?.cancel();
     _locateTimer = null;

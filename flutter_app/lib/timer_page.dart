@@ -259,70 +259,63 @@ class _TimerPageState extends State<TimerPage> {
 
   /// 完全全屏：只剩"时间 + 操作 + 退出全屏"（Esc 也能退），字随窗口放大铺满。
   Widget _buildFullscreen(ColorScheme scheme) {
-    // 真全屏（窗口已铺满 + 置顶，能盖住任务栏）：
-    // 保留最上方那几个操作键（置顶/全屏/最小化/关闭），其余留给"大号时间 + 操作"。
-    return Column(
+    // 纯全屏：不留任何窗口栏，只给"大号时间 + 操作键 + 退出全屏键"（Esc 也能退）。
+    return Stack(
       children: <Widget>[
-        _WindowBar(
-          title: '倒计时',
-          isTopMost: _win.isTopMost,
-          isFullscreen: _fullscreen,
-          onToggleTopMost: () => setState(() => _win.toggleTopMost()),
-          onToggleFullscreen: _toggleFullscreen,
-          onMinimize: _win.minimize,
-          onClose: _win.close,
-          dragStart: _win.beginDrag,
-          dragUpdate: _win.updateDrag,
-          onDragEnd: _win.endDrag,
-        ),
-        Expanded(
-          child: Stack(
-            children: <Widget>[
-              Positioned.fill(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(36, 32, 36, 108),
-                  child: Center(
-                    child: _phase == _Phase.idle
-                        ? _buildPicker(scheme)
-                        : FittedBox(
-                            fit: BoxFit.contain,
-                            child: Text(
-                              formatDuration(_display),
-                              style: TextStyle(
-                                fontSize: 520,
-                                fontWeight: FontWeight.w800,
-                                color: _timeColor(scheme),
-                                fontFeatures: const <FontFeature>[
-                                  FontFeature.tabularFigures(),
-                                ],
-                              ),
-                            ),
-                          ),
-                  ),
-                ),
-              ),
-              if (_audioWarning != null)
-                Positioned(
-                  bottom: 96,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: Text(
-                      _audioWarning!,
-                      style: TextStyle(fontSize: 16, color: scheme.error),
+        Positioned.fill(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(40, 40, 40, 124),
+            child: Center(
+              child: _phase == _Phase.idle
+                  ? _buildPicker(scheme)
+                  : FittedBox(
+                      fit: BoxFit.contain,
+                      child: Text(
+                        formatDuration(_display),
+                        style: TextStyle(
+                          fontSize: 520,
+                          fontWeight: FontWeight.w800,
+                          color: _timeColor(scheme),
+                          fontFeatures: const <FontFeature>[
+                            FontFeature.tabularFigures(),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-              Positioned(
-                bottom: 24,
-                left: 0,
-                right: 0,
-                child: _buildActions(scheme),
-              ),
-            ],
+            ),
           ),
         ),
+        Positioned(top: 16, right: 16, child: _exitFullscreenButton()),
+        if (_audioWarning != null)
+          Positioned(
+            bottom: 112,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Text(
+                _audioWarning!,
+                style: TextStyle(fontSize: 16, color: scheme.error),
+              ),
+            ),
+          ),
+        Positioned(bottom: 28, left: 0, right: 0, child: _buildActions(scheme)),
       ],
+    );
+  }
+
+  Widget _exitFullscreenButton() {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: '退出全屏（Esc）',
+      child: Material(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.75),
+        shape: const CircleBorder(),
+        child: IconButton(
+          icon: const Icon(Icons.fullscreen_exit),
+          iconSize: 30,
+          onPressed: _exitFullscreen,
+        ),
+      ),
     );
   }
 
@@ -331,6 +324,10 @@ class _TimerPageState extends State<TimerPage> {
     setState(() => _fullscreen = fs);
     if (fs) {
       ToolFullscreenGuard.acquire();
+      // 有些桌面在窗口失焦后会把任务栏重新压上来，稍后再确认一次全屏置顶。
+      Future<void>.delayed(const Duration(milliseconds: 350), () {
+        _win.reassertFullscreen();
+      });
     } else {
       ToolFullscreenGuard.release();
     }
@@ -712,91 +709,91 @@ class _StopwatchPageState extends State<StopwatchPage> {
   /// 真全屏（窗口已铺满 + 置顶，能盖住任务栏）：保留最上方那几个操作键，
   /// 中间大号时间，底部操作 +（有记次时）一条横向记次。
   Widget _buildFullscreen(ColorScheme scheme) {
-    return Column(
+    // 纯全屏：不留窗口栏，只给"大号时间 + 操作键 +（有记次时）记次 + 退出全屏键"。
+    return Stack(
       children: <Widget>[
-        _WindowBar(
-          title: '秒表',
-          isTopMost: _win.isTopMost,
-          isFullscreen: _fullscreen,
-          onToggleTopMost: () => setState(() => _win.toggleTopMost()),
-          onToggleFullscreen: _toggleFullscreen,
-          onMinimize: _win.minimize,
-          onClose: _win.close,
-          dragStart: _win.beginDrag,
-          dragUpdate: _win.updateDrag,
-          onDragEnd: _win.endDrag,
-        ),
-        Expanded(
-          child: Stack(
-            children: <Widget>[
-              Positioned.fill(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(36, 32, 36, 160),
-                  child: Center(
-                    child: FittedBox(
-                      fit: BoxFit.contain,
-                      child: Text(
-                        formatStopwatch(_elapsedMs),
-                        style: TextStyle(
-                          fontSize: 520,
-                          fontWeight: FontWeight.w800,
-                          color: scheme.onSurface,
-                          fontFeatures: const <FontFeature>[
-                            FontFeature.tabularFigures(),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              if (_laps.isNotEmpty)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 100,
-                  child: SizedBox(height: 66, child: _lapsRow(scheme)),
-                ),
-              Positioned(
-                bottom: 24,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: <Widget>[
-                      if (!_sw.isRunning)
-                        FilledButton.icon(
-                          onPressed: _start,
-                          icon: const Icon(Icons.play_arrow, size: 24),
-                          label: const Text('开始'),
-                        )
-                      else
-                        FilledButton.icon(
-                          onPressed: _pause,
-                          icon: const Icon(Icons.pause, size: 24),
-                          label: const Text('暂停'),
-                        ),
-                      const SizedBox(width: 10),
-                      IconButton.filledTonal(
-                        onPressed: _sw.isRunning ? _lap : null,
-                        icon: const Icon(Icons.flag, size: 24),
-                        tooltip: '记次',
-                      ),
-                      const SizedBox(width: 10),
-                      IconButton.filledTonal(
-                        onPressed: _reset,
-                        icon: const Icon(Icons.refresh, size: 24),
-                        tooltip: '重置',
-                      ),
+        Positioned.fill(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(40, 40, 40, 160),
+            child: Center(
+              child: FittedBox(
+                fit: BoxFit.contain,
+                child: Text(
+                  formatStopwatch(_elapsedMs),
+                  style: TextStyle(
+                    fontSize: 520,
+                    fontWeight: FontWeight.w800,
+                    color: scheme.onSurface,
+                    fontFeatures: const <FontFeature>[
+                      FontFeature.tabularFigures(),
                     ],
                   ),
                 ),
               ),
-            ],
+            ),
           ),
         ),
+        if (_laps.isNotEmpty)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 100,
+            child: SizedBox(height: 66, child: _lapsRow(scheme)),
+          ),
+        Positioned(
+          bottom: 28,
+          left: 0,
+          right: 0,
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (!_sw.isRunning)
+                  FilledButton.icon(
+                    onPressed: _start,
+                    icon: const Icon(Icons.play_arrow, size: 24),
+                    label: const Text('开始'),
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed: _pause,
+                    icon: const Icon(Icons.pause, size: 24),
+                    label: const Text('暂停'),
+                  ),
+                const SizedBox(width: 10),
+                IconButton.filledTonal(
+                  onPressed: _sw.isRunning ? _lap : null,
+                  icon: const Icon(Icons.flag, size: 24),
+                  tooltip: '记次',
+                ),
+                const SizedBox(width: 10),
+                IconButton.filledTonal(
+                  onPressed: _reset,
+                  icon: const Icon(Icons.refresh, size: 24),
+                  tooltip: '重置',
+                ),
+              ],
+            ),
+          ),
+        ),
+        Positioned(top: 16, right: 16, child: _exitFullscreenButton()),
       ],
+    );
+  }
+
+  Widget _exitFullscreenButton() {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: '退出全屏（Esc）',
+      child: Material(
+        color: scheme.surfaceContainerHighest.withValues(alpha: 0.75),
+        shape: const CircleBorder(),
+        child: IconButton(
+          icon: const Icon(Icons.fullscreen_exit),
+          iconSize: 30,
+          onPressed: _exitFullscreen,
+        ),
+      ),
     );
   }
 
@@ -805,6 +802,9 @@ class _StopwatchPageState extends State<StopwatchPage> {
     setState(() => _fullscreen = fs);
     if (fs) {
       ToolFullscreenGuard.acquire();
+      Future<void>.delayed(const Duration(milliseconds: 350), () {
+        _win.reassertFullscreen();
+      });
     } else {
       ToolFullscreenGuard.release();
     }
