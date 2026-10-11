@@ -8,7 +8,7 @@
 ;           登录信息），选"是"就保留 data 目录。静默卸载（/SILENT）默认不保留。
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "3.0.1.0-beta6"
+#define MyAppVersion "3.0.1.0-beta7"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 #define MyBackendExeName "IdiotLaunchBackend.exe"
@@ -265,8 +265,8 @@ begin
     if not UninstallSilent then
     begin
       if MsgBox('卸载前，是否保留你的设置和数据？' + #13#10 + #13#10 +
-                '包含：主题/偏好设置、日志、倒计时（壁纸）配置、早晚读登录信息。' +
-                #13#10 + '「是」= 保留（以后重装可接着用）；「否」= 一并删除。',
+                '包含：主题/偏好设置、日志、倒计时（壁纸）配置、早晚读登录信息。' + #13#10 +
+                '「是」= 保留（以后重装可接着用）；「否」= 一并删除。',
                 mbConfirmation, MB_YESNO) = IDYES then
         KeepData := True;
     end;
