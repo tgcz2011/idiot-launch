@@ -342,6 +342,22 @@ IdiotLaunchBackend.exe --server（后端进程）
   最小尺寸降到 640×460；早晚读窗口（`morning_browser`）同样按屏幕收敛并居中。
   避免小屏 / 开了缩放时窗口比屏幕还高、标题栏和关闭键点不到。
 
+### 卸载保留数据 + 更新期间"正在更新"提示（安装脚本）
+
+- **卸载保留数据**：`CurUninstallStepChanged` 在 `usUninstall` 先弹 `MsgBox`
+  问"是否保留设置和数据"，选"是"则 `usPostUninstall` 只删程序文件、保留
+  `{app}\data`。相应地 `[UninstallDelete]` **不再声明式删 `{app}`**（它做不了
+  条件判断），改由 [Code] 里的 `KeepData` 决定。静默卸载（`UninstallSilent`）
+  不问，默认不保留（保持旧行为）。
+- **更新期间点快捷方式 → "正在更新"**：静默自动更新（`IsAutoUpdate`）时，
+  安装包在 `PrepareToInstall` **最前面**把 `D:\傻瓜启动器.lnk` 与桌面快捷方式
+  临时指向 `%TEMP%\idiot_launch_updating.vbs`（图标/名字不变，看着一模一样）；
+  用户在更新期间点快捷方式会弹出"傻瓜启动器正在更新"的 Windows 提示，
+  而不是去启动一个正被替换的 exe（那既可能报错、也会锁住待替换文件让更新失败）。
+  `CurStepChanged(ssPostInstall)` 里把快捷方式换回 exe 并删掉临时脚本。
+  ⚠️ 若安装中途失败、没走到 PostInstall，快捷方式可能仍指向脚本 —— 重跑一次
+  安装包即可恢复；安装包 Pascal 需由 CI 编译验证（本地无 ISCC）。
+
 ## 五、目录与关键文件
 
 ```

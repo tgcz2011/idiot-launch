@@ -4,11 +4,11 @@
 ;   * 强制安装到 D:\IdiotLaunch：学校电脑 C 盘有冰点还原，装 C 盘重启就没了。
 ;   * 不显示目录页/组件页/完成页：老师只需要双击，不需要做技术选择。
 ;
-; 卸载策略：卸载即清除全部内容（程序、后端、data 数据、快捷方式、
-;           临时文件、壁纸自启注册表项、历史遗留目录）。
+; 卸载策略：默认清除全部内容；但会先问用户"是否保留数据"（设置/日志/倒计时配置/
+;           登录信息），选"是"就保留 data 目录。静默卸载（/SILENT）默认不保留。
 
 #define MyAppName "傻瓜启动器"
-#define MyAppVersion "3.0.1.0-beta5"
+#define MyAppVersion "3.0.1.0-beta6"
 #define MyAppPublisher "tgcz2011"
 #define MyAppExeName "IdiotLaunch.exe"
 #define MyBackendExeName "IdiotLaunchBackend.exe"
@@ -66,8 +66,8 @@ Source: "dist\backend\*"; DestDir: "{app}\backend"; Flags: ignoreversion recurse
 Filename: "{app}\{#MyAppExeName}"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; 卸载后清除全部内容与数据
-Type: filesandordirs; Name: "{app}"
+; {app} 目录由 [Code] 的 CurUninstallStepChanged 决定是否删除（要支持"保留数据"，
+; 声明式的 [UninstallDelete] 做不到条件判断），这里只放无论如何都要清掉的项。
 Type: filesandordirs; Name: "D:\IdiotLaunch\CountdownDesktop"
 Type: files; Name: "D:\傻瓜启动器.lnk"
 Type: files; Name: "{commondesktop}\傻瓜启动器.lnk"
@@ -75,6 +75,10 @@ Type: files; Name: "{userdesktop}\傻瓜启动器.lnk"
 Type: filesandordirs; Name: "{userappdata}\Microsoft\Windows\Start Menu\Programs\{#MyAppName}"
 
 [Code]
+var
+  KeepData: Boolean;
+  UpdatingVbs: String;
+
 function IsAutoUpdate: Boolean;
 var
   Tail: String;
@@ -82,6 +86,51 @@ begin
   { 自动更新时后端会带 /AutoUpdate=1 启动安装包，装完由我们把程序拉起来 }
   Tail := Uppercase(GetCmdTail);
   Result := Pos('/AUTOUPDATE=1', Tail) > 0;
+end;
+
+procedure SetShortcutToExe(const LnkPath: String);
+var
+  WshShell: Variant;
+  Shortcut: Variant;
+begin
+  WshShell := CreateOleObject('WScript.Shell');
+  Shortcut := WshShell.CreateShortcut(LnkPath);
+  Shortcut.TargetPath := ExpandConstant('{app}\{#MyAppExeName}');
+  Shortcut.Arguments := '';
+  Shortcut.WorkingDirectory := ExpandConstant('{app}');
+  Shortcut.IconLocation := ExpandConstant('{app}\{#MyAppExeName}') + ',0';
+  Shortcut.Description := '教室倒计时一键启动器';
+  Shortcut.Save;
+end;
+
+procedure SetShortcutToUpdating(const LnkPath: String);
+var
+  WshShell: Variant;
+  Shortcut: Variant;
+begin
+  if not FileExists(LnkPath) then
+    Exit;
+  WshShell := CreateOleObject('WScript.Shell');
+  Shortcut := WshShell.CreateShortcut(LnkPath);
+  { 目标换成 wscript 跑"正在更新"脚本，但图标/名字不变，看起来跟原来一模一样 }
+  Shortcut.TargetPath := ExpandConstant('{sys}\wscript.exe');
+  Shortcut.Arguments := '"' + UpdatingVbs + '"';
+  Shortcut.WorkingDirectory := ExpandConstant('{app}');
+  Shortcut.IconLocation := ExpandConstant('{app}\{#MyAppExeName}') + ',0';
+  Shortcut.Description := '教室倒计时一键启动器';
+  Shortcut.Save;
+end;
+
+procedure CreateUpdatingVbs;
+var
+  S: String;
+begin
+  UpdatingVbs := ExpandConstant('{%TEMP}') + '\idiot_launch_updating.vbs';
+  S := 'MsgBox "傻瓜启动器正在更新，请稍候……" & vbCrLf & vbCrLf & ' +
+       '"更新完成后会自动打开，期间请尽量不要关闭电脑。", ' +
+       'vbInformation, "傻瓜启动器"';
+  { ANSI（中文系统即 GBK）：wscript 按系统代码页读 .vbs，UTF-8 会乱码 }
+  SaveStringToFile(UpdatingVbs, S, False);
 end;
 
 procedure KillAppProcesses;
@@ -124,6 +173,19 @@ var
   ResultCode: Integer;
 begin
   Result := '';
+  { 0. 静默自动更新：把快捷方式临时指向"正在更新"脚本（外观不变）。
+    这样用户在更新期间再点快捷方式，看到的是"正在更新"，而不是去启动一个
+    正被替换的 exe —— 那既可能报错，也会把待替换的文件锁住让更新失败。 }
+  if IsAutoUpdate then
+  begin
+    try
+      CreateUpdatingVbs;
+      SetShortcutToUpdating('D:\傻瓜启动器.lnk');
+      SetShortcutToUpdating(ExpandConstant('{commondesktop}\傻瓜启动器.lnk'));
+      SetShortcutToUpdating(ExpandConstant('{userdesktop}\傻瓜启动器.lnk'));
+    except
+    end;
+  end;
   { 1. 先请后端优雅退出（会顺带关掉壁纸、悬浮球和早晚读浏览器） }
   if FileExists(ExpandConstant('{app}\backend\{#MyBackendExeName}')) then
     Exec(ExpandConstant('{app}\backend\{#MyBackendExeName}'), '--quit', '',
@@ -143,17 +205,22 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    { D 盘根目录快捷方式 }
+    { D 盘根目录快捷方式（正常安装/自动更新都重建一次） }
     try
-      DShortcutPath := 'D:\傻瓜启动器.lnk';
-      WshShell := CreateOleObject('WScript.Shell');
-      Shortcut := WshShell.CreateShortcut(DShortcutPath);
-      Shortcut.TargetPath := ExpandConstant('{app}\{#MyAppExeName}');
-      Shortcut.WorkingDirectory := ExpandConstant('{app}');
-      Shortcut.IconLocation := ExpandConstant('{app}\{#MyAppExeName}') + ',0';
-      Shortcut.Description := '教室倒计时一键启动器';
-      Shortcut.Save;
+      SetShortcutToExe('D:\傻瓜启动器.lnk');
     except
+    end;
+    { 自动更新：把之前临时指向"正在更新"脚本的桌面快捷方式换回 exe，并删掉临时脚本 }
+    if IsAutoUpdate then
+    begin
+      try
+        if FileExists(ExpandConstant('{commondesktop}\傻瓜启动器.lnk')) then
+          SetShortcutToExe(ExpandConstant('{commondesktop}\傻瓜启动器.lnk'));
+        if FileExists(ExpandConstant('{userdesktop}\傻瓜启动器.lnk')) then
+          SetShortcutToExe(ExpandConstant('{userdesktop}\傻瓜启动器.lnk'));
+      except
+      end;
+      DeleteFile(UpdatingVbs);
     end;
 
     { 静默自动更新：装完把程序重新拉起来（普通安装由 [Run] 负责） }
@@ -193,6 +260,16 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    { 0. 问用户是否保留数据（静默卸载不问，默认不保留） }
+    KeepData := False;
+    if not UninstallSilent then
+    begin
+      if MsgBox('卸载前，是否保留你的设置和数据？' + #13#10 + #13#10 +
+                '包含：主题/偏好设置、日志、倒计时（壁纸）配置、早晚读登录信息。' +
+                #13#10 + '「是」= 保留（以后重装可接着用）；「否」= 一并删除。',
+                mbConfirmation, MB_YESNO) = IDYES then
+        KeepData := True;
+    end;
     { 1. 优雅退出后端 }
     if FileExists(ExpandConstant('{app}\backend\{#MyBackendExeName}')) then
       Exec(ExpandConstant('{app}\backend\{#MyBackendExeName}'), '--quit', '',
@@ -213,10 +290,13 @@ begin
   end;
   if CurUninstallStep = usPostUninstall then
   begin
-    { 6. 清掉整个安装目录（含 data：登录信息、日志、下载的安装包） }
     DelTree('D:\IdiotLaunch\CountdownDesktop', True, True, True);
     DelTree(ExpandConstant('{app}\backend'), True, True, True);
-    DelTree(ExpandConstant('{app}\data'), True, True, True);
-    DelTree(ExpandConstant('{app}'), True, True, True);
+    if not KeepData then
+    begin
+      { 清掉整个安装目录（含 data：登录信息、日志、下载的安装包） }
+      DelTree(ExpandConstant('{app}\data'), True, True, True);
+      DelTree(ExpandConstant('{app}'), True, True, True);
+    end;
   end;
 end;
